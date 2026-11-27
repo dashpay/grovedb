@@ -2309,7 +2309,9 @@ it (SC3).
 2. No pending mark is left: the tree is finalized up to the GroveDB root
    (CM1, SC9).
 3. Every dirty hash is evaluated. Commit does this itself (CM3 step 5); the
-   caller does not have to.
+   caller does not have to. A caller that needs the root hash of a Merk, or
+   a node with its hashes, before the commit asks for the evaluation of that
+   Merk inside the transaction (18.10).
 
 Savepoints may remain (WT8).
 
@@ -3220,6 +3222,7 @@ took.
 | TXN-08 | A batch is one operation: one read of *L*, one first-write version, one entry per key it ends up holding (RD4, WT5, GM0). Which call survives for a key, by operation generation (GM0). | Batch semantics. |
 | TXN-09 | Section 9. The directory entry of a Merk is in that Merk's unit (SC2). Marks and other scopes' claims can be asked for by the tree layer (SC9, LT4). | Claim tables, merge, the scope's undo. |
 | TXN-10 | LD1 to LD8: a load is the records of its change set (LD1), its long values are in the value log before the commit and are the commit's to take over (LD2, LD5), and frames that are made from the write set lay it out again (LD4). | How a change set states that it is whole, the value-log file loads append to, and how the commit finds the pointers it acquires. |
+| TXN-11 | CM3 step 5, WT3, WT8, WT10, SC1, SC3, SC6, SC9: the hashes that an evaluation inside the transaction makes are writes of the scope that asked (18.10). | The call, what it claims, and how what it made is kept in the write set. |
 | TREE-03 | LT1, LT4: it runs a scope's change sets again on merged pages, by key. It may ask whether another open scope has claimed a unit, for placement only. | The layout rules (`tree-layout.md`). |
 | TREE-05 | ST3, SC2, SC9, CV9: an entry is no record; it is written by the scope that holds its Merk and is exact while the host is marked pending; an entry that a drop left behind is never returned. | The entry, and how a lookup tells a left-over one. |
 | TREE-06 | RD6. | The cursor. |
@@ -3637,6 +3640,49 @@ TREE-09, VER-05)**
   load after more commits than a transaction keeps key sets of; and a
   commit of a load that is met while the look at what its drop covers
   fails, which ends with the conflict.
+- T-EV1: the evaluation inside a transaction (18.10), owed by TXN-11. After
+  writes that leave hashes stale, the call gives the root hash that the
+  commit of the same writes publishes, with the hash rules of Merk for
+  every tree type; a node that is read afterwards has its hashes, also one
+  whose stale hash no stale hash leads to; a second call makes the hash of
+  the root alone; and the commit makes no hash, by the count of the nodes
+  it evaluates and by the calls of its rules. Under rules that make a
+  host's value hash of the roots it hosts, the root hash that the call gives
+  changes with the Merk under a host alone, and is the one that a commit
+  with no call publishes. The calls of the rules are
+  counted as hashes of the store, also where the rules panic. A batch whose
+  stale hashes the root leads to is come to with no search by key, and the
+  call copies no page that it only reads.
+- T-EV2: what was made is kept as writes (18.10), owed by TXN-11. The made
+  hashes are there again in frames that are made again, after a commit
+  beside the transaction and beside flat records in one data column, and by
+  key once a commit has met the transaction. They go with a rollback to a
+  savepoint from before the call and stay through one from after it, go
+  with the scope that made the call and stay when another scope is taken
+  out, go with a Merk to the prefix it is moved to, and go with a subtree
+  that is cleared or dropped and with the transaction. A call that a rule
+  refuses, wherever the evaluation stopped, leaves every hash stale that
+  was. A node that is read from its entry in the write set shows the stale
+  hashes that its writer stated, as it does where no call is made.
+- T-EV3: the claims of the call and its refusals (18.10), owed by TXN-11. A
+  call is refused a Merk that another open scope holds, as by a host that is
+  behind where the Merk is under a host, keeps the reads it made and none of
+  its writes where one of those is refused, and holds no write of a Merk
+  either where a rule refuses a hash or panics, at once or in the middle,
+  which a third scope's read of the Merk shows. It is refused alike and holds the
+  same claims afterwards whether the scope beside it is laid out or not,
+  holds no Merk that it did not open where a host refuses it, and makes a
+  stale hash through the transaction only while no scope is open. What it
+  answers beside a scope that wrote below a host and marked it is the same
+  whether that scope's writes are laid out or kept in the write set, and a
+  mark of that scope refuses it nothing. A host that the caller is shown as
+  marked pending, by its own scope or by one that merged, and one that
+  points at the root of a Merk that was cleared, refuse the call before a
+  hash is made. A transaction whose writes cannot be laid out refuses it
+  with what refused the layout. A call for a Merk under a host makes its
+  hashes while another open scope holds the host's Merk and no more, in
+  either layout and whether that scope merges or rolls back, and is refused
+  where that scope dropped or cleared the Merk above.
 - T-VL6: the counts after a crash (DU5), owed by STORE-07 with STORE-03.
   Samples are taken while commits, write-back and value moves run, and a
   crash comes at any point. The counts recovered from the sample in force
@@ -4117,3 +4163,28 @@ that takes the values of a load over (plan draft 40).
 | A load and its commit take the lock of the file that loads fill and the lock on the manifest. | LD8 (new), section 13 rows 7b, 8b and 9 to 15 |
 
 New tests: T-LD1 to T-LD4.
+
+### 18.10 From TXN-11, evaluation inside a write scope
+
+TXN-11 added a call that makes the stale hashes of one Merk inside an open
+write transaction, with the hash rules of its caller, and returns the
+Merk's root hash (plan draft 40). No rule above changed. The table says how
+the call stands under them.
+
+| What the call does | Rules |
+| --- | --- |
+| It makes every stale hash of the Merk, in the private frames, as step 5 of the commit would have: one hash record of the page's run for each that differs from the bytes its writer stated. Those are the hashes that the evaluation of the Merk's root comes to, and those of the nodes that no stale hash leads to, which the write set lists by the puts that left them. The commit that follows makes none of them again. A page is read where it is, and none is copied for a read. | CM3 step 5, WT2, WT4 |
+| What it made is kept in the write set, as a put of each node whose hash was made: the node as its cell has it, with every hash stated and its value kept. The frames show it already, and frames that are made again apply it, as any put. | WT2, WT3, WT7 |
+| The puts have the first-write version of the call's operation. They are of keys that the transaction had written, so the key set of its commit and the first-write version of each key are what they were. | WT5, CF1, CF2 |
+| A rollback to a savepoint from before the call takes the puts out, and the hashes are stale again. | WT8 |
+| A call that fails adds nothing: no entry to the write set, so no write, and no pending mark. Where it had stored a hash, the frames are made again from the write set. Its scope keeps the read claims that it was granted on the way, as after any read, and no write claim. | WT10, SC3 |
+| It makes a stale hash through a scope, or through the transaction while no scope is open. A Merk with no stale hash is read through the transaction beside open scopes too, as any read is. A scope claims a read of the Merk, then a read of each Merk it comes to through the pointer of a host, before it reads anything of that Merk, each claimed and opened before the next is claimed, and a write of every Merk a hash is made in, together or not at all. The writes are asked for after every host and every read that can refuse the call, and before a hash is made; they are taken once every hash is made, under the transaction's lock, which is held from the one to the other. So a rule that refuses a hash or panics leaves the scope its reads and no write. The puts go with the scope that made the call. | SC1, SC3, SC6 |
+| The Merk that a host points into is the one that the subtree directory has entered under the host, whose record the scope that holds the Merk writes. A pointer with no Merk entered under its host is of a host that is behind: which Merk has its root in a cell is not asked. What another open scope holds refuses the call at one of three stages, each by one kind of claim. At the first read, of the data unit of the Merk that is asked for: another scope writes that unit, or dropped or cleared a Merk above it, and the refusal is the overlap, with the unit that stands against the read. At the read of the data unit of a Merk under a host, when the walk comes to the host: another scope writes that unit, or dropped or cleared a Merk above it, and the refusal is that of a host that is behind, with the host's cell named and no Merk. And when the writes are asked for, after the walk: another scope has read the data unit of a Merk that a hash is to be made in, the one asked for or one under a host, and the refusal is the overlap with that unit, which the caller has read. A scope that has only read a Merk under a host lets the walk through. So the call reads no write of another open scope, and what it answers and what its scope holds afterwards are the same whether the writes of the scopes beside it are laid out or kept in the write set, where the call comes to make a hash: the transaction has frames, and they show the caller's own writes (the last row). | SC2, SC4, SC7 |
+| A host with a stale value hash that is marked pending, as the caller is shown the marks, refuses the call before a hash is made and before a write is claimed, and so does one that points elsewhere than at the root of the Merk under it, as after a clear. A mark of another scope that is still open is not shown, and refuses nothing by itself: the scope that set it holds the Merk it wrote under the element. | SC9 |
+| The hashes are made in frames. A transaction that has written nothing has none, and no stale hash: the call reads the committed Merk. One that has writes and no frames refuses the call: as a conflict where a commit has met one of its writes, and with the refusal of the layout where its writes cannot be laid out, after a commit beside it or once a scope has merged whose writes were refused when they were laid out. That layout can be refused for a write of another scope whose writes are laid out or merged, and for none that is kept in the write set: the scopes of a transaction share its frames. And a scope that keeps its writes in the write set has them laid out for the call, and is refused as its layout is, also beside what another scope laid out before. | WT7, WT7b, SC6, CF6 |
+
+On existing GroveVersions no hash is left stale and nothing calls it
+(section 14): a transaction that never calls it reads and writes what it did
+before.
+
+New tests: T-EV1 to T-EV3.

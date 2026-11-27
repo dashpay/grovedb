@@ -2591,17 +2591,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         self.hashes.follow(&write, &report);
         let marks = !self.hashes.is_empty() || linked().any(|put| !put.stale.is_empty());
         for (put, node) in linked().zip(&report.nodes).filter(|_| marks) {
-            let links = [(Side::Left, &put.left), (Side::Right, &put.right)];
-            let missing = links.iter().filter(|(_, link)| link.is_none());
-            let stale = missing.fold(put.stale, |stale, (side, _)| {
-                stale.without(HashField::Child(*side))
-            });
-            // The key-value hash is made of the value hash: it is stale
-            // with it, whatever the writer states.
-            let stale = match stale.has(HashField::Value) {
-                true => stale.with(HashField::KeyValue),
-                false => stale,
-            };
+            let stale = put.marked();
             for field in Stale::ALL.fields() {
                 match stale.has(field) {
                     true => self.hashes.mark(node.address(), field),

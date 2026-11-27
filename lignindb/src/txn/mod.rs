@@ -383,9 +383,351 @@
 //! takes its mark off, and [`NodeView::stale`] shows them to a reader. The
 //! marks are of the frames' pages, so they are made again from the write
 //! set whenever the frames are, which is also what a rollback to a mark
-//! does. The commit is handed them and evaluates them all (CM3 step 5).
-//! Where every hash is made by its writer, as on existing GroveVersions,
-//! nothing is marked, a write does nothing for them, and no rule runs.
+//! does. The commit is handed them and evaluates them all (CM3 step 5):
+//! those that no evaluation before it made ("An evaluation before the
+//! commit"). Where every hash is made by its writer, as on existing
+//! GroveVersions, nothing is marked, a write does nothing for them, and
+//! no rule runs.
+//!
+//! # An evaluation before the commit
+//!
+//! A hash that a write left to the engine is no hash until it is made
+//! ([`NodeView::stale`]), and the commit makes it: until then a reader
+//! has the node without it, and its Merk has no root hash. So a Merk's
+//! stale hashes can be asked for inside the transaction
+//! ([`Scope::evaluate`], [`WriteTxn::evaluate`]), with the rules of the
+//! caller, as the commit is given them.
+//!
+//! - **It is the tree layer's evaluation**
+//!   ([`Hashes::hash_of`](lignin_tree::hash::Hashes::hash_of)), on the
+//!   frames, of the Merk's root and then of each node of the Merk that
+//!   has a stale hash still. An evaluation goes down from a node through
+//!   stale hashes only: to the child under a stale hash, and from a stale
+//!   value hash to the root of each Merk that the node's cell points at.
+//!   Each stale hash it comes to is made once. One that differs from the
+//!   bytes its writer stated is stored in its cell, as one hash record
+//!   of the page's run, which is what the commit would have logged for
+//!   it; one that does not differ stores nothing. No cell changes its
+//!   length, and no node handle ends. The marks of those nodes are off
+//!   afterwards, so the commit makes none of them again. A page is read
+//!   where it is: no private copy is made for a read, and a hash is
+//!   stored in a page that the transaction copied when it wrote the node.
+//! - **Every stale hash of the Merk that is asked for is made**, also
+//!   one that no stale hash above it leads to, which the evaluation of
+//!   the root does not come to: a writer may state the hashes of a node
+//!   and leave those of a node below it. The write set lists the puts
+//!   that left a hash stale ("The puts that left a hash stale" below).
+//!   The call first goes down from the root, and then, by its key, to
+//!   the cell of each of those puts that it has not come to. So a node of that
+//!   Merk that is read after the call has its hashes, and the commit has
+//!   none of them to make. In a test build and under `held_reads` the
+//!   call is held to it: every key the transaction put a node under in
+//!   the Merk is searched for, and a cell with a stale hash is one the
+//!   call came to. In a Merk below, which the call comes to through a
+//!   host, the hashes that the root hash of that Merk is made from are
+//!   made, and one that no stale hash leads to is left: for the call
+//!   that asks for that Merk, or for the commit. And a Merk that was
+//!   cleared or dropped keeps its cells in their pages until they are
+//!   reclaimed, with the marks of their stale hashes
+//!   (`lignin_tree::hash`): they are cells of no Merk, the call does not
+//!   come to them, and the commit makes their hashes with the others,
+//!   as it does with no call before it.
+//! - **The call returns the Merk's root hash**: what the rules make of
+//!   the cell of its root node, which no cell stores, or nothing for a
+//!   Merk with no node. A Merk that has no stale hash is read and not
+//!   written, in the frames or in the committed pages: no page is
+//!   copied, and the write set is as it was.
+//! - **What was made is kept in the write set, as writes.** The frames
+//!   are derived from the write set (WT3), and would lose the made
+//!   hashes whenever they are made again. So for each Merk it made a hash
+//!   in, the call adds one operation to the write set: a change set of
+//!   that Merk which puts each node it made a hash of, as the node's cell
+//!   has it afterwards, with every hash stated, its value kept
+//!   ([`ValuePut::Keep`]), its links and the Merks it hosts as they are,
+//!   and the root kept. The frames are not changed for it: they show it
+//!   already. Frames that are made again apply it as any operation, by
+//!   key, after the writes that left the hashes, and so have the made
+//!   hashes and no mark for them. A Merk that an element hosts is
+//!   anchored in its operation ([`MerkWrite::anchored`]): the write does
+//!   not hold the host.
+//! - **Each kept node is one that its key leads to.** The evaluation
+//!   comes to a cell through the link of its parent or the pointer of its
+//!   host, and the operation names the node by its key in the Merk that
+//!   the cell was taken to be of. That Merk is one whose entry in the
+//!   subtree directory has its root where the walk came in: the root of
+//!   the Merk that was asked for, or the cell that a host points at,
+//!   which is compared with the entry of the Merk it is taken to be the
+//!   root of ("Claims" below). In a test build and under the feature
+//!   `held_reads`, each such cell is also held to the search for its key
+//!   from that root (`pages::held`), at every call.
+//! - **The calls of the rules are counted** as hashes that the tree
+//!   computed, where those of a commit are
+//!   ([`StoreStats::hashes`](lignin_store::stats::StoreStats::hashes)),
+//!   on every way out of the call: with rules that panic, the calls up
+//!   to the panic are counted.
+//!
+//! What becomes of the made hashes follows from their being writes of
+//! the transaction, of the keys of their nodes:
+//!
+//! | When | The made hashes |
+//! | --- | --- |
+//! | a later write of the node | go with the cell's hashes that the write states, and the marks are what that write leaves, as after any write of the node |
+//! | frames that are made again: after a commit beside the transaction (WT7a), a rollback to a mark, a failed operation, a scope that was taken out | are there again, from the operations of the call |
+//! | a commit beside the transaction that meets a write (WT7b) | are shown by key, from the entries of the call, which are the newest of their keys |
+//! | a rollback to a savepoint from before the call | go with the operations of the call: the hashes are stale again, with the bytes their writer stated |
+//! | a rollback to a savepoint from after the call | stay |
+//! | the scope that made the call is rolled back | go, as its other writes do |
+//! | another scope is rolled back | stay: no other open scope has written a Merk that the call wrote or read, though it may have read one that the call read, so none of its writes is among what they were made from |
+//! | the subtree is moved | go with the Merk to its new prefix, as the entries of its nodes do |
+//! | the subtree is cleared or dropped | go with the nodes: the entry of the clear or the drop covers them. A subtree that is entered again under the prefix is another Merk |
+//! | the transaction is rolled back, or is ended by its commit | go with the write set |
+//!
+//! **The puts that left a hash stale.** An entry of a node keeps the hashes
+//! that its put left stale as the writer stated them, and a node that is
+//! shown from its entry ([`NodeView::is_record`]) shows those, as it does
+//! where no call is ever made. The pages mark them otherwise for two kinds
+//! of put: the hash of a child that the node does not have is none, and the
+//! key-value hash is stale with the value hash. The list goes by the pages.
+//! The write set lists, in each unit, the puts of nodes that left a hash
+//! stale on the pages and that are the newest write of their record. The
+//! list is derived from the entries, as the index by key is, and the
+//! transaction keeps nothing else for the call. A transaction whose writers
+//! make every hash, as on existing GroveVersions, lists nothing: an entry
+//! that it adds or takes out is tested for what it could list or pass, and
+//! no list is asked.
+//!
+//! | When | The list |
+//! | --- | --- |
+//! | a put of a node that leaves a hash stale is added | has it |
+//! | a later write of the same record is added: a put, as that of a call, or a delete | has the earlier put no more. Which write is the earlier one of a record is asked only for a write of a data column while a put is listed: a write of another column passes no node. It is the write before it under the same prefix, where no move has named the prefix since; otherwise it is asked as a read of that moment asks it, through the moves (`WriteSet::prior`) |
+//! | the later write is taken out: a rollback to a mark, a failed operation | has the earlier put again |
+//! | the put itself is taken out | has it no more |
+//! | a scope is taken out | is what the operations that stay make it: they are added again |
+//! | the subtree is cleared or dropped | keeps the puts from before, which no call is given: a call asks for those after the newest drop or clear of the Merk |
+//! | the subtree is moved | keeps the puts under the prefix they were written under, and a call for the Merk asks each prefix it was read under, for the entries of that time |
+//! | frames that are made again, a commit beside the transaction | is as it was: it is of the write set |
+//! | the transaction is rolled back, or is ended by its commit | is empty, with the write set |
+//!
+//! A put that is listed is one whose node may have a mark on the pages.
+//! One whose node is in no tree has none, and a call passes it. A call
+//! is given the puts that no newer range delete covers: a range delete
+//! is searched for among those since the newest drop or clear, and a put
+//! is compared with the ones that are newer than it. Under the prefix
+//! that the Merk was first read under, which is its only one where it
+//! was not moved, nothing older than the oldest put that is listed is
+//! looked at, and nothing at all where none is listed. Where the subtree
+//! was moved, the prefixes it was read under are asked for as a read of
+//! one of its records asks for them: one step for each move in its
+//! history, and for each step a search among the moves of a prefix. In a
+//! test build and under `held_reads` the list is held to a count from
+//! every entry after each rollback to a mark and each scope that is
+//! taken out, and what a call is given, also where it is given nothing,
+//! to the same from every key of the Merk.
+//!
+//! **Claims** (SC3). The call is a read of the Merk it is asked for, then
+//! a read of each Merk that it comes to through the pointer of a host,
+//! and at the end a write of every Merk it makes a hash in. A scope
+//! claims each read when the call comes to the Merk, before the entry or
+//! a cell of it is read, and keeps it as it keeps any read. Each is
+//! claimed and its entry read before the next is claimed, so a call that
+//! a host refuses holds no Merk that it did not open. The writes
+//! are those of a batch with a change set of each such Merk, granted
+//! together or not at all. They are asked for after every host and
+//! every read that can refuse the call, and before a hash is made: a
+//! Merk that another open scope has read refuses the call there, by its
+//! name, and nothing is taken. They are taken once every hash is made,
+//! with the entries of the call. The transaction's lock is held from
+//! the one to the other, and the rules are not to call the transaction,
+//! so what was granted when it was asked for is granted when it is
+//! taken. So a call that does not make its hashes leaves its scope the
+//! reads it was granted and no write, however it ends: refused by a
+//! host or by a claim, by a rule that refuses a hash or panics, or at a
+//! page or a value that the evaluation does not read. Another scope
+//! reads those Merks afterwards, to which the caller added no write.
+//!
+//! **Which Merk a host points into** is not read from another scope's
+//! writes (SC4). The host's cell is of the Merk the caller holds, and
+//! names the cell of a root. The Merk is the one that the subtree
+//! directory has entered under the host, at the place of the pointer: a
+//! record under the host's key, which the scope that enters, moves or
+//! drops the Merk writes while it holds the Merk. The call claims a read
+//! of that Merk, and then its entry is as the caller sees it. Where the
+//! entry has the root at the cell that the host names, the call goes on
+//! there. A place where the host's cell names no root is hashed as a
+//! Merk with no node, as the commit hashes it: nothing is read for it,
+//! whatever is entered there.
+//!
+//! A Merk that a cell hosts is entered under that cell's node: the
+//! store is not sound otherwise (`crate::verify`). So a pointer with no
+//! Merk entered under its host, at its place, is of a host that is
+//! behind: the Merk was dropped, or moved from under it. Which Merk has
+//! its root in a cell depends on what was laid out before, and the call
+//! does not ask.
+//!
+//! **What is under a host and is another open scope's** refuses the call
+//! as a host that is behind does
+//! ([`HashError::HostBehind`](lignin_tree::hash::HashError::HostBehind)),
+//! and not as an overlap that names a Merk. A scope that writes a Merk
+//! under a host has not named its root in the host yet, and marks the
+//! element for that (SC9): the caller is not shown the mark, and is
+//! refused the Merk. And where that scope dropped the Merk, moved it
+//! from under the host, or entered another in its place, the record
+//! under the host is as that scope left it where its writes are laid
+//! out, and as it was before where they are kept: the caller would find
+//! the old Merk, the new one, or none, by the layout. Each of those is
+//! the one refusal, which names the host, a node of the caller's own
+//! Merk. It comes when the turn of that pointer comes among the Merks
+//! the call claims, so the scope holds the same claims after it in
+//! either layout. So what a call answers, and what its scope holds
+//! afterwards, does not depend on whether the writes of the scopes
+//! beside it are laid out or kept in the write set, where the call
+//! comes to make a hash: the transaction has frames, and they show the
+//! caller's own writes. In a test build and under `held_reads` two
+//! things are held for it at every call: each page that the tree layer's
+//! evaluation reads is the page of a cell the walk went to; and what the
+//! walk takes a host's mark to be is what its scope is answered
+//! ([`Scope::is_pending`]). The first holds the evaluation to the pages
+//! of the walk, and not to its cells: a read of a cell of another Merk
+//! in one of those pages would pass it. That the evaluation follows the
+//! links and the pointers that the walk follows rests on the two being
+//! written alike, here and in `lignin_tree::hash`.
+//!
+//! Two things stand before that, and neither is of the call. Both are
+//! of the frames, which the scopes of a transaction share
+//! ([`crate::scope`], the choices, 2), and of every call that needs
+//! them:
+//!
+//! - **The caller's own writes are laid out first**, as
+//!   [`Scope::lay_out`] lays them out, and are refused as there: also by
+//!   what another scope laid out before, where the two scopes wrote what
+//!   cannot stand together and no claim tells them apart, as two Merks
+//!   that are entered at one place of a host. The scope whose writes are
+//!   laid out second is the one that is refused, at its call as at its
+//!   merge. The call has then claimed and read nothing.
+//! - **The transaction has no frames** where its writes cannot be laid
+//!   out: after a commit beside it (WT7), or once a scope has merged
+//!   whose writes were refused when they were laid out (SC6). The call is
+//!   refused with what refused that layout ("Where it is refused" below),
+//!   which can be a write of another scope, and only of one whose writes
+//!   are laid out or merged: a write that is kept in the write set
+//!   refuses nothing until then.
+//!
+//! A write claim at the end, of a Merk the call makes a hash in, is
+//! refused where another open scope has read that Merk
+//! ([`TxnError::ScopeOverlap`]): the Merk it names is one the caller
+//! holds a read of, and is the same in either layout.
+//!
+//! A scope that keeps its writes in the write set has them laid out
+//! first ([`Scope::lay_out`]), since the hashes are made in cells.
+//! Through the transaction itself the call is a read of a scope that
+//! ends with the call, and makes a stale hash only while no scope is
+//! open ([`TxnError::ScopeOpen`]). A Merk with no stale hash is read
+//! through it beside open scopes as well, and its root hash given.
+//!
+//! **Where it is refused.** None of these makes a hash, changes a page
+//! or adds a write. The writes of a scope that were laid out for the call
+//! stay laid out, and the claims that it was granted before the refusal
+//! stay with it, as those of a batch that is refused for what it says do
+//! ([`crate::scope`]):
+//!
+//! - a subtree that is not entered ([`BatchError::NotEntered`]);
+//! - a transaction that serves its records by key: a conflict where a
+//!   commit has met a write of it ([`BatchError::EvaluatedByKey`]),
+//!   whichever Merk is asked for, and the refusal of the layout where its
+//!   writes cannot be laid out;
+//! - a host with a stale value hash that is behind the Merks it hosts
+//!   ([`HashError::HostBehind`](lignin_tree::hash::HashError::HostBehind)
+//!   in [`TxnError::Hash`]): its element is marked pending as the caller
+//!   is shown the marks, by its own scope or by one that merged (SC9),
+//!   its cell points at a cell that the subtree directory does not have
+//!   as the root of a Merk entered under the host there, or another open
+//!   scope holds the Merk that is entered there. A clear
+//!   leaves such a pointer until the host is written without it, and the
+//!   commit refuses that state as well ([`BatchError::ClearedAlone`]).
+//!   It is found before a hash is made and before a write is claimed,
+//!   and is told there: a mark when the call comes to the host, and a
+//!   pointer when its turn comes among the Merks the call claims. A mark of
+//!   another scope that is still open is not shown to the caller, and
+//!   refuses it nothing: the pages are not asked which hosts are behind
+//!   ([`Pages::host_is_behind`](lignin_tree::fragment::Pages::host_is_behind)),
+//!   as they are for a write. That scope holds the Merk it wrote below
+//!   the element, and the call is refused that Merk where it comes to
+//!   it.
+//!
+//! That a host which is not marked points at the root its Merk has now
+//! is its writers' to keep: a write that stops below a host marks the
+//! element (SC9). The call follows a pointer only to the root that the
+//! directory has, so a host that was left behind without a mark refuses
+//! the call where the commit, which follows the pointers as they are,
+//! would hash what is there.
+//!
+//! **An evaluation that fails** ([`TxnError::Hash`]): a rule refused a
+//! hash, or the tree layer's evaluation could not read a page or a value.
+//! A page or a record of the directory that is not read outside it is
+//! told as any read of the transaction tells it ([`TxnError::Node`],
+//! [`TxnError::Directory`]): while the call finds what it will come to,
+//! before a hash is made, and so is a root with no stale hash whose cell
+//! is not read; or while it reads the nodes it made a hash of,
+//! afterwards. The write set is what it was (WT10). Where the tree layer
+//! had stored a hash or taken a mark off before the error, which is so
+//! of every error after the evaluation, the frames hold what the write
+//! set does not: they are given up and made again from it, so every hash
+//! that was stale is stale, and every node handle read through the
+//! transaction has ended (PN8). Where it had stored none, the frames
+//! stay. Rules that panic are an operation that panics: the frames are
+//! made again, whatever was stored.
+//!
+//! **What the made hashes rest on.** A hash is made from what the
+//! transaction reads when the call is made: its own nodes, and the
+//! committed nodes they link or host. It is kept as a hash that a writer
+//! stated in a write of that moment. A commit beside the transaction that
+//! changes a node the hash was made from leaves it right only by what
+//! leaves a stated hash right: the commit writes a key that the
+//! transaction wrote, and its commit is the conflict (CF2). That is so
+//! where every write of a Merk writes the Merk's root, and every change
+//! of a Merk's root hash writes the element that hosts it before its
+//! transaction commits (GM3, SC9). Nothing here checks it.
+//!
+//! **What a call costs.** It goes down from the root through stale
+//! hashes, by the addresses the cells hold, with no search. It then asks
+//! the write set for the puts of the Merk that left a hash stale, and
+//! finds the cell of each that it did not come to by its key, where the
+//! transaction last saw it or by a search. It goes once through the
+//! changes of pending marks that its scope made, where it comes to a
+//! node with a stale value hash. It reads each cell with a
+//! stale hash that it comes to, once to plan and once more to keep it,
+//! and then the cells of its children for their keys; the tree layer's
+//! evaluation reads and writes each once, and reads once the cell of
+//! each child and of each hosted root whose hash it takes and does not
+//! make. It copies no page: the transaction holds as many private copies
+//! afterwards as before. For each pointer of a host
+//! whose value hash it makes it looks up one record of the subtree
+//! directory, and the entry of the Merk. It adds one entry to the write
+//! set for each node it made a hash of, with the node's key, feature,
+//! hashes and links ([`TxnStats::writes`] counts them). An entry that is
+//! the first write of its record under a prefix since a move named the
+//! prefix asks for the write before it through the moves of the subtree
+//! ("The puts that left a hash stale" above): the first call for a Merk
+//! after it was moved pays that for each node it makes a hash of. It walks nothing
+//! else that the transaction wrote: `tests/evaluate_scale.rs` holds the
+//! entries and the calls of the rules to that for a transaction of many
+//! changes with a call after each, through the engine as its users open
+//! it, and has a measurement of the time at 2,000 and at 8,000 changes,
+//! which is run by hand.
+//!
+//! Its claims cost what those of any operation of a scope cost
+//! ([`crate::scope`]): each unit is compared with every subtree that
+//! another open scope has dropped or cleared. A call that comes to many
+//! Merks beside a scope that holds many such subtrees pays the product,
+//! as a batch that names those Merks does. And a scope's own changes of
+//! marks are kept as a list ([`Scope::is_pending`] goes through it), so
+//! a scope that calls after each of many changes of marks goes through
+//! the list at each call.
+//!
+//! The operations of a call are laid out again as any change set of
+//! nodes, by the tree type of no subtree: they put a node only where one
+//! is, so a subtree that holds flat records beside its nodes
+//! ([`Scope::apply_by_kind`]) takes them.
 //!
 //! # Locations that are kept
 //!

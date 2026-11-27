@@ -155,6 +155,64 @@ fn the_claims_of_one_operation_are_granted_together_or_not_at_all() {
     scopes.check();
 }
 
+/// What an operation asks for before it takes its claims is answered as
+/// the claims would be, and takes nothing.
+#[test]
+fn the_claims_of_one_operation_are_asked_for_and_not_taken() {
+    // 5 hosts 6.
+    let mut grove = Grove::default();
+    grove.hosts.insert(subtree(6), subtree(5));
+    let mut scopes = Scopes::default();
+    let one = scopes.open();
+    // A scope that is alone is refused nothing, and no lineage is read.
+    let alone = scopes.write_refused(one, &[data(1)], &[data(2)], &[subtree(5)], &mut Unread);
+    assert_eq!(alone, Ok(None));
+    let two = scopes.open();
+    for unit in [data(1), data(2)] {
+        assert_eq!(scopes.read(Who::scope(one), unit, &mut grove), Ok(()));
+    }
+    assert_eq!(scopes.read(Who::scope(two), data(2), &mut grove), Ok(()));
+
+    // The one reader of a unit would write it, and holds it as it did:
+    // another scope reads it afterwards, and then the write is refused.
+    let asked = scopes.write_refused(one, &[data(1)], &[], &[], &mut grove);
+    assert_eq!(asked, Ok(None));
+    assert!(!scopes.writes(one, data(1)));
+    assert_eq!(scopes.read(Who::scope(two), data(1), &mut grove), Ok(()));
+    let asked = scopes.write_refused(one, &[data(1)], &[], &[], &mut grove);
+    assert_eq!(asked, Ok(Some(data(1))));
+
+    // Each kind of claim is refused with the unit that the claim itself
+    // is refused with.
+    assert_eq!(scopes.write(two, &[data(4)], &[], &[], &mut grove), Ok(()));
+    assert_eq!(scopes.write(two, &[aux(6)], &[], &[], &mut grove), Ok(()));
+    let cases = [
+        (vec![data(3), data(2)], vec![], vec![], data(2)),
+        (vec![data(3)], vec![data(4)], vec![], data(4)),
+        (vec![data(3)], vec![], vec![subtree(5)], aux(6)),
+    ];
+    for (units, reads, whole, held) in &cases {
+        let held = *held;
+        let asked = scopes.write_refused(one, units, reads, whole, &mut grove);
+        assert_eq!(asked, Ok(Some(held)));
+        assert!(!scopes.writes(one, data(3)));
+        let refused = scopes.write(one, units, reads, whole, &mut grove);
+        assert_eq!(refused, overlap(held));
+    }
+    // A subtree that another scope dropped holds what is below it, and a
+    // lineage that is not read is the error of the one that asks.
+    scopes.close(two);
+    let two = scopes.open();
+    let dropped = scopes.write(two, &[data(5)], &[], &[subtree(5)], &mut grove);
+    assert_eq!(dropped, Ok(()));
+    let asked = scopes.write_refused(one, &[data(6)], &[], &[], &mut grove);
+    assert_eq!(asked, Ok(Some(data(5))));
+    let asked = scopes.write_refused(one, &[data(6)], &[], &[], &mut Unread);
+    assert_eq!(asked, Err("unread"));
+    assert!(!scopes.writes(one, data(6)));
+    scopes.check();
+}
+
 #[test]
 fn a_drop_holds_everything_below_it() {
     // 1 hosts 2, which hosts 3. 4 is beside them.
