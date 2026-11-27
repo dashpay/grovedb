@@ -10,14 +10,14 @@ The engine scored is that of `feat/LigninDB` at `588668e1f`. `lignin-bench score
 
 | Measure | Target | Accept | Measured | LigninDB / RocksDB | Verdict | Why a miss is a miss |
 | --- | --- | --- | --- | --- | --- | --- |
-| Bytes logged per transition | 0.100 | 0.134 | 0.173 / 0.155 / 0.110 (B, paced, 162 MiB) | 3,944 / 3,253 / 2,431 B against 22,828 / 21,004 / 22,022 B | missed (accept met in delete) | The commit groups alone, the cells and hashes of the nodes a transition changes, are 3,366 / 2,574 / 2,112 B, and the page steps of the values that regrouping and the cleaner move add 578 / 679 / 320 B, against an accept of 3,056 / 2,812 / 2,948 B (the log's parts: PERF-04) |
-| Physical bytes written per transition | 0.089 | 0.143 | 0.649 / 0.740 / 0.662 (B, paced, 162 MiB) | 43.9 / 42.5 / 40.5 KB against 67.6 / 57.5 / 61.2 KB | missed | The log, the new blocks and the new values are 12.9 / 11.4 / 10.1 KB before any regrouping, checkpoint or cleaning, above the accept of 9.7 / 8.2 / 8.7 KB by themselves; the segment cleaner's copies are 20.8 / 20.0 / 21.5 KB, about half of the whole, and the table checkpoints 5.3 / 5.2 / 5.9 KB (the parts: PERF-04; the segment cleaner's share: PERF-08) |
+| Bytes logged per transition | 0.100 | 0.134 | 0.173 / 0.155 / 0.110 (B, paced, 162 MiB) | 3,944 / 3,253 / 2,431 B against 22,828 / 21,004 / 22,022 B | missed (accept met in delete) | The commit groups alone, the cells and hashes of the nodes a transition changes, are 3,366 / 2,574 / 2,112 B, and the page steps of the values that regrouping and the cleaner move add 578 / 679 / 320 B, against an accept of 3,056 / 2,812 / 2,949 B (the log's parts: PERF-04) |
+| Physical bytes written per transition | 0.089 | 0.143 | 0.649 / 0.740 / 0.662 (B, paced, 162 MiB) | 43.9 / 42.5 / 40.5 KB against 67.6 / 57.5 / 61.2 KB | missed | The commit groups, the new blocks and the new values alone are 12.3 / 10.7 / 9.8 KB, above the accept of 9.7 / 8.2 / 8.7 KB; the segment cleaner's copies are 20.8 / 20.0 / 21.5 KB, about half of the whole, and the table checkpoints 5.3 / 5.2 / 5.9 KB (the parts: PERF-04; the segment cleaner's share: PERF-08) |
 | Wall time per transition | 0.168 | 0.268 | 2.41 in the one phase of one regime (delete, B, back to back, 256 MiB); 2.37 to 2.43 in the phases of two (section 3) | 1,206 µs against 500 µs | missed | On the CPU, 452 µs of the 562 µs a transition between the two engines are below the storage seam, where LigninDB's store spends 633 µs and RocksDB's whole store 181 µs (PERF-03) |
 | Keyed lookups per transition | 0 | 0 | 0.054 load, 0.051 / 0.019 / 0.018 (A and B) | 3.08 load, 3.10 / 1.10 / 1.10 against 57.0, 60.5 / 58.5 / 62.5 | missed | What is left is a write of a key new to its Merk and the first read in a transaction of the element that hosts a Merk, by call site (PERF-03) |
 | Hashes per transition, iteration two | 0.500 | 0.574 | not scored | 159 and 159 `hash_node_calls` | iteration two | |
 | Commit of a 20-transition block | 0.2 | 0.5 | 0.482 in the one phase of one regime (delete, B, back to back, 256 MiB); 0.466 to 0.549 in the phases of two (section 3) | 1.28 ms against 2.66 ms | accept met in delete; create and update not scored (no phase of one regime) | On the CPU, about half of LigninDB's commit is the tree-page codec (0.48 of 1.03 ms), then the buffer pool (0.17 ms) and the transaction's seal (0.14 ms) (PERF-03) |
 | Write throughput, 8 threads, iteration two | 5× | 3× | not scored | | iteration two | |
-| Bulk load of 1M transitions | 0.173 | 0.346 | 0.031 at most (B) | 16.6 s against more than 534 s, GroveDB's build of the same grove on RocksDB in that run (section 6) | target met | |
+| Bulk load of 1M transitions | 0.173 | 0.346 | less than 0.0312 (B) | 16.6 s against more than 533.5 s, GroveDB's build of the same grove on RocksDB in that run (section 6) | target met | |
 | Point get | 0.225 | 0.562 | 0.85 / 0.79 warm, 0.72 / 0.74 settled (A, twice) | 28.8 / 26.9 µs warm against 34.0 / 34.1 µs | missed | Above the storage seam a get takes 2.5 µs on LigninDB and 1.8 µs on RocksDB; below it LigninDB takes 14.3 µs against RocksDB's 23.3 µs (0.62), where the accept leaves about 12 µs (PERF-05, settled) |
 | Point query with proof | 0.136 | 0.272 | 0.70 / 0.69 warm, 0.56 / 0.60 settled (A, twice) | 161 / 155 µs warm against 229 / 225 µs | missed | Work above the seam takes about 40 µs on either engine, 22% of RocksDB's row, so the accept leaves about 10 µs below the seam, where LigninDB takes 64 µs against RocksDB's 145 µs (PERF-05, settled) |
 | 100 references to documents, with proof | 0.357 | 0.594 | 0.77 / 0.80 warm, 0.70 / 0.70 settled (A, twice) | 3.80 / 3.87 ms warm against 4.90 / 4.85 ms | missed | Above the seam about 0.6 ms on either engine; below it LigninDB takes 1.94 ms against RocksDB's 2.98 ms (0.65), where the accept leaves about 1.5 ms (PERF-05, settled) |
@@ -30,7 +30,7 @@ The engine scored is that of `feat/LigninDB` at `588668e1f`. `lignin-bench score
 
 ## 2. The head, the binary and the hosts
 
-**The binary.** Every measurement of this document but the golden corpus's replay and the `fdatasync` probe comes from one build of `lignin-bench` and two test binaries, of the commit `2fdb02734` of the branch of this task: the engine at `588668e1f` and this task's harness, which adds the churn, the size and dead shares of each phase and `Db::space` to read them, and the score. Built from nothing (`git archive` of the commit and its lock file, an empty target directory) at one path with rustc 1.99.1, three times on the two hosts, it came out byte for byte the same each time: `lignin-bench` sha256 `77bf94e5fff72f8c8c79b8e086b3a6039504ea78d239fb5e0bd518827d39f643`, the bulk-load test binary `6ce64346…`, `lignin-store`'s test binary `299482c6…`. The path is in the binary: two builds of one tree at two paths differ. The branch's later commits change the score and its tests, the refusal of a churn that would overflow, comments and documents; the score was run again over the reports of that binary.
+**The binary.** The benchmark, bulk-load and recovery runs of this document used one build of `lignin-bench` and two test binaries, of the commit `9d60d8f1f` of the branch of this task: the engine at `588668e1f` and this task's harness, which adds the churn, the size and dead shares of each phase and `Db::space` to read them, and the score. Built from nothing (`git archive` of the commit and its lock file, an empty target directory) at one path with rustc 1.99.1, three times on the two hosts, it came out byte for byte the same each time: `lignin-bench` sha256 `77bf94e5fff72f8c8c79b8e086b3a6039504ea78d239fb5e0bd518827d39f643`, the bulk-load test binary `6ce64346…`, `lignin-store`'s test binary `299482c6…`. The path is in the binary: two builds of one tree at two paths differ. The branch's later commits change the score and its tests, the refusal of a churn that would overflow, comments and documents; the score was run again over the reports of that binary.
 
 **The hosts.** Two DigitalOcean `so-16vcpu-128gb-intel` droplets (16 dedicated vCPUs, 128 GB, local NVMe; ext4 with `discard`, kernel 6.8.0-149, Ubuntu 24.04, no attached volume), each running nothing but the calls of this document, one call at a time unless a table says otherwise. They are of one class and not of one processor:
 
@@ -96,9 +96,9 @@ LigninDB takes 1.40 / 1.43 / 1.31 times RocksDB's time there, with about as many
 
 | Read | 256 MiB, LigninDB / RocksDB, two rounds | ratio | 162 MiB, LigninDB / RocksDB, two rounds | ratio | Pages read a read, 256 / 162 MiB |
 | --- | --- | --- | --- | --- | --- |
-| point get | 21.6 / 33.0, 21.5 / 33.5 µs | 0.657 / 0.641 | 23.7 / 33.0, 23.4 / 32.9 µs | 0.720 / 0.710 | 0.058 / 0.351 |
+| point get | 21.6 / 32.9, 21.5 / 33.5 µs | 0.657 / 0.641 | 23.7 / 33.0, 23.4 / 32.9 µs | 0.720 / 0.710 | 0.058 / 0.351 |
 | point query with proof | 130 / 238, 130 / 239 µs | 0.544 / 0.544 | 141 / 240, 140 / 241 µs | 0.588 / 0.581 | 0.062 / 0.463 |
-| 100 references with proof | 3.33 / 5.01, 3.29 / 5.05 ms | 0.664 / 0.650 | 5.31 / 5.03, 5.02 / 5.11 ms | 1.06 / 0.98 | 5.2 / 37.5 |
+| 100 references with proof | 3.33 / 5.01, 3.28 / 5.05 ms | 0.664 / 0.650 | 5.31 / 5.03, 5.02 / 5.11 ms | 1.06 / 0.98 | 5.2 / 37.5 |
 
 So a point proof read 0.46 pages on average over its 5,000 samples at a pool of 162 MiB: one read a point proof, which the page-reads row asks for, holds. Proof sizes are those of both engines alike: 2,227 B a point proof and 52,586 B a proof of 100 references.
 
@@ -122,7 +122,7 @@ The load itself, through GroveDB's write transactions, a block at a time (not sc
 
 ## 6. The bulk load
 
-`the_reference_workload_loads_through_the_engine_within_the_time_and_fill` (`lignin-testkit`'s `tests/bulk_load.rs`, ignored, release build) on B's NVMe: GroveDB builds the reference grove on RocksDB, then the grove's 2,020,007 nodes of 20,007 Merks are handed to the engine's bulk loader as whole Merks and committed. GroveDB's build of the grove on RocksDB had applied 1,000,000 of the stream's 1,050,008 operations (the set-up, 50,000 blocks of 20 creates, and their commits) at 534 s, the test's last report of it, so it took longer than 534 s; the load into LigninDB took 16.6 s (13.6 s in the write scopes, 3.0 s in the commits), into 12,535 pages 95.6% full, and passed the physical invariant checker. The ratio is at most 16.6 / 534 = 0.031 of RocksDB's (target 0.173, accept 0.346); the test does not report the build's whole time, so the exact ratio is not measured. Reading the grove from RocksDB is the stream's side and is not in the load's time. The bulk loader is a load of a whole state, as a migration makes it, not a load through GroveDB's write transactions, which section 5 gives.
+`the_reference_workload_loads_through_the_engine_within_the_time_and_fill` (`lignin-testkit`'s `tests/bulk_load.rs`, ignored, release build) on B's NVMe: GroveDB builds the reference grove on RocksDB, then the grove's 2,020,007 nodes of 20,007 Merks are handed to the engine's bulk loader as whole Merks and committed. GroveDB's build of the grove on RocksDB had applied 1,000,001 of the stream's 1,050,008 operations (the set-up, 50,000 blocks of 20 creates, and their commits) at about 534 s, the test's last report of it, with 50,007 operations still to run; the load into LigninDB took 16.6 s (13.6 s in the write scopes, 3.0 s in the commits), into 12,535 pages 95.6% full, and passed the physical invariant checker. The ratio is less than 0.0312 of RocksDB's (16.59 s over a build of more than 533.5 s, the progress report rounded to the second; target 0.173, accept 0.346); the test does not report the build's whole time, so the exact ratio is not measured. Reading the grove from RocksDB is the stream's side and is not in the load's time. The bulk loader is a load of a whole state, as a migration makes it, not a load through GroveDB's write transactions, which section 5 gives.
 
 ## 7. The crash recovery
 
@@ -134,7 +134,7 @@ The golden corpus replayed on LigninDB (`lignin-golden replay --engine lignindb`
 
 ## 9. The commit's tail
 
-The row of the plan is the commit of a block, which section 3 scores from the harness's own samples (the median of 10,000 blocks a phase). Its percentiles, and what a long commit waits for, are measured on this engine by a campaign at the reference size whose tables are to be added to `background-and-readers.md` (which holds an earlier campaign at 100,000 documents). Its first run, on the engine before the value cleaner's change of PERF-08 and one round of each, gave a commit median of 1.7 ms and a 99.9th percentile of 2.6 ms on LigninDB against 3.1 and 4.2 ms on RocksDB with a quiet background, and 1.8 and 3.2 ms against 2.6 and 24.1 ms with a heavy one; that run decides nothing for this engine.
+The row of the plan is the commit of a block, which section 3 scores from the harness's own samples (the median of 10,000 blocks a phase). Its percentiles, and what a long commit waits for, are measured on this engine by a campaign at the reference size (LigninDB task PERF-07-F2) whose tables are to be added to `background-and-readers.md` (which holds an earlier campaign at 100,000 documents). Its first run, on the engine before the value cleaner's change of PERF-08 and one round of each, gave a commit median of 1.7 ms and a 99.9th percentile of 2.6 ms on LigninDB against 3.1 and 4.2 ms on RocksDB with a quiet background, and 1.8 and 3.2 ms against 2.6 and 24.1 ms with a heavy one; that run decides nothing for this engine.
 
 ## 10. What these numbers can tell
 
@@ -145,7 +145,7 @@ The row of the plan is the commit of a block, which section 3 scores from the ha
 
 ## 11. How the tables were made
 
-On each host, from `git archive` of `2fdb02734` with its lock file, unpacked into an empty directory:
+On each host, from `git archive` of `9d60d8f1f` with its lock file, unpacked into an empty directory:
 
 ```sh
 cargo build --release --locked -p lignin-testkit --bin lignin-bench
@@ -182,4 +182,4 @@ lignin-bench writes --scratch S6 --engine lignindb $W --set pace=block --set cac
 BULK_LOAD_DIR=DIR bulk_load-tests --ignored --nocapture --exact the_reference_workload_loads_through_the_engine_within_the_time_and_fill
 ```
 
-Every call also took `--out REPORT.json --label so-16vcpu-128gb-intel --commit 2fdb02734`. Then `lignin-bench score REPORT...` of the branch's head (its rules of which phases are scored are later than the measured binary's) over the reports, which prints the scored rows and the steady state of each phase.
+Every `lignin-bench` call also took `--out REPORT.json --label so-16vcpu-128gb-intel --commit COMMIT`. Then `lignin-bench score REPORT...` of the branch's head (its rules of which phases are scored are later than the measured binary's) over the reports, which prints the scored rows and the steady state of each phase.
