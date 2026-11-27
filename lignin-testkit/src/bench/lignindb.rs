@@ -138,7 +138,7 @@ use lignin_store::{cleaner::CleanerConfig, flush::FlushConfig};
 use lignindb::{db::DbStats, Options};
 
 use super::{
-    engine::{Block, Counters, Detail, Engine, EngineSettings},
+    engine::{Block, Counters, Detail, Engine, EngineSettings, Space},
     BenchError,
 };
 use crate::workload::{apply, Op, Outcome, TransactionOp};
@@ -761,6 +761,18 @@ impl Engine for LigninDbEngine {
 
     fn gauges(&mut self) -> Result<Vec<Detail>, BenchError> {
         Ok(std::mem::take(&mut self.stood).gauges())
+    }
+
+    fn space(&mut self) -> Result<Option<Space>, BenchError> {
+        let (segments, values) = self.db.engine().database().space().map_err(|error| {
+            BenchError::Check(format!("reading the space of the store: {error}"))
+        })?;
+        Ok(Some(Space {
+            segment_bytes: segments.block_bytes(),
+            segment_live_bytes: segments.live_bytes(),
+            value_bytes: values.bytes,
+            value_live_bytes: values.live_bytes,
+        }))
     }
 
     fn details(&mut self) -> Result<Vec<Detail>, BenchError> {

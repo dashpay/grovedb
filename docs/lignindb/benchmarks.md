@@ -15,6 +15,7 @@ lignin-bench reads --scratch /path/to/scratch --out reads.json   # the warm read
 lignin-bench writes --scratch /path/to/scratch --out writes.json # the writes at size over a copy of a kept database
 lignin-bench table run.json                # rows beside the plan's values
 lignin-bench compare run1.json run2.json   # how far two runs are apart
+lignin-bench score run.json writes.json    # the rows scored against the plan's table
 ```
 
 A reference run applies `Documents::reference()` with seed 1: one million
@@ -103,6 +104,26 @@ beside it, and a second call for that engine and scratch directory is
 refused. Its report holds the rows of
 the write phases only, says of its method that no read was timed and nothing
 was read cold, checkpointed or reopened, and has no size on disk.
+
+`--churn N` applies N creates after the load and before the measured
+creates, as a write phase of its own, `churn`, with every row of a write
+phase. The phases after it begin on a state that writes have already
+churned, which is what a row of the steady state needs: the value cleaner
+moves nothing for the first 20,000 to 40,000 transitions after a kept
+state is opened (below). It is the same stream as creates that are not
+split, so `writes --churn 100000 --creates 200000` ends on the grove that
+`writes --creates 300000` ends on.
+
+Every write phase says what it left on disk. `size_on_disk_at_end` is the
+size of the database directory at the phase's end, once the background
+work the phase set off is idle, for both engines. For LigninDB, which
+counts it (`lignindb::Db::space`, the cleaner's own accounting), the
+dead share of the segments and of the value log, and the bytes each
+share is of, are read at the phase's start and at its end, outside every
+timed region: `segment_dead_share_at_start`, `segments_size_at_start`,
+`value_log_dead_share_at_start`, `value_log_size_at_start`, and the same
+four `_at_end`. A phase that starts below the value cleaner's target and
+ends above it holds two regimes, and these rows show it.
 
 The cache of the engine is not warm as after a load when the writes begin:
 it holds what the warm-up reads left in it, and the kernel's page cache
@@ -480,6 +501,24 @@ runs) and with 1.5 and 2.3 MB with files of 16 MiB (two runs).
 A run with `--engine rocksdb --engine lignindb` reports every row of both
 engines, with each LigninDB row's ratio to RocksDB's in the same run. With no
 `--engine` a run measures RocksDB alone.
+
+### Scoring against the plan's table
+
+`lignin-bench score REPORT...` scores the rows of each report against the
+plan's prediction table (`bench::score::TARGETS`, every row of the
+table). The plan's values were measured on a machine the project does not
+have, so a row is scored as LigninDB's value over RocksDB's value of the
+same row in the same report, against the target and the accept over the
+plan's RocksDB value: for the wall time a transition, 50 / 298 = 0.168
+and 80 / 298 = 0.268. A row whose RocksDB value the plan estimated or did
+not measure (the page reads a transition, the crash recovery) is scored
+by its value. A row is "target met" at or under the target, "accept met"
+at or under the accept, and "missed" above it. A ratio row of a report
+without RocksDB, or whose RocksDB row is 0, has no score. The score lists
+the rows of the table that the report does not measure, and for those
+that no report of this harness measures (iteration two, the crash
+recovery, the identity of answers) what measures them. `scoring-run.md`
+is the scoring of the reference workload that M6 rests on.
 
 ## The report
 
