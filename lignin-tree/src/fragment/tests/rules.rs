@@ -1391,6 +1391,22 @@ fn a_walk_leaves_its_step_at_a_host() {
         assert_eq!(mem.asked, [(h, 2)], "host first: {host_first}");
         assert_eq!(mem.said_behind, 0);
 
+        // A limit that `h` reaches: the pages are asked of `h` once, as
+        // before, the walk ends at `h`, and no step follows the one that
+        // read it.
+        mem.touched.clear();
+        mem.asked.clear();
+        let through = match host_first {
+            false => vec![m, x, h],
+            true => vec![m, h],
+        };
+        let limit = taken(&mem, &through);
+        let (bytes, cells) = counted(&layout, &mut mem, &write, m, limit).expect("a count");
+        assert_eq!((bytes, cells), (limit, through), "host first: {host_first}");
+        assert_eq!(mem.touched, [page, page], "host first: {host_first}");
+        assert_eq!(mem.asked, [(h, 2)], "host first: {host_first}");
+        assert_eq!(mem.said_behind, 0);
+
         // `h` is behind: its pointer is not followed, and the root it
         // names is neither read nor counted.
         mem.behind.push(h);
