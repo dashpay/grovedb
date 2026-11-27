@@ -1026,6 +1026,86 @@ fn what_takes_the_place_of_a_staging_directory_whose_lock_file_went_is_not_remov
     scene.the_store_is_as_it_was();
 }
 
+/// **The staging directory whose lock file goes is the one whose lock is
+/// held.** Here, once what was built in what a creation left is removed,
+/// that directory is moved away, and a directory with an empty lock file
+/// of its own and nothing else, which the rule admits, has its name. The
+/// last look does not find the lock file that is held there
+/// ([`CheckpointError::Replaced`], which is each call's error), and
+/// neither that lock file nor the directory is removed: it is as it was,
+/// entry for entry.
+#[test]
+fn a_directory_with_another_lock_file_in_the_place_of_a_staging_directory_is_not_removed() {
+    let first: Arc<Mutex<Option<Trap>>> = Arc::default();
+    let second: Arc<Mutex<Option<Trap>>> = Arc::default();
+    let mut scene = Scene::on(files::store_on_meddling(|plain, _| Meddling {
+        before_remove_dir: hook(&first, Boundary::TheRemoval),
+        before_list: hook(&second, Boundary::TheRemoval),
+        ..Meddling::plain(plain)
+    }));
+    for call in [
+        Call::DeletionOfTheCheckpoint,
+        Call::DeletionWhereNothingIs,
+        Call::DeletionOfTheDirectory,
+        Call::Finishing,
+    ] {
+        let context = format!("{call:?}");
+        let target = scene.fresh("target");
+        let (staged, aside, away) = (staging(&target), scene.fresh("aside"), scene.fresh("away"));
+        files::leave_built(&staged, false);
+        let checkpoint = matches!(call, Call::DeletionOfTheCheckpoint | Call::Finishing);
+        if checkpoint {
+            scene.place(&target);
+        }
+        std::fs::create_dir(&aside).expect("a directory");
+        std::fs::write(aside.join("LOCK"), b"").expect("a file");
+        let theirs = exactly(&aside);
+        // The directory above is listed first by the look that follows
+        // the removal of what was built: the exchange is made before
+        // that listing, and set up when that removal begins.
+        let (at, from, to) = (staged.clone(), aside.clone(), away.clone());
+        let exchange = Trap {
+            boundary: Boundary::TheRemoval,
+            path: staged.parent().expect("a directory").to_path_buf(),
+            change: Box::new(move || {
+                std::fs::rename(&at, &to).expect("it is moved away");
+                std::fs::rename(&from, &at).expect("another is given its name");
+            }),
+        };
+        let then = second.clone();
+        *first.lock().expect("the trap") = Some(Trap {
+            boundary: Boundary::TheRemoval,
+            path: built_in(&target),
+            change: Box::new(move || *then.lock().expect("the trap") = Some(exchange)),
+        });
+        let done = match call {
+            Call::DeletionOfTheCheckpoint | Call::DeletionWhereNothingIs => scene.delete(&target),
+            Call::DeletionOfTheDirectory => scene.delete(&staged),
+            Call::Finishing => checkpoint::finish(&*scene.db.vfs, &target).map(drop),
+            Call::Creation => Ok(()),
+        };
+        for trap in [&first, &second] {
+            assert!(
+                trap.lock().expect("the trap").is_none(),
+                "{context}: {done:?}"
+            );
+        }
+
+        assert!(
+            matches!(&done, Err(CheckpointError::Replaced { dir }) if *dir == staged),
+            "{context}: {done:?}"
+        );
+        assert_eq!(target.exists(), call == Call::Finishing, "{context}");
+        assert_eq!(exactly(&staged), theirs, "{context}");
+        // What a creation left is where it was moved to, with its lock
+        // file and without what was built in it.
+        let left: Vec<PathBuf> = exactly(&away).into_keys().collect();
+        assert_eq!(left, ["", "LOCK"].map(PathBuf::from), "{context}");
+        scene.outside_is_as_it_was();
+    }
+    scene.the_store_is_as_it_was();
+}
+
 /// **Every stage at which a creation is cut is taken over by the next
 /// creation at the target, and removed by a deletion.** The power is cut
 /// after each operation of a creation, and of the states a crash can

@@ -485,12 +485,12 @@
 //!   that lists no lock file, after the look that found nothing under
 //!   the name: a link that is put there between the look and the call is
 //!   followed, and a directory that is put under the staging name
-//!   between the two, and has no lock file, is given an empty one. That
-//!   is all that is done to it: the look under the lock refuses it. And
-//!   a deletion calls it for a database directory.
+//!   between the two, and has no lock file, is given an empty one. What
+//!   it lists under the lock decides the rest. And a deletion calls it
+//!   for a database directory.
 //! - **Whose lock file is locked.** A directory that is put under the
 //!   staging name after the first look and has a lock file can have the
-//!   lock of that file taken, until the look under the lock refuses it.
+//!   lock of that file taken, and what it lists under the lock decides.
 //!   The call writes nothing into that file; whoever asks for that lock
 //!   meanwhile finds it held. The same holds for a database directory
 //!   that is put where a deletion or [`finish`] is about to take a lock.

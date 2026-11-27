@@ -1489,7 +1489,7 @@ pub enum AtPath {
 /// with [`CREATING_SUFFIX`] added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Beside {
-    /// No directory.
+    /// No directory at the call's last look.
     Nothing,
     /// The staging directory that a creation left, which is removed now,
     /// durably, with what was built in it.
@@ -1537,8 +1537,8 @@ pub enum Beside {
 /// - **What a creation left**: the staging directory beside `dir`
 ///   ([`CREATING_SUFFIX`]), with what was built in it, by the rule and
 ///   under the looks of [`delete`]. One whose lock is held, and one that
-///   no creation left, is passed over as [`delete`] passes it over, and
-///   [`Finished::beside`] says which.
+///   no creation left, is passed over as [`delete`] passes it over
+///   after a deletion, and [`Finished::beside`] says which.
 ///   Given a name of that kind as `dir`, the call removes that directory
 ///   where a creation left it, and fails with
 ///   [`CheckpointError::NotStaging`] where it lists what no creation puts
