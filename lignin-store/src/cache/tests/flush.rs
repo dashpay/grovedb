@@ -436,6 +436,7 @@ fn a_spent_page_version_that_was_loaded_again_is_taken_out_like_any_other() {
     let mut disk = Disk::default();
     let pins = TestPins::at(1);
     let first = create(&pool, 1, 1);
+    let listed_at = first.as_ptr();
     disk.write(content(1, 1, 0));
     pool.mark_written(&first).expect("owed");
     drop(first);
@@ -448,16 +449,25 @@ fn a_spent_page_version_that_was_loaded_again_is_taken_out_like_any_other() {
     // Two other pages take both frames: the clock has taken version 1.
     disk.write(content(2, 1, 0));
     disk.write(content(3, 1, 0));
-    drop(fetch(&pool, &disk, 2, 1).expect("in a segment"));
-    drop(fetch(&pool, &disk, 3, 1).expect("in a segment"));
+    let other = fetch(&pool, &disk, 2, 1).expect("in a segment");
+    let another = fetch(&pool, &disk, 3, 1).expect("in a segment");
     assert!(pool.get_version(page(1), version(1)).is_none());
     assert_eq!(pool.stats().evictions, 2);
     assert_eq!(spent_listed(&pool), 1);
 
-    // The reader on version 1 loads it again, and goes.
+    // The reader on version 1 loads it again while the frame that the
+    // version was listed in is held for another page: it comes into the
+    // other frame. Then the reader goes.
+    let (holds_it, lets_go) = match other.as_ptr() == listed_at {
+        true => (other, another),
+        false => (another, other),
+    };
+    assert_eq!(holds_it.as_ptr(), listed_at);
+    drop(lets_go);
     let again = fetch(&pool, &disk, 1, 1).expect("in a segment");
+    assert_ne!(again.as_ptr(), listed_at);
     assert_eq!(Content::read(&again), content(1, 1, 0));
-    drop(again);
+    drop((again, holds_it));
     pins.set_oldest(2);
     assert_eq!(pool.reclaim(&pins), 0);
     assert_eq!(pool.stats().releases, 1);

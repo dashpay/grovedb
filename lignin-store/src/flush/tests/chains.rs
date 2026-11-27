@@ -252,12 +252,18 @@ fn a_chain_that_write_back_reads_is_named_to_the_file_layer_and_counted_as_it_is
     let before = db.stats();
     db.move_value(page(1), slot(1), false);
     vfs.take_hints();
+    vfs.take_calls();
     db.wb().pass().expect("a pass");
     assert_eq!(db.shape(page(1)), "Bdd");
     let hints = vfs.take_hints();
     let named: Vec<(u64, u64)> = hints.iter().map(|hint| (hint.offset, hint.len)).collect();
     assert_eq!(named, blocks);
-    assert_eq!(hints[0].after_calls, hints[1].after_calls);
+    // Both hints came before the pass read the segment for the first time.
+    let segment = hints[0].name.clone();
+    let first_read = (vfs.take_calls().iter())
+        .position(|(op, name)| *op == Op::Read && *name == segment)
+        .expect("the chain was read");
+    assert!(hints.iter().all(|hint| hint.after_calls <= first_read));
     assert_eq!(counted(&before), (1, 2));
 
     // A chain whose second block cannot be read is no page that was built:

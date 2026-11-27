@@ -113,10 +113,12 @@ impl BufferPool {
         }
         let kept = if hold { flag::HELD } else { 0 };
         header.set_flags((flags & !flag::UNWRITTEN) | kept);
-        // The newest version before this one that a segment holds was the
-        // page under this one's run, and no run is checked against it any
-        // more. The written versions before that one were listed when it
-        // was written.
+        // Of the versions of the page that are in the pool, the newest
+        // before this one that a segment holds was the page under this
+        // one's run, and no run is checked against it any more. It alone
+        // is listed here. An older one that is in the pool stays what it
+        // is, a frame that can be evicted: one that was listed earlier is
+        // still listed, and one that was not is the clock's.
         let spent = (!hold)
             .then(|| {
                 published(&chain, page)

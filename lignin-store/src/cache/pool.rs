@@ -724,12 +724,10 @@ impl BufferPool {
     /// through the lanes as well. So evictions that run at once wait for
     /// each other only where their frames share a part of the table. The
     /// table's lock is what makes a frame's leaving one step: under it the
-    /// frame is looked at again, and it is taken only if it is then a page
-    /// version of that part of the table that can be evicted and has no
-    /// pin. A frame that another thread took or pinned since its header
-    /// was read is passed. One that was taken and filled again in between
-    /// is judged as what it holds by then, and goes if that can be
-    /// evicted.
+    /// frame is looked at again, and it is taken if and only if it is then
+    /// a page version in that part of the table that can be evicted and
+    /// has no pin. What the frame held when its header was first read, and
+    /// what became of it between the two looks, decides nothing.
     ///
     /// An eviction gives up after as many steps of its own as two rounds
     /// have. The caller then takes a dead frame whose last pin is gone, if

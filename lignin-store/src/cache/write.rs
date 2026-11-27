@@ -10,7 +10,7 @@ use super::{
     error::{CacheError, StepRefusal},
     frame::{flag, kind, Exclusive, Links, NO_VERSION},
     guard::{Blank, PageRef, PrivateRef},
-    pool::{current, lookup, privates, published, BufferPool, Held, Miss},
+    pool::{current, lookup, privates, published, BufferPool, Held, Miss, Unwritten},
     sync::{lock, MutexGuard},
 };
 
@@ -396,9 +396,11 @@ impl BufferPool {
             if flags & flag::UNWRITTEN != 0 {
                 frame.set_flags((flags & !flag::UNWRITTEN) | flag::HELD);
                 held.push(version);
-            } else if flags == 0 {
+            } else if flags == 0 && spent.len() < Unwritten::SPENT_BOUND {
                 // What a segment holds of a freed page is spent: nothing
-                // follows it, and nothing is written of the page.
+                // follows it, and nothing is written of the page. No more
+                // are noted than the list takes; the others are the
+                // clock's.
                 spent.push(version);
             }
         }

@@ -860,13 +860,13 @@ impl SegmentStore {
     /// were written at different times and so, as a rule, lie apart. A
     /// file layer that acts on the hint ([`VfsFile::will_read`]) can bring
     /// them in at the same time, where the reads that follow would
-    /// otherwise wait for the device once for each block that is not in
-    /// memory.
+    /// otherwise bring them in one after the other.
     ///
     /// It is advice: nothing is checked and nothing is reported, and
     /// neither the file layer nor the system need act on it. A location
     /// that names no segment of the store, or does not lie in its
-    /// segment's file, is passed over here and refused by its read. One
+    /// segment's file as far as that is written when the hint is made, is
+    /// passed over. That says nothing of what a read of it answers. One
     /// block alone is not worth a call, and none is made for it.
     pub fn will_read(&self, locations: &[BlockLocation]) {
         if locations.len() < 2 {
