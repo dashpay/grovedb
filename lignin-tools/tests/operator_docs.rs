@@ -13,6 +13,8 @@
 //! - the comparisons of steps 7 and 11 of the runbook answer as it says,
 //!   run on reports made for each case, and steps 4 and 11 refuse a
 //!   directory that holds an entry of LigninDB;
+//! - with `migrate`, steps 5 to 7 and 11 run the tool this build made on a
+//!   GroveDB on RocksDB and take the reports it writes;
 //! - the chapters of the book are the documents.
 //!
 //! `docs/lignindb/operator/runbook.sh` runs the commands themselves.
@@ -2383,6 +2385,180 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         (false, untold),
         "step 11, two refusals alike"
     );
+}
+
+/// The root Merk of a GroveDB on RocksDB that holds `count` items, built and
+/// hashed by Merk's own tree code, written into a new RocksDB database at
+/// `dir` under the keys GroveDB's RocksDB storage gives them: each node
+/// under the prefix of the empty path and its key, encoded as Merk encodes
+/// it; the root key under that prefix and `r` in `roots`; and one record in
+/// `aux`. Returns the root hash Merk gives the tree.
+#[cfg(feature = "migrate")]
+fn rocksdb_grove(dir: &Path, count: usize) -> [u8; 32] {
+    use grovedb_merk::{
+        tree::{NoopCommit, TreeNode},
+        TreeFeatureType::BasicMerkNode,
+    };
+    use grovedb_version::version::GroveVersion;
+
+    fn build(items: &[(Vec<u8>, Vec<u8>)]) -> Option<TreeNode> {
+        let (left, rest) = items.split_at(items.len() / 2);
+        let ((key, value), right) = rest.split_first()?;
+        let node = TreeNode::new(key.clone(), value.clone(), None, BasicMerkNode).unwrap();
+        let node = node.attach(true, build(left)).expect("the left child");
+        Some(node.attach(false, build(right)).expect("the right child"))
+    }
+    fn nodes(node: &TreeNode, found: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+        found.push((node.key().to_vec(), node.encode()));
+        for left in [true, false] {
+            if let Some(child) = node.child(left) {
+                nodes(child, found);
+            }
+        }
+    }
+
+    let version = GroveVersion::latest();
+    let items: Vec<(Vec<u8>, Vec<u8>)> = (0..count)
+        .map(|i| {
+            let item = grovedb_element::Element::new_item(format!("document {i}").into_bytes());
+            let value = item.serialize(version).expect("an item");
+            (format!("document-{i:04}").into_bytes(), value)
+        })
+        .collect();
+    let mut root = build(&items).expect("a tree");
+    (root.commit(&mut NoopCommit {}, &|_, _| Ok(0)).unwrap()).expect("the hashes");
+    let mut found = Vec::new();
+    nodes(&root, &mut found);
+    assert_eq!(found.len(), count);
+
+    let prefix = [0u8; 32];
+    let mut options = rocksdb::Options::default();
+    options.create_if_missing(true);
+    options.create_missing_column_families(true);
+    let families = [rocksdb::DEFAULT_COLUMN_FAMILY_NAME, "aux", "roots", "meta"];
+    let db = rocksdb::DB::open_cf(&options, dir, families).expect("a RocksDB database");
+    let family = |name| db.cf_handle(name).expect("the family");
+    for (key, node) in found {
+        db.put([prefix.as_slice(), &key].concat(), node)
+            .expect("a node");
+    }
+    let roots = [prefix.as_slice(), b"r"].concat();
+    db.put_cf(family("roots"), roots, root.key())
+        .expect("the root key");
+    let aux = [prefix.as_slice(), b"last owner"].concat();
+    db.put_cf(family("aux"), aux, b"owner-7")
+        .expect("an aux record");
+    db.flush().expect("a flush");
+    root.hash().unwrap()
+}
+
+/// A migration of a GroveDB on RocksDB as the runbook makes it: the blocks
+/// of steps 5 and 6 run the `lignin` this build made (with `migrate`) on a
+/// grove of a few hundred items, and the blocks of steps 7 and 11 take the
+/// survey, the migration's report and the way back's survey that it writes.
+/// The survey and the comparison report the root hash and the number of
+/// nodes that Merk gave the grove.
+#[cfg(feature = "migrate")]
+#[test]
+fn the_runbook_takes_the_reports_of_a_real_migration() {
+    let documents = 300;
+    let scratch = tempfile::tempdir().expect("a directory");
+    let root = fs::canonicalize(scratch.path()).expect("its path");
+    let source = root.join("rocksdb");
+    let root_hash = rocksdb_grove(&source, documents);
+    let root_hash: String = root_hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::create_dir(root.join("lignindb")).expect("the target's directory");
+    let target = root.join("lignindb/database");
+    let work = root.join("work");
+    fs::create_dir_all(work.join("reports")).expect("WORK");
+
+    let text = read(&operator_dir().join("migration.md"));
+    let fences = parse(&text).fences;
+    let block = |mark: &str| -> String {
+        let found: Vec<&Fence> = (fences.iter())
+            .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line.contains(mark)))
+            .collect();
+        assert_eq!(found.len(), 1, "one block of migration.md holds {mark:?}");
+        found[0].body.join("\n")
+    };
+    // The functions of step 1, without its lines that install Cargo.
+    let step_1 = block("apart() {");
+    let functions = &step_1[step_1.find("plain_path() {").expect("plain_path")..];
+    let lignin = Path::new(env!("CARGO_BIN_EXE_lignin"));
+    let path = std::env::join_paths(
+        std::iter::once(lignin.parent().expect("its directory").to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ),
+    )
+    .expect("a PATH");
+    let run = |step: &str, blocks: &[&str]| -> String {
+        let script = (blocks.iter()).map(|mark| block(mark)).collect::<Vec<_>>();
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -euo pipefail\n{functions}\n{}\n",
+                script.join("\n")
+            ))
+            .env("SOURCE", &source)
+            .env("TARGET", &target)
+            .env("WORK", &work)
+            .env("PATH", &path)
+            .env_remove("BACK")
+            .output()
+            .expect("bash");
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            output.status.success(),
+            "{step} refuses the reports of a real migration: {printed}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        printed
+    };
+    let report = |name: &str| read(&work.join("reports").join(name));
+
+    run(
+        "step 5",
+        &[r#"--survey 2>&1 | tee "$WORK/reports/survey.txt""#],
+    );
+    run(
+        "step 6",
+        &[r#""$TARGET" 2>&1 | tee "$WORK/reports/migrate.txt""#],
+    );
+    let verified = run("step 7", &["THE COUNTS OF THE SOURCE CHANGED"]);
+    assert!(
+        verified.contains(&format!("the same root hash: {root_hash}\n")),
+        "step 7: {verified}"
+    );
+    let back = run(
+        "step 11",
+        &[r#"real_dir "${BACK:-$SOURCE}""#, "survey-again.txt"],
+    );
+    assert_eq!(
+        back.lines().last(),
+        Some("SOURCE is as step 5 surveyed it"),
+        "step 11: {back}"
+    );
+
+    let survey = report("survey.txt");
+    assert!(
+        survey.contains(&format!("\n  root hash: {root_hash}\n")),
+        "{survey}"
+    );
+    assert!(
+        survey.contains(&format!("\n  Merk nodes: {documents}\n"))
+            && survey.contains(&format!("\nmigrate: survey subtrees=1 nodes={documents} ")),
+        "{survey}"
+    );
+    assert!(
+        survey.ends_with("\nthe source can be migrated\n"),
+        "{survey}"
+    );
+    let migration = report("migrate.txt");
+    assert!(
+        migration.contains(&format!(" differing=0 root_hash={root_hash} ")),
+        "{migration}"
+    );
+    assert_eq!(report("survey-again.txt"), survey);
 }
 
 /// The refusal of `lignin migrate` for a source with an entry of a LigninDB
