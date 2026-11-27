@@ -5,17 +5,15 @@
 //! bytes once more: where that takes the length of the record over a byte
 //! of its own length, or keeps it from one, the added bytes are off. A
 //! change of more bytes than the item has is refused: v0 subtracts it from
-//! the size unchecked. The hash calls of the put are counted from the bytes
-//! of the element (`element_put_hash_calls`).
+//! the size unchecked. So is an item too long for a node to be sized by its
+//! bytes (`sized_for_a_node`). The item is measured once, and the hash calls
+//! of the put are counted from that length (`element_put_hash_calls`).
 //!
 //! On grove versions 1 to 5 a batch's estimate has every level up to the
 //! root of the grove. A write that stops at a stop point has its own level
 //! alone (`docs/lignindb/cost-model.md`, section 16.5).
 
-use grovedb_costs::{
-    cost_return_on_error_into_no_add, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
-};
+use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
     estimated_costs::{
         add_cost_case_merk_patch,
@@ -27,7 +25,9 @@ use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    batch::key_info::KeyInfo, estimated_costs::set_element_put_hash_calls, Element, Error, GroveDb,
+    batch::key_info::KeyInfo,
+    estimated_costs::{element_len_for_an_estimate, set_element_put_hash_calls},
+    Element, Error, GroveDb,
 };
 
 impl GroveDb {
@@ -47,11 +47,9 @@ impl GroveDb {
         }
         // The bytes of the item, which have its flags: the size of the
         // record after the patch, and `change_in_bytes` fewer before it.
-        let size = cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version));
-        let Ok(size) = u32::try_from(size) else {
-            return Err(Error::Overflow("an item longer than a patch can be sized"))
-                .wrap_with_cost(cost);
-        };
+        // Measured once, and refused where a node cannot be sized by them.
+        let size =
+            cost_return_on_error_no_add!(cost, element_len_for_an_estimate(value, grove_version));
         if i64::from(change_in_bytes) > i64::from(size) {
             return Err(Error::InvalidParameter(
                 "a patch cannot grow an item by more bytes than it has",
@@ -67,7 +65,7 @@ impl GroveDb {
         );
         cost_return_on_error_no_add!(
             cost,
-            set_element_put_hash_calls(&mut cost, key, value, grove_version)
+            set_element_put_hash_calls(&mut cost, key, value, size, grove_version)
         );
         if let Some(level) = propagate_for_level {
             add_average_case_merk_propagate(&mut cost, level, grove_version)

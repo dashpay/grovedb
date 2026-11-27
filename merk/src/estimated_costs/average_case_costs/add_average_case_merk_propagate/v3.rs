@@ -23,9 +23,13 @@
 //! layer of one kind of element v2 multiplies the bytes of a node by the
 //! nodes in 32 bits: here the bytes of one node are taken from v2 and
 //! multiplied in the width of each field, and a product that does not fit
-//! its field is refused. For a `Mix` layer v2 is called as it is: it adds
-//! up in 64 bits and refuses a total beyond 32. Nothing is added to the
-//! cost where anything is refused.
+//! its field is refused. For a `Mix` layer v2 weighs the kinds, multiplies
+//! by the nodes and divides by the weights, in 64 bits, and refuses a total
+//! beyond 32 for the loaded bytes as for the replaced ones. The loaded bytes
+//! of a cost are 64 bits wide, so here they are kept in them: the same
+//! weights, the same order and the same rounding, and a layer of one kind
+//! is counted the same whether it is given as that kind or as a `Mix` of
+//! it. Nothing is added to the cost where anything is refused.
 //!
 //! v2 is what grove versions 3 to 5 select, so it cannot change under this.
 
@@ -37,9 +41,74 @@ use crate::{
     error::Error,
     estimated_costs::{
         average_case_costs::{EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes},
-        checked_levels,
+        checked_levels, LAYER_COST_SIZE,
     },
+    tree::kv::KV,
+    tree_type::TreeType,
 };
+
+/// For each kind of element a `Mix` layer names: its weight, and the bytes
+/// one node of that kind replaces and loads, as v2 sizes them for such a
+/// layer. A tree's flags are taken without the bytes of their length there,
+/// as v2 takes them.
+fn weighed_nodes_of_a_mix(
+    sizes: &EstimatedLayerSizes,
+    tree_type: TreeType,
+    grove_version: &GroveVersion,
+) -> Result<Vec<(u64, u64, u64)>, Error> {
+    let EstimatedLayerSizes::Mix {
+        subtrees_size,
+        items_size,
+        references_size,
+        items_with_sum_item_size,
+        references_with_sum_item_size,
+    } = sizes
+    else {
+        return Ok(Vec::new());
+    };
+    let node_type = tree_type.inner_node_type();
+    let mut kinds = Vec::new();
+    if let Some((key, sum_trees, flags, weight)) = subtrees_size {
+        let value_len = LAYER_COST_SIZE + flags.unwrap_or(0);
+        let aggregates = sum_trees.estimated_size(grove_version)?;
+        let key = u32::from(*key);
+        kinds.push((
+            u64::from(*weight),
+            u64::from(
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key, value_len, node_type,
+                ) + aggregates,
+            ),
+            u64::from(KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                key,
+                value_len + aggregates,
+                node_type,
+            )),
+        ));
+    }
+    // An element with a sum is ten bytes longer than its value and flags.
+    for (kind, with_a_sum) in [
+        (items_size, 0),
+        (references_size, 0),
+        (items_with_sum_item_size, 10),
+        (references_with_sum_item_size, 10),
+    ] {
+        if let Some((key, value, flags, weight)) = kind {
+            let value_len = value + flags.unwrap_or(0) + with_a_sum;
+            let key = u32::from(*key);
+            kinds.push((
+                u64::from(*weight),
+                u64::from(KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                    key, value_len, node_type,
+                )),
+                u64::from(KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                    key, value_len, node_type,
+                )),
+            ));
+        }
+    }
+    Ok(kinds)
+}
 
 pub(super) fn add_average_case_merk_propagate_v3(
     cost: &mut OperationCost,
@@ -53,14 +122,36 @@ pub(super) fn add_average_case_merk_propagate_v3(
     input.estimated_layer_sizes.check_sizes()?;
     let overflow = || Error::Overflow("overflow for the nodes a propagation rewrites");
 
-    let mut level = OperationCost::default();
+    // The nodes v2 rewrites: one for each level, and one beside the way
+    // where there is more than one level.
+    let nodes = levels + u32::from(levels > 1);
+    let mut level = OperationCost {
+        seek_count: nodes,
+        hash_node_calls: 2 * nodes,
+        ..Default::default()
+    };
     if matches!(input.estimated_layer_sizes, EstimatedLayerSizes::Mix { .. }) {
-        let leveled = EstimatedLayerInformation {
-            tree_type: input.tree_type,
-            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(levels, false),
-            estimated_layer_sizes: input.estimated_layer_sizes,
-        };
-        add_average_case_merk_propagate_v2(&mut level, &leveled, grove_version)?;
+        // As v2: the bytes of a node of each kind by the kind's weight, by
+        // the nodes, divided by the weights. The loaded bytes stay in the
+        // 64 bits their field has.
+        let kinds =
+            weighed_nodes_of_a_mix(&input.estimated_layer_sizes, input.tree_type, grove_version)?;
+        let weights: u64 = kinds.iter().map(|(weight, ..)| weight).sum();
+        if weights != 0 {
+            let weighed = |bytes: fn(&(u64, u64, u64)) -> u64| {
+                kinds
+                    .iter()
+                    .try_fold(0u64, |sum, kind| {
+                        kind.0.checked_mul(bytes(kind))?.checked_add(sum)
+                    })
+                    .and_then(|sum| sum.checked_mul(u64::from(nodes)))
+                    .map(|scaled| scaled / weights)
+                    .ok_or_else(overflow)
+            };
+            level.storage_cost.replaced_bytes =
+                u32::try_from(weighed(|kind| kind.1)?).map_err(|_| overflow())?;
+            level.storage_loaded_bytes = weighed(|kind| kind.2)?;
+        }
     } else {
         let one_node_layer = EstimatedLayerInformation {
             tree_type: input.tree_type,
@@ -69,11 +160,6 @@ pub(super) fn add_average_case_merk_propagate_v3(
         };
         let mut one_node = OperationCost::default();
         add_average_case_merk_propagate_v2(&mut one_node, &one_node_layer, grove_version)?;
-        // The nodes v2 rewrites: one for each level, and one beside the way
-        // where there is more than one level.
-        let nodes = levels + u32::from(levels > 1);
-        level.seek_count = nodes;
-        level.hash_node_calls = 2 * nodes;
         level.storage_cost.replaced_bytes = nodes
             .checked_mul(one_node.storage_cost.replaced_bytes)
             .ok_or_else(overflow)?;

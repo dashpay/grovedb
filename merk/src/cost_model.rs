@@ -297,6 +297,20 @@ pub fn node_record_len_from_sizes(
     ))
 }
 
+/// The longest record a node whose value is `value_len` bytes long can
+/// have: its two hashes, the feature that encodes longest, and links to two
+/// children under the longest keys, with the aggregates that encode
+/// longest. A count is a varint of ten bytes at the most and a sum of 128
+/// bits is 16 bytes, so the longest are those of the kind that has both.
+///
+/// It is what a worst case takes a read of a node to load, for a caller
+/// that says how long a value can be.
+pub fn longest_node_record_len(model: StorageCostModel, value_len: usize) -> Result<usize, Error> {
+    let feature = TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(u64::MAX, i128::MIN);
+    let child = || Some((u8::MAX, AggregateData::from(feature)));
+    node_record_len_from_sizes(model, value_len, &feature, child(), child())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -690,6 +704,45 @@ mod tests {
         }
         // Nothing of a refused event is in the charge.
         assert_eq!(charge.finish(), replaces);
+    }
+
+    #[test]
+    fn es3_the_longest_record_is_no_shorter_than_the_record_of_any_node() {
+        // The record a worst case takes a read to load: no node of the same
+        // value is longer, whatever its feature, and whatever aggregates and
+        // keys its children have.
+        let all = features();
+        for value_len in [0usize, 1, 200, 70_000] {
+            let longest = longest_node_record_len(MODEL, value_len).expect("a record length");
+            for feature in &all {
+                for child in &all {
+                    let both = node(
+                        value_len,
+                        *feature,
+                        Some(link(255, *child)),
+                        Some(link(255, *child)),
+                    );
+                    let len = node_record_len(MODEL, &both).expect("a record length");
+                    assert!(
+                        len <= longest,
+                        "{feature:?} over {child:?}: {len} and {longest}"
+                    );
+                }
+            }
+            // And it is the record of a node: of the kind with a count and
+            // a sum of 128 bits, at the values that encode longest.
+            let most = ProvableCountedAndProvableBigSummedMerkNode(u64::MAX, i128::MIN);
+            let the_longest = node(
+                value_len,
+                most,
+                Some(link(255, most)),
+                Some(link(255, most)),
+            );
+            assert_eq!(
+                node_record_len(MODEL, &the_longest).expect("a record length"),
+                longest
+            );
+        }
     }
 
     #[test]

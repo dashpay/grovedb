@@ -32,6 +32,15 @@ use crate::{
     Element, Error, GroveDb,
 };
 
+/// The longest record the worst case of a finalize takes a read to load
+/// where it is told that an element is 65,535 bytes at the most
+/// (`MERK_BIGGEST_VALUE_SIZE`): those bytes and the 64 a cost can count over
+/// them, two hashes, a feature of a tag, a count of ten bytes and a sum of
+/// 16, and two links, each a byte that says it is there, the length of the
+/// key, its 255 bytes, a hash, two heights and aggregates of 27 bytes.
+const LONGEST_RECORD_OF_THE_BIGGEST_VALUE: u64 =
+    65_535 + 64 + 64 + 27 + 2 * (1 + 1 + 255 + 32 + 2 + 27);
+
 fn known(path: &[Vec<u8>]) -> KeyInfoPath {
     KeyInfoPath::from_known_owned_path(path.to_vec())
 }
@@ -215,33 +224,64 @@ fn es1_the_open_of_the_root_merk_has_the_bytes_of_its_root_key_record() {
         worst_open_estimate(&[], &GROVE_V6).storage_loaded_bytes,
         u64::from(MERK_BIGGEST_KEY_SIZE)
     );
-    // A sum that does not fit is refused with nothing added.
-    let mut full = OperationCost {
-        storage_loaded_bytes: u64::MAX,
-        ..Default::default()
-    };
-    let before = full.clone();
-    assert!(matches!(
-        GroveDb::add_average_case_get_merk_at_path_engine_free(
-            &mut full,
-            &known(&[]),
-            false,
-            TreeType::NormalTree,
-            &GROVE_V6,
-        ),
-        Err(Error::Overflow(_))
-    ));
-    assert_eq!(full, before);
-    assert!(matches!(
-        GroveDb::add_worst_case_get_merk_at_path_engine_free(
-            &mut full,
-            &known(&[]),
-            TreeType::NormalTree,
-            &GROVE_V6,
-        ),
-        Err(Error::Overflow(_))
-    ));
-    assert_eq!(full, before);
+    // The open is added to the cost it is given in full, or refused with
+    // nothing added: a cost that is all but full in any field the open
+    // has, for the root Merk and for a Merk below it, in both cases.
+    let below = path(&[b"root", b"child"]);
+    let nearly_full = [
+        OperationCost {
+            seek_count: u32::MAX - 1,
+            ..Default::default()
+        },
+        OperationCost {
+            storage_loaded_bytes: u64::MAX,
+            ..Default::default()
+        },
+        OperationCost {
+            hash_node_calls: u32::MAX,
+            ..Default::default()
+        },
+    ];
+    let mut refused = 0;
+    for before in nearly_full {
+        for at in [Path::new(), below.clone()] {
+            let estimates: [&dyn Fn(&mut OperationCost) -> Result<(), Error>; 2] = [
+                &|cost| {
+                    GroveDb::add_average_case_get_merk_at_path_engine_free(
+                        cost,
+                        &known(&at),
+                        false,
+                        TreeType::NormalTree,
+                        &GROVE_V6,
+                    )
+                },
+                &|cost| {
+                    GroveDb::add_worst_case_get_merk_at_path_engine_free(
+                        cost,
+                        &known(&at),
+                        TreeType::NormalTree,
+                        &GROVE_V6,
+                    )
+                },
+            ];
+            for estimate in estimates {
+                let mut cost = before.clone();
+                match estimate(&mut cost) {
+                    Ok(()) => assert_ne!(cost, before),
+                    Err(Error::MerkError(grovedb_merk::Error::Overflow(_))) => {
+                        assert_eq!(cost, before);
+                        refused += 1;
+                    }
+                    Err(other) => panic!("{other}"),
+                }
+            }
+        }
+    }
+    // Two seeks do not fit beside `u32::MAX - 1`, which is the root Merk in
+    // both cases and no Merk below it; the bytes of the record are the root
+    // Merk's alone; and a path below the root has a hash call for its
+    // prefix, where the root Merk has none.
+    assert_eq!(refused, 2 + 2 + 2);
 }
 
 #[test]
@@ -670,14 +710,15 @@ fn es3_the_estimate_of_a_finalize_is_its_seeks_its_bytes_and_its_hashes_in_full_
                 "{tree_type} {marked:?}"
             );
             // The worst case takes seven elements to be in four levels,
-            // and every read to be of the biggest record. The one node of
-            // the root Merk is read twice, and its root key record once, a
-            // key at its longest.
+            // and every read to be of the longest record of an element as
+            // long as it is told one can be. The one node of the root Merk
+            // is read twice, and its root key record once, a key at its
+            // longest.
             let worst_above = [0, 3, 5, 7, 7][marked.len()];
             let worst_reads = worst_above + 2 * marked.len() as u64 + 2;
             assert_eq!(
                 worst.storage_loaded_bytes,
-                worst_reads * (65_535 + 256) + 256,
+                worst_reads * LONGEST_RECORD_OF_THE_BIGGEST_VALUE + 256,
                 "{tree_type} {marked:?}"
             );
             assert!(
@@ -882,7 +923,7 @@ fn es3_the_estimates_of_a_finalize_hold_for_the_shapes_of_the_corpus() {
             assert_eq!(average.storage_loaded_bytes, 8 * 111 + 2, "{case}");
             assert_eq!(
                 worst.storage_loaded_bytes,
-                16 * (65_535 + 256) + 256,
+                16 * LONGEST_RECORD_OF_THE_BIGGEST_VALUE + 256,
                 "{case}"
             );
         }
@@ -2345,49 +2386,172 @@ fn es3_the_root_merk_is_opened_by_its_root_key_record() {
 }
 
 #[test]
-fn es3_the_worst_case_hashes_a_host_at_the_size_its_caller_gives() {
+fn es3_the_worst_case_of_a_finalize_holds_for_elements_as_long_as_its_caller_says() {
     // The flags of a tree are as long as they are given, and a finalize
-    // hashes them with the element it carries: 32,768 bytes of flags are
-    // 513 calls for the value alone. No rule of GroveDB bounds them, so the
-    // worst case is told the most bytes a host serializes to. Told the
-    // 65,535 it takes every value to be, or the bytes of this host, it
-    // holds; told the 17,486 that its flags at `WORST_CASE_FLAGS_LEN` and
-    // its root keys would make, it does not.
-    let mut tree = Element::empty_tree();
-    tree.set_flags(Some(vec![9; 32_768]));
+    // reads them, rewrites them and hashes them with the element it
+    // carries. No rule of GroveDB bounds them, so the worst case is told
+    // the most bytes an element serializes to, and takes every node it
+    // reads and puts to be of such an element. A tree under a key of one
+    // byte, the one element of the root Merk, with flags of 32,768 bytes,
+    // of 65,490, which with what a node has around them replace 65,568
+    // bytes, and of 163,840, and one item under a key of one byte.
+    for flags in [32_768usize, 65_490, 163_840] {
+        let mut tree = Element::empty_tree();
+        tree.set_flags(Some(vec![9; flags]));
+        let mut shape = Shape::default();
+        let host = shape.tree(vec![vec![7]], &tree);
+        let write = put(&host, vec![1], Element::new_item(vec![1]));
+        let db = shape.build();
+        let tx = db.start_transaction();
+        let mut grove = Grove::new(&db, &tx, &GROVE_V6);
+        grove.write(&host, &write.changes);
+        let applied = grove.finalize();
+        let found = shape.after(std::slice::from_ref(&write));
+        let worst = |biggest_element| {
+            GroveDb::worst_case_finalize(
+                &[known(&host)],
+                &worst_layers(&found),
+                biggest_element,
+                &GROVE_V6,
+            )
+            .cost_as_result()
+            .expect("the finalize is estimated")
+        };
+        // The host as the finalize leaves it, with the root key it names.
+        let carried = Element::new_tree_with_flags(Some(vec![1]), Some(vec![9; flags]))
+            .serialized_size(&GROVE_V6)
+            .expect("an element has a size") as u32;
+        // Its flags, the bytes of their length, and five more.
+        assert_eq!(
+            carried as usize,
+            flags + if flags > 65_535 { 5 } else { 3 } + 5
+        );
+        if flags == 65_490 {
+            assert!(carried < MERK_BIGGEST_VALUE_SIZE);
+            assert_eq!(applied.storage_cost.replaced_bytes, 65_568);
+        }
+        // Told the bytes of the host, or more, it holds in every field.
+        for told in [
+            carried,
+            carried + 1,
+            carried.max(MERK_BIGGEST_VALUE_SIZE),
+            1_000_000,
+        ] {
+            let estimate = worst(told);
+            assert!(
+                estimate.worse_or_eq_than(&applied),
+                "{flags} bytes of flags, told {told}: worst {estimate:?}, applied {applied:?}"
+            );
+        }
+        // The host is the one node the finalize puts. Told its bytes, the
+        // estimate takes it to replace them and the 64 a cost can count over
+        // an element, two hashes, a feature of 25 bytes, the three bytes of
+        // that length, and a link of the longest key with the costliest
+        // aggregates, 316.
+        assert_eq!(
+            worst(carried).storage_cost.replaced_bytes,
+            carried + 64 + 64 + 25 + 3 + 316,
+            "{flags}"
+        );
+        // Told fewer bytes than its flags alone, it is short of them: in
+        // the bytes it loads, and in its hash calls.
+        let short = worst(17_486);
+        assert!(short.hash_node_calls < applied.hash_node_calls, "{flags}");
+        if flags > 20_000 + 17_486 {
+            assert!(
+                short.storage_loaded_bytes < applied.storage_loaded_bytes,
+                "{flags}"
+            );
+        }
+    }
+    // A size that a node cannot be sized by is refused, with no cost.
     let mut shape = Shape::default();
-    let host = shape.tree(path(&[b"host"]), &tree);
-    let write = put(&host, key(0), Element::new_item(vec![1]));
-    let (applied, _, worst) =
-        finalize_and_its_estimates(&shape, std::slice::from_ref(&write), &GROVE_V6);
-    assert!(applied.hash_node_calls > 513, "{applied:?}");
-    assert!(
-        worst.worse_or_eq_than(&applied),
-        "worst {worst:?}, applied {applied:?}"
-    );
-    let found = shape.after(std::slice::from_ref(&write));
-    let hashes = |biggest_host_element| {
-        GroveDb::worst_case_finalize(
+    let host = shape.tree(vec![vec![7]], &Element::empty_tree());
+    for too_long in [u32::MAX - 65_536 - 63, u32::MAX] {
+        let refused = GroveDb::worst_case_finalize(
             &[known(&host)],
-            &worst_layers(&found),
-            biggest_host_element,
+            &worst_layers(&shape),
+            too_long,
             &GROVE_V6,
-        )
-        .cost_as_result()
-        .expect("the finalize is estimated")
-        .hash_node_calls
+        );
+        assert!(
+            matches!(
+                refused.value,
+                Err(Error::Overflow(_)) | Err(Error::MerkError(grovedb_merk::Error::Overflow(_)))
+            ),
+            "{too_long}"
+        );
+        assert_eq!(refused.cost, OperationCost::default());
+    }
+    GroveDb::worst_case_finalize(
+        &[known(&host)],
+        &worst_layers(&shape),
+        u32::MAX - 65_536 - 64,
+        &GROVE_V6,
+    )
+    .cost_as_result()
+    .expect("the longest element a node is sized by");
+}
+
+#[test]
+fn es3_the_cost_of_an_element_counts_at_the_most_64_bytes_over_its_bytes() {
+    use grovedb_merk::{
+        element::costs::ElementCostExtensions,
+        tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
     };
-    // The host with the root key it names after the write: its flags, the
-    // three bytes of their length, and seven more.
-    let carried = 32_768 + 3 + 7;
-    assert!(hashes(carried) >= applied.hash_node_calls);
-    assert!(hashes(carried) < hashes(MERK_BIGGEST_VALUE_SIZE));
-    assert!(hashes(17_486) < applied.hash_node_calls);
-    // A size whose length does not fit with it is refused, with no cost.
-    let refused =
-        GroveDb::worst_case_finalize(&[known(&host)], &worst_layers(&found), u32::MAX, &GROVE_V6);
-    assert!(matches!(refused.value, Err(Error::Overflow(_))));
-    assert_eq!(refused.cost, OperationCost::default());
+
+    use crate::estimated_costs::MOST_BYTES_OF_A_COST_OVER_ITS_ELEMENT;
+    // The worst case of a finalize is told how long an element can be, and
+    // sizes a node by what its cost counts, which is not the element's
+    // bytes: a cost has each aggregate of a tree at a fixed width, where
+    // the element has a varint, and the length of the flags as a varint. A
+    // tree of every kind, with no flags and with flags on both sides of
+    // every length at which either count of their length grows, bare and
+    // wrapped, and the elements with a sum: the cost is never more than 64
+    // bytes over the element, and is 28 over it at the most.
+    let mut most = 0i64;
+    let mut longest = String::new();
+    let mut elements: Vec<Element> = trees_to_create();
+    elements.push(Element::new_sum_item(0));
+    elements.push(Element::new_sum_item(i64::MIN));
+    elements.push(Element::new_item_with_sum_item(vec![], 0));
+    elements.push(Element::new_item_with_sum_item(vec![1; 300], i64::MAX));
+    let mut compared = 0;
+    for element in elements {
+        for flags in [
+            0usize, 1, 127, 128, 250, 251, 16_383, 16_384, 65_535, 65_536,
+        ] {
+            let mut flagged = element.clone();
+            if flags > 0 {
+                flagged.set_flags(Some(vec![9; flags]));
+            }
+            let mut both = vec![flagged.clone()];
+            if flagged.is_any_tree() {
+                both.push(Element::new_non_counted(flagged).expect("a tree can be wrapped"));
+            }
+            for element in both {
+                let bytes = element.serialized_size(&GROVE_V6).expect("a size") as i64;
+                let counted = match element.value_defined_cost(&GROVE_V6) {
+                    Some(LayeredValueDefinedCost(cost))
+                    | Some(SpecializedValueDefinedCost(cost)) => i64::from(cost),
+                    None => panic!("{element:?} is costed by its bytes"),
+                };
+                if counted - bytes > most {
+                    most = counted - bytes;
+                    longest = format!("{element:?}");
+                }
+                assert!(
+                    counted - bytes <= i64::from(MOST_BYTES_OF_A_COST_OVER_ITS_ELEMENT),
+                    "{element:?}"
+                );
+                compared += 1;
+            }
+        }
+    }
+    // An indexed tree by its count and its sum of 128 bits, which names its
+    // axes.
+    assert_eq!(most, 28, "over {compared} elements: {longest}");
+    assert!(longest.starts_with("provable_count_provable_big_sum_indexed_tree"));
 }
 
 #[test]
@@ -2669,17 +2833,20 @@ fn es2_no_size_of_a_layer_overflows_an_estimate_of_an_operation_on_grove_version
                     };
                     let k = KnownKey(key(0));
                     let tree = TreeType::CountSumTree;
-                    // The estimate of the removal of a tree has one version
-                    // for every grove version, and adds the flags of its
-                    // layer unchecked on each: it is given the sizes that
-                    // the others count.
-                    if layer.estimated_layer_sizes.check_sizes().is_ok() {
+                    // The estimate of the removal of a tree is given every
+                    // size, with the level above it and without: at its
+                    // version of grove version 6 it counts or refuses, and
+                    // a refusal has no cost.
+                    for propagate in [false, true] {
                         let removal = GroveDb::average_case_merk_delete_tree(
-                            &k, tree, &layer, true, &GROVE_V6,
+                            &k, tree, &layer, propagate, &GROVE_V6,
                         );
                         match removal.value {
                             Ok(()) => counted += 1,
-                            Err(_) => refused += 1,
+                            Err(_) => {
+                                refused += 1;
+                                assert_eq!(removal.cost, OperationCost::default(), "{layer:?}");
+                            }
                         }
                     }
                     let results = [
@@ -2760,10 +2927,14 @@ fn es2_no_size_of_a_layer_overflows_an_estimate_of_an_operation_on_grove_version
 }
 
 #[test]
-fn es2_a_tree_put_where_an_item_was_adds_bytes_that_no_estimate_of_its_replacement_has() {
-    // Where ES2 stops: a replacement is estimated as one that adds no byte
-    // for a tree, in the average case and in the worst, on every grove
-    // version. A tree with 128 bytes of flags over an item with no bytes.
+fn es2_a_tree_put_where_an_item_was_adds_bytes_that_the_worst_case_has() {
+    // A tree with 128 bytes of flags over an item with no bytes adds 99.
+    // The average case of a replacement is one by an element of the size
+    // that was there, on every grove version, and has none. The worst case
+    // of grove versions 1 to 5 takes a tree to be put where one of its size
+    // was, and has none either. The worst case of grove version 6 is of a
+    // replacement of anything by anything, and holds for this one in every
+    // field.
     let tree = Element::empty_tree();
     let mut shape = Shape::default();
     let leaf = shape.tree(path(&[b"a"]), &tree);
@@ -2778,7 +2949,7 @@ fn es2_a_tree_put_where_an_item_was_adds_bytes_that_no_estimate_of_its_replaceme
         .write(&leaf, &put(&leaf, key(0), put_over.clone()).changes)
         .total();
     assert_eq!(applied.storage_cost.added_bytes, 99);
-    for version in [&GROVE_V5, &GROVE_V6] {
+    let estimates = |version| {
         let average = GroveDb::average_case_merk_replace_element(
             &KnownKey(key(0)),
             &put_over,
@@ -2788,7 +2959,15 @@ fn es2_a_tree_put_where_an_item_was_adds_bytes_that_no_estimate_of_its_replaceme
         )
         .cost_as_result()
         .expect("the replacement is estimated");
-        let worst = GroveDb::worst_case_merk_replace_element(
+        let mut worst = OperationCost::default();
+        GroveDb::add_worst_case_get_merk_at_path_engine_free(
+            &mut worst,
+            &known(&leaf),
+            TreeType::NormalTree,
+            version,
+        )
+        .expect("the open is estimated");
+        worst += GroveDb::worst_case_merk_replace_element(
             &KnownKey(key(0)),
             &put_over,
             TreeType::NormalTree,
@@ -2797,6 +2976,10 @@ fn es2_a_tree_put_where_an_item_was_adds_bytes_that_no_estimate_of_its_replaceme
         )
         .cost_as_result()
         .expect("the replacement is estimated");
+        (average, worst)
+    };
+    for version in GROVE_VERSIONS {
+        let (average, worst) = estimates(version);
         assert_eq!(
             (
                 average.storage_cost.added_bytes,
@@ -2807,6 +2990,13 @@ fn es2_a_tree_put_where_an_item_was_adds_bytes_that_no_estimate_of_its_replaceme
             version.protocol_version
         );
     }
+    let (average, worst) = estimates(&GROVE_V6);
+    assert_eq!(average.storage_cost.added_bytes, 0);
+    assert!(worst.storage_cost.added_bytes >= 99);
+    assert!(
+        worst.worse_or_eq_than(&applied),
+        "worst {worst:?}, applied {applied:?}"
+    );
 }
 
 #[test]
@@ -2864,6 +3054,77 @@ fn es2_the_removal_of_a_tree_in_a_layer_too_long_to_count_is_refused() {
             .len(),
         2
     );
+    // The estimate of the removal of a tree by itself, with no level above
+    // it: the flags of the layer and the bytes of their length are added
+    // in 32 bits. Grove version 6 refuses flags an estimate cannot count
+    // before it adds, with no cost, and counts the others as the version
+    // before does.
+    let alone = |flags, propagate, version| {
+        GroveDb::average_case_merk_delete_tree(
+            &KnownKey(key(0)),
+            TreeType::NormalTree,
+            &layer(AllSubtrees(1, EstimatedSumTrees::NoSumTrees, Some(flags))),
+            propagate,
+            version,
+        )
+    };
+    for flags in [u32::MAX, u32::MAX - 4, u32::MAX - 65_535] {
+        for propagate in [false, true] {
+            let refused = alone(flags, propagate, &GROVE_V6);
+            assert!(
+                matches!(
+                    refused.value,
+                    Err(Error::MerkError(grovedb_merk::Error::Overflow(_)))
+                ),
+                "{flags}"
+            );
+            assert_eq!(refused.cost, OperationCost::default(), "{flags}");
+        }
+    }
+    for flags in [0, 1_000_000, u32::MAX - 65_536] {
+        let (released, stopped) = (
+            alone(flags, false, &GROVE_V5),
+            alone(flags, false, &GROVE_V6),
+        );
+        stopped.value.expect("flags a layer can have are counted");
+        assert_eq!(stopped.cost, released.cost, "{flags}");
+    }
+}
+
+#[test]
+fn es2_an_element_too_long_for_a_node_to_be_sized_by_is_refused() {
+    use crate::estimated_costs::{sized_for_a_node, MOST_BYTES_OF_A_SIZED_ELEMENT};
+    // The estimates of the put of an element size its node in 32 bits: the
+    // element's bytes, two hashes, a feature, the bytes of that length, the
+    // key and a link. An item of `u32::MAX - 64` bytes is past 32 bits with
+    // its two hashes and a feature byte alone. The versions of grove
+    // version 6 ask for the element's length first and refuse one that is
+    // within 65,536 bytes of what 32 bits hold, as the sizes of a layer are
+    // refused (`EstimatedLayerSizes::check_sizes`).
+    assert_eq!(MOST_BYTES_OF_A_SIZED_ELEMENT, u32::MAX - 65_536);
+    for fits in [0usize, 1, 65_535, 1 << 31, (u32::MAX - 65_536) as usize] {
+        assert_eq!(
+            sized_for_a_node(fits).expect("a length that fits"),
+            fits as u32
+        );
+    }
+    for too_long in [
+        (u32::MAX - 65_535) as usize,
+        (u32::MAX - 64) as usize,
+        u32::MAX as usize,
+        u32::MAX as usize + 1,
+        usize::MAX,
+    ] {
+        assert!(matches!(
+            sized_for_a_node(too_long),
+            Err(Error::Overflow(_))
+        ));
+    }
+    // And the node of the longest element that is sized is counted in 32
+    // bits with room to spare: in the node type that costs the most, under
+    // the longest key.
+    let node = u64::from(MOST_BYTES_OF_A_SIZED_ELEMENT) + 64 + 25 + 5 + (32 + 255 + 2) + (255 + 60);
+    assert!(node < u64::from(u32::MAX));
 }
 
 #[test]
@@ -2956,10 +3217,14 @@ fn es2_a_removal_in_a_layer_too_long_to_count_is_refused() {
 }
 
 #[test]
-fn es2_a_sum_item_whose_flags_grow_adds_bytes_that_no_estimate_of_its_replacement_has() {
-    // Where ES2 stops: the replacement of a sum item is estimated as one by
-    // a sum item of the same size, in the average case and in the worst, on
-    // every grove version. The sum is of a fixed length. The flags are not.
+fn es2_a_sum_item_whose_flags_grow_adds_bytes_that_the_worst_case_has() {
+    // The sum of a sum item is of a fixed length. Its flags are not: a sum
+    // item that gains 16 bytes of flags adds them and the byte of their
+    // length. The average case of a replacement is one by an element of the
+    // size that was there, on every grove version, and has none. The worst
+    // case of grove versions 1 to 5 takes a sum item to be put where one of
+    // its size was, and has none either. The worst case of grove version 6
+    // holds for this replacement in every field.
     let mut shape = Shape::default();
     let leaf = shape.tree(path(&[b"a"]), &Element::empty_sum_tree());
     shape
@@ -2972,9 +3237,8 @@ fn es2_a_sum_item_whose_flags_grow_adds_bytes_that_no_estimate_of_its_replacemen
     let applied = grove
         .write(&leaf, &put(&leaf, key(0), flagged.clone()).changes)
         .total();
-    // Sixteen bytes of flags and the byte of their length.
     assert_eq!(applied.storage_cost.added_bytes, 17);
-    for version in [&GROVE_V5, &GROVE_V6] {
+    let estimates = |version| {
         let average = GroveDb::average_case_merk_replace_element(
             &KnownKey(key(0)),
             &flagged,
@@ -2984,30 +3248,139 @@ fn es2_a_sum_item_whose_flags_grow_adds_bytes_that_no_estimate_of_its_replacemen
         )
         .cost_as_result()
         .expect("the replacement is estimated");
-        let worst = GroveDb::worst_case_merk_replace_element(
+        let mut worst = OperationCost::default();
+        GroveDb::add_worst_case_get_merk_at_path_engine_free(
+            &mut worst,
+            &known(&leaf),
+            TreeType::SumTree,
+            version,
+        )
+        .expect("the open is estimated");
+        worst += GroveDb::worst_case_merk_replace_element(
             &KnownKey(key(0)),
             &flagged,
             TreeType::SumTree,
-            None,
+            Some(&WorstCaseLayerInformation::MaxElementsNumber(1)),
             version,
         )
         .cost_as_result()
         .expect("the replacement is estimated");
+        (average, worst)
+    };
+    for version in GROVE_VERSIONS {
+        let (average, worst) = estimates(version);
         assert_eq!(average.storage_cost.added_bytes, 0);
         assert_eq!(worst.storage_cost.added_bytes, 0);
     }
-    // An item that grows is estimated to add bytes by the worst case alone.
-    let longer = Element::new_item(vec![1; 40]);
-    let worst = GroveDb::worst_case_merk_replace_element(
-        &KnownKey(key(0)),
-        &longer,
-        TreeType::NormalTree,
-        None,
-        &GROVE_V6,
-    )
-    .cost_as_result()
-    .expect("the replacement is estimated");
-    assert!(worst.storage_cost.added_bytes > 40);
+    let (average, worst) = estimates(&GROVE_V6);
+    assert_eq!(average.storage_cost.added_bytes, 0);
+    assert!(worst.storage_cost.added_bytes >= 17);
+    assert!(
+        worst.worse_or_eq_than(&applied),
+        "worst {worst:?}, applied {applied:?}"
+    );
+}
+
+#[test]
+fn es2_the_worst_case_of_a_replacement_is_of_anything_by_anything() {
+    // The worst case of a replacement on grove version 6 does not know what
+    // was there. It has all of the node's bytes as replaced, which is what
+    // a replacement of an element as long or longer replaces, and all of
+    // the value's as added, which is what a replacement of one with no
+    // value adds. So it holds, in every field, for an element put where a
+    // shorter one was, where a longer one was and where one of its size
+    // was: items, sum items with and without flags, an item with a sum,
+    // and a tree of every kind that can be put where an element is, with
+    // flags and without.
+    let mut compared = 0;
+    for parent in [Element::empty_tree(), Element::empty_sum_tree()] {
+        let parent_type = tree_type_of(&parent);
+        let mut over = vec![
+            Element::new_item(vec![]),
+            Element::new_item(vec![1; 40]),
+            Element::new_item_with_flags(vec![1; 300], Some(vec![9; 20])),
+        ];
+        let mut put_there = vec![
+            Element::new_item(vec![]),
+            Element::new_item(vec![2; 39]),
+            Element::new_item_with_flags(vec![2; 301], Some(vec![9; 200])),
+        ];
+        if parent_type == TreeType::SumTree {
+            over.push(Element::new_sum_item(7));
+            over.push(Element::new_sum_item_with_flags(
+                i64::MAX,
+                Some(vec![9; 16]),
+            ));
+            put_there.push(Element::new_sum_item(-1));
+            put_there.push(Element::new_sum_item_with_flags(7, Some(vec![9; 16])));
+            put_there.push(Element::new_item_with_sum_item(vec![3; 50], 5));
+        }
+        for tree in trees_to_create() {
+            // GroveDB puts no private document store where an element is.
+            if matches!(tree_type_of(&tree), TreeType::PrivateDocumentStore(_)) {
+                continue;
+            }
+            put_there.push(tree.clone());
+            let mut flagged = tree;
+            flagged.set_flags(Some(vec![9; 128]));
+            put_there.push(flagged);
+        }
+        for was_there in &over {
+            for new in &put_there {
+                let mut shape = Shape::default();
+                let leaf = shape.tree(path(&[b"a"]), &parent);
+                shape
+                    .elements
+                    .push((leaf.clone(), key(0), was_there.clone()));
+                let db = shape.build();
+                let tx = db.start_transaction();
+                let mut grove = Grove::new(&db, &tx, &GROVE_V6);
+                let applied = grove
+                    .write(&leaf, &put(&leaf, key(0), new.clone()).changes)
+                    .total();
+                let mut worst = OperationCost::default();
+                GroveDb::add_worst_case_get_merk_at_path_engine_free(
+                    &mut worst,
+                    &known(&leaf),
+                    parent_type,
+                    &GROVE_V6,
+                )
+                .expect("the open is estimated");
+                worst += GroveDb::worst_case_merk_replace_element(
+                    &KnownKey(key(0)),
+                    new,
+                    parent_type,
+                    Some(&WorstCaseLayerInformation::MaxElementsNumber(1)),
+                    &GROVE_V6,
+                )
+                .cost_as_result()
+                .expect("the replacement is estimated");
+                assert!(
+                    worst.worse_or_eq_than(&applied),
+                    "{new:?} over {was_there:?} in {parent_type}: worst {worst:?}, applied \
+                     {applied:?}"
+                );
+                // And by itself, with no level: the node's own bytes are
+                // no fewer than the write replaces and adds.
+                let alone = GroveDb::worst_case_merk_replace_element(
+                    &KnownKey(key(0)),
+                    new,
+                    parent_type,
+                    None,
+                    &GROVE_V6,
+                )
+                .cost_as_result()
+                .expect("the replacement is estimated");
+                assert!(
+                    alone.storage_cost.replaced_bytes >= applied.storage_cost.replaced_bytes
+                        && alone.storage_cost.added_bytes >= applied.storage_cost.added_bytes,
+                    "{new:?} over {was_there:?} in {parent_type}: {alone:?}, applied {applied:?}"
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 300, "{compared}");
 }
 
 /// The insert of an item of 20 bytes under `added` into a Merk that holds
@@ -3725,4 +4098,162 @@ fn es2_an_indexed_tree_that_names_more_axes_than_one_can_is_refused() {
     ] {
         assert!(matches!(refused.value, Err(Error::InvalidInput(_))));
     }
+}
+
+#[test]
+fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_they_cost() {
+    use grovedb_element::indexed::IndexAxis;
+
+    use crate::{batch::QualifiedGroveDbOp as Op, tests::make_empty_grovedb};
+    // A write under an indexed tree is charged every level up to the
+    // primary as on grove version 5 (SP5), and the rows of its secondaries
+    // are part of that. What an indexed tree adds to a write is measured on
+    // grove version 5: the same insert of an entry into an indexed tree of
+    // each of the five kinds, and into the tree of that kind with no
+    // secondaries. The difference is the rows: the open of each secondary,
+    // the row that goes and the row that comes, their levels, and the reads
+    // of the touched entry before and after. The estimate of the rows on
+    // grove version 6 (`average_case_indexed_secondary_mirror`) is no less
+    // than that in any field, in a primary of one entry and of seven.
+    //
+    // Into a primary with no entry it is short in seeks and in loaded
+    // bytes: it has an open and a put for each axis, and the write also
+    // reads the entry before and after, which a batch's estimate adds to
+    // this one and `grovedb::estimated_costs` does not have.
+    let kinds: Vec<(Element, Element, Element, Vec<IndexAxis>)> = vec![
+        (
+            Element::empty_provable_count_indexed_tree(),
+            Element::empty_provable_count_tree(),
+            Element::new_item(vec![1; 8]),
+            vec![IndexAxis::Count],
+        ),
+        (
+            Element::empty_provable_sum_indexed_tree(),
+            Element::empty_provable_sum_tree(),
+            Element::new_sum_item(5),
+            vec![IndexAxis::Sum],
+        ),
+        (
+            Element::empty_provable_big_sum_indexed_tree(),
+            Element::empty_provable_big_sum_tree(),
+            Element::new_sum_item(5),
+            vec![IndexAxis::BigSum],
+        ),
+        (
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![(0, None), (1, None)])
+                .expect("two axes"),
+            Element::empty_provable_count_provable_sum_tree(),
+            Element::new_item_with_sum_item(vec![1; 8], 5),
+            vec![IndexAxis::Count, IndexAxis::Sum],
+        ),
+        (
+            Element::empty_provable_count_provable_big_sum_indexed_tree(vec![(0, None), (3, None)])
+                .expect("two axes"),
+            Element::empty_provable_count_provable_big_sum_tree(),
+            Element::new_item_with_sum_item(vec![1; 8], 5),
+            vec![IndexAxis::Count, IndexAxis::BigSum],
+        ),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for (indexed, plain, entry, axes) in kinds {
+        let tree_type = tree_type_of(&indexed);
+        assert!(tree_type.is_indexed_primary());
+        seen.insert(tree_type.to_string());
+        // The insert of an entry under `ix`, a tree of `top` with `entries`
+        // entries, on grove version 5.
+        let applied = |top: &Element, entries: u8| {
+            let db = make_empty_grovedb();
+            db.insert(
+                grovedb_path::SubtreePath::empty(),
+                b"ix",
+                top.clone(),
+                None,
+                None,
+                &GROVE_V5,
+            )
+            .unwrap()
+            .expect("the tree at the root");
+            let ix = path(&[b"ix"]);
+            for number in 0..entries {
+                db.apply_batch(
+                    vec![Op::insert_or_replace_op(
+                        ix.clone(),
+                        key(number),
+                        entry.clone(),
+                    )],
+                    None,
+                    None,
+                    &GROVE_V5,
+                )
+                .unwrap()
+                .expect("an entry");
+            }
+            db.apply_batch(
+                vec![Op::insert_or_replace_op(ix, key(200), entry.clone())],
+                None,
+                None,
+                &GROVE_V5,
+            )
+            .cost_as_result()
+            .expect("the insert of an entry")
+        };
+        let rows_of = |entries: u8| {
+            let (with_rows, without) = (applied(&indexed, entries), applied(&plain, entries));
+            let layer = EstimatedLayerInformation {
+                tree_type,
+                estimated_layer_count: ApproximateElements(u32::from(entries)),
+                estimated_layer_sizes: AllItems(2, size_in_a_layer(&entry), None),
+            };
+            let estimated = GroveDb::average_case_indexed_secondary_mirror(
+                &known(&path(&[b"ix"])),
+                &layer,
+                &axes,
+                &GROVE_V6,
+            )
+            .cost_as_result()
+            .expect("the rows are estimated");
+            // The rows remove nothing, and neither estimate has a removal.
+            assert_eq!(with_rows.storage_cost.removed_bytes, NoStorageRemoval);
+            let added_by_the_rows = OperationCost {
+                seek_count: with_rows.seek_count - without.seek_count,
+                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                    added_bytes: with_rows.storage_cost.added_bytes
+                        - without.storage_cost.added_bytes,
+                    replaced_bytes: with_rows.storage_cost.replaced_bytes
+                        - without.storage_cost.replaced_bytes,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: with_rows.storage_loaded_bytes - without.storage_loaded_bytes,
+                hash_node_calls: with_rows.hash_node_calls - without.hash_node_calls,
+                sinsemilla_hash_calls: 0,
+            };
+            (added_by_the_rows, estimated)
+        };
+        for entries in [1u8, 7] {
+            let (applied, estimated) = rows_of(entries);
+            assert!(
+                estimated.worse_or_eq_than(&applied),
+                "{tree_type}, {entries} entries: estimated {estimated:?}, applied {applied:?}"
+            );
+        }
+        // One entry, one axis: the estimate has the five seeks of the rows.
+        if axes.len() == 1 {
+            let (applied, estimated) = rows_of(1);
+            assert_eq!((applied.seek_count, estimated.seek_count), (5, 5));
+        }
+        // No entry: the bytes the rows add and their hash calls are held,
+        // and the reads of the entry are not in this estimate.
+        let (applied, estimated) = rows_of(0);
+        assert!(estimated.storage_cost.added_bytes >= applied.storage_cost.added_bytes);
+        assert!(estimated.hash_node_calls >= applied.hash_node_calls);
+        let axes = axes.len() as u32;
+        assert_eq!(
+            (applied.seek_count, estimated.seek_count),
+            (2 + 3 * axes, 2 * axes),
+            "{tree_type}"
+        );
+        assert_eq!(estimated.storage_loaded_bytes, 0, "{tree_type}");
+        assert!(applied.storage_loaded_bytes > 0, "{tree_type}");
+    }
+    assert_eq!(seen.len(), 5, "the five kinds of indexed tree");
 }

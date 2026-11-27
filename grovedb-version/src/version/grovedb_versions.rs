@@ -825,6 +825,13 @@ pub struct GroveDBOperationsAverageCaseVersions {
     pub add_average_case_get_merk_at_path: FeatureVersion,
     pub average_case_merk_replace_tree: FeatureVersion,
     pub average_case_merk_insert_tree: FeatureVersion,
+    /// `GroveDb::average_case_merk_delete_tree`, the estimate of the removal
+    /// of a tree.
+    ///
+    /// - `0` (V1..V5): the flags of the layer and the bytes of their length
+    ///   are added in 32 bits, unchecked.
+    /// - `1` (V6): the sizes of the layer that an estimate cannot count are
+    ///   refused first, and a refusal has no cost.
     pub average_case_merk_delete_tree: FeatureVersion,
     pub average_case_merk_insert_element: FeatureVersion,
     pub average_case_merk_replace_element: FeatureVersion,

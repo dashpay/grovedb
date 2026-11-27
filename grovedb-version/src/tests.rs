@@ -112,6 +112,7 @@ fn v6_matches_v5_apart_from_its_gates() {
         .average_case_merk_insert_element;
     operations.average_case.average_case_merk_replace_element = 0;
     operations.average_case.average_case_merk_patch_element = 0;
+    operations.average_case.average_case_merk_delete_tree = 0;
     operations.worst_case.add_worst_case_get_merk_at_path = 0;
     operations.worst_case.worst_case_merk_insert_element = GROVE_V5
         .grovedb_versions
@@ -1247,14 +1248,16 @@ fn big_sum_tree_twins_creation_is_gated_to_v5() {
 
 #[test]
 fn the_estimates_of_an_operation_are_gated_to_v6() {
-    // The estimates of an open and of the put of an element are the slots
-    // of the operations that grove version 6 changes, and no other. The
-    // released versions keep the estimates they were admitted with.
+    // The estimates of an open, of the put of an element and of the removal
+    // of a tree are the slots of the operations that grove version 6
+    // changes, and no other. The released versions keep the estimates they
+    // were admitted with.
     for v in GROVE_VERSIONS {
         let operations = &v.grovedb_versions.operations;
         assert!(operations.average_case.average_case_merk_insert_element <= 1);
         assert_eq!(operations.average_case.average_case_merk_replace_element, 0);
         assert_eq!(operations.average_case.average_case_merk_patch_element, 0);
+        assert_eq!(operations.average_case.average_case_merk_delete_tree, 0);
         assert!(operations.worst_case.worst_case_merk_insert_element <= 1);
         assert_eq!(operations.worst_case.worst_case_merk_replace_element, 0);
         assert_eq!(operations.worst_case.worst_case_merk_patch_element, 0);
@@ -1268,10 +1271,12 @@ fn the_estimates_of_an_operation_are_gated_to_v6() {
     assert_eq!(average.average_case_merk_insert_element, 2);
     assert_eq!(average.average_case_merk_replace_element, 1);
     assert_eq!(average.average_case_merk_patch_element, 1);
+    assert_eq!(average.average_case_merk_delete_tree, 1);
     average.add_average_case_get_merk_at_path = 0;
     average.average_case_merk_insert_element = 1;
     average.average_case_merk_replace_element = 0;
     average.average_case_merk_patch_element = 0;
+    average.average_case_merk_delete_tree = 0;
     assert_eq!(format!("{average:?}"), format!("{:?}", v5.average_case));
     let mut worst = v6.worst_case.clone();
     assert_eq!(worst.add_worst_case_get_merk_at_path, 1);

@@ -2232,6 +2232,80 @@ mod tests {
         assert!(rounded_after);
     }
 
+    #[test]
+    fn es2_a_layer_of_one_kind_is_counted_the_same_as_a_mix_of_it() {
+        // A layer of items, given as items and given as a `Mix` that names
+        // items alone, is one layer. Two levels are three nodes, and items
+        // of 1,431,655,658 bytes under keys of one byte replace all that a
+        // field of 32 bits holds and load 102 bytes more, which the 64 bits
+        // of that field hold. Grove version 6 counts both the same. The
+        // version before refuses the `Mix`, whose loaded bytes it holds to
+        // 32 bits.
+        let size = 1_431_655_658;
+        let level = |sizes, version: &GroveVersion| {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(2, false),
+                estimated_layer_sizes: sizes,
+            };
+            let mut cost = OperationCost::default();
+            add_average_case_merk_propagate(&mut cost, &info, version).map(|()| cost)
+        };
+        let of_items_alone = |size| EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: Some((1, size, None, 1)),
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
+        };
+        let as_items = level(EstimatedLayerSizes::AllItems(1, size, None), &GROVE_V6)
+            .expect("the level is counted");
+        assert_eq!(
+            (
+                as_items.storage_cost.replaced_bytes,
+                as_items.storage_loaded_bytes
+            ),
+            (4_294_967_295, 4_294_967_397)
+        );
+        assert_eq!(
+            level(of_items_alone(size), &GROVE_V6).expect("the level is counted"),
+            as_items
+        );
+        assert!(matches!(
+            level(of_items_alone(size), &GROVE_V5),
+            Err(Error::Overflow(_))
+        ));
+        // A byte more is more replaced bytes than their field holds: both
+        // are refused.
+        for sizes in [
+            EstimatedLayerSizes::AllItems(1, size + 1, None),
+            of_items_alone(size + 1),
+        ] {
+            assert!(matches!(level(sizes, &GROVE_V6), Err(Error::Overflow(_))));
+        }
+        // And a kind of each: the weights, the order and the rounding of
+        // the version before, at sizes whose loaded bytes fit 32 bits.
+        for weight in [1u8, 2, 7, 255] {
+            assert_eq!(
+                level(
+                    EstimatedLayerSizes::Mix {
+                        subtrees_size: None,
+                        items_size: Some((1, 1_000, None, weight)),
+                        references_size: None,
+                        items_with_sum_item_size: None,
+                        references_with_sum_item_size: None,
+                    },
+                    &GROVE_V6
+                )
+                .expect("the level is counted")
+                .storage_loaded_bytes,
+                level(EstimatedLayerSizes::AllItems(1, 1_000, None), &GROVE_V6)
+                    .expect("the level is counted")
+                    .storage_loaded_bytes
+            );
+        }
+    }
+
     fn finalize_of(levels: u32, marked: u32, version: &GroveVersion) -> OperationCost {
         let info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
@@ -2394,9 +2468,25 @@ mod tests {
         for before in given {
             let estimates: [&dyn Fn(&mut OperationCost) -> Result<(), Error>; 4] = [
                 &|cost| add_average_case_merk_finalize(cost, &trees, marked, &GROVE_V6),
-                &|cost| add_worst_case_merk_finalize(cost, &worst, marked, &GROVE_V6),
+                &|cost| {
+                    add_worst_case_merk_finalize(
+                        cost,
+                        &worst,
+                        marked,
+                        crate::estimated_costs::worst_case_costs::MERK_BIGGEST_VALUE_SIZE,
+                        &GROVE_V6,
+                    )
+                },
                 &|cost| add_average_case_merk_finalize(cost, &trees, 1, &GROVE_V6),
-                &|cost| add_worst_case_merk_finalize(cost, &worst, 1, &GROVE_V6),
+                &|cost| {
+                    add_worst_case_merk_finalize(
+                        cost,
+                        &worst,
+                        1,
+                        crate::estimated_costs::worst_case_costs::MERK_BIGGEST_VALUE_SIZE,
+                        &GROVE_V6,
+                    )
+                },
             ];
             for (number, estimate) in estimates.iter().enumerate() {
                 let mut cost = before.clone();

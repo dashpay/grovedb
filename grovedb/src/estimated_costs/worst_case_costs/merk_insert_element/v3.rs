@@ -23,7 +23,9 @@ use grovedb_merk::{
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    batch::key_info::KeyInfo, estimated_costs::set_element_put_hash_calls, Element, Error, GroveDb,
+    batch::key_info::KeyInfo,
+    estimated_costs::{element_len_for_an_estimate, set_element_put_hash_calls},
+    Element, Error, GroveDb,
 };
 
 impl GroveDb {
@@ -36,6 +38,9 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        // Before the version before sizes the element, in 32 bits unchecked.
+        let len =
+            cost_return_on_error_no_add!(cost, element_len_for_an_estimate(value, grove_version));
         cost_return_on_error!(
             &mut cost,
             Self::worst_case_merk_insert_element_v2(
@@ -48,7 +53,7 @@ impl GroveDb {
         );
         cost_return_on_error_no_add!(
             cost,
-            set_element_put_hash_calls(&mut cost, key, value, grove_version)
+            set_element_put_hash_calls(&mut cost, key, value, len, grove_version)
         );
         if let Some(level) = propagate_for_level {
             add_worst_case_merk_propagate_versioned(&mut cost, level, grove_version)

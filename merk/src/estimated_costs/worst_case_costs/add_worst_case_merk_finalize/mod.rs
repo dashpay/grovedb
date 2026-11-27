@@ -22,10 +22,16 @@ use crate::{
 /// rewrite `marked` of its elements: the read of each, and the fetch, the
 /// put and the hash of each of them and of every node above them. The
 /// hashes of the new values and the open of the Merk are not in it.
+///
+/// `biggest_value` is the most bytes the value of a node of this Merk is,
+/// as it is stored and as its cost counts it: the bytes of a read and of a
+/// put are those of a node of that value. No rule of GroveDB bounds a
+/// value, so the caller gives its bound.
 pub fn add_worst_case_merk_finalize(
     cost: &mut OperationCost,
     input: &WorstCaseLayerInformation,
     marked: u32,
+    biggest_value: u32,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
     if propagation_cost_model(grove_version)?.carrier() != Carrier::Finalize {
@@ -40,7 +46,7 @@ pub fn add_worst_case_merk_finalize(
         .worst_case_costs
         .add_worst_case_merk_finalize
     {
-        0 => add_worst_case_merk_finalize_v0(cost, input, marked),
+        0 => add_worst_case_merk_finalize_v0(cost, input, marked, biggest_value, grove_version),
         version => Err(Error::VersionError(
             GroveVersionError::UnknownVersionMismatch {
                 method: "add_worst_case_merk_finalize".to_string(),

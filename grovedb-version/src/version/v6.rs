@@ -16,8 +16,10 @@
 //! - `operations.average_case.add_average_case_get_merk_at_path: 1` and
 //!   `operations.worst_case.add_worst_case_get_merk_at_path: 1`: the
 //!   estimate of the open of a Merk leaves out the seek and the loaded bytes
-//!   of the host's read, which the open no longer makes. Gated because the
-//!   estimate is the admission bound.
+//!   of the host's read, which the open no longer makes. For the root Merk,
+//!   which has no host, it has the bytes of the root key record. It is added
+//!   to the cost it is given in full, or refused with nothing added. Gated
+//!   because the estimate is the admission bound.
 //!
 //! - `merk_versions.average_case_costs.add_average_case_merk_propagate: 3`,
 //!   `merk_versions.average_case_costs.sum_tree_estimated_size: 3`,
@@ -45,8 +47,17 @@
 //!   their hash with another, and an indexed tree with the roots of its
 //!   secondaries. V1..V5 count the blocks of a length that is the element's
 //!   cost, and estimate several kinds of tree as items. The estimate of a
-//!   patch also refuses a growth of more bytes than the item has. Gated
-//!   because the estimate is the admission bound.
+//!   patch is sized from the bytes of the item and refuses a growth of more
+//!   bytes than the item has. The worst case of a replacement has, for every
+//!   kind of element, all of the node's bytes as replaced and all of the
+//!   value's as added, where V1..V5 have no added bytes for a tree or a sum
+//!   item. Each refuses an element too long for a node to be sized by its
+//!   bytes in 32 bits. Gated because the estimate is the admission bound.
+//!
+//! - `operations.average_case.average_case_merk_delete_tree: 1`: the
+//!   estimate of the removal of a tree refuses the sizes of a layer that an
+//!   estimate cannot count, where V1..V5 add the flags of the layer in 32
+//!   bits unchecked. Gated because the estimate is the admission bound.
 //!
 //! `GroveDb::average_case_finalize`, `GroveDb::worst_case_finalize` and
 //! Merk's `add_average_case_merk_finalize` and `add_worst_case_merk_finalize`
@@ -83,6 +94,8 @@ pub const GROVE_V6: GroveVersion = GroveVersion {
                 average_case_merk_insert_element: 2,
                 average_case_merk_replace_element: 1,
                 average_case_merk_patch_element: 1,
+                // changed: sizes it cannot count are refused
+                average_case_merk_delete_tree: 1,
                 ..GROVE_V5.grovedb_versions.operations.average_case
             },
             worst_case: GroveDBOperationsWorstCaseVersions {

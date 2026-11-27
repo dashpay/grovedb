@@ -10,8 +10,8 @@ use grovedb_merk::{
         add_cost_case_merk_insert_layered,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
-            add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
+            add_average_case_merk_propagate, add_average_case_merk_replace_layered,
+            EstimatedLayerInformation, EstimatedLayerSizes,
         },
     },
     tree::TreeNode,
@@ -33,6 +33,7 @@ use crate::{
 
 mod finalize;
 mod get_merk_at_path;
+mod merk_delete_tree;
 mod merk_insert_element;
 mod merk_patch_element;
 mod merk_replace_element;
@@ -204,46 +205,6 @@ impl GroveDb {
         add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_parent_tree_type);
         if let Some(input) = propagate_if_input {
             add_average_case_merk_propagate(&mut cost, input, grove_version)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add average case for insertion into merk
-    pub fn average_case_merk_delete_tree(
-        key: &KeyInfo,
-        tree_type: TreeType,
-        estimated_layer_information: &EstimatedLayerInformation,
-        propagate: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_delete_tree",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_delete_tree
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        let flags_size = cost_return_on_error_no_add!(
-            cost,
-            estimated_layer_information
-                .estimated_layer_sizes
-                .layered_flags_size()
-                .map_err(Error::MerkError)
-        )
-        .map(|f| f + f.required_space() as u32)
-        .unwrap_or_default();
-        let tree_cost_size = tree_type.cost_size();
-        let layer_extra_size = tree_cost_size + flags_size;
-        add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
-        if propagate {
-            add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())

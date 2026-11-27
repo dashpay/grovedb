@@ -16,7 +16,10 @@
 //!   specialized cost the apply writes them with.
 //!
 //! * **[v2]** — `GROVE_V6` (`worst_case_merk_replace_element: 1`). v1, with
-//!   the hash calls of the put counted from the bytes of the element.
+//!   the storage of a replacement of anything by anything (all of the node's
+//!   bytes replaced, and all of the value's added, for every kind of
+//!   element), with the hash calls of the put counted from the bytes of the
+//!   element, and with an element too long to size refused.
 //!
 //! The estimate is the admission bound historical blocks are replayed
 //! against, so the released versions keep the v0 sizing.

@@ -102,17 +102,18 @@ pub(crate) const MOST_AXES_OF_AN_INDEXED_TREE: usize = 3;
 
 /// Adds `part` to `total` in full, or refuses and leaves `total` as it
 /// was. `+=` of a cost stops at the most a field holds, and a sum that
-/// stopped there is no count. The costs are those of a finalize, which
-/// removes no bytes (FZ4): a part that removes some is refused.
+/// stopped there is no count. The costs are those of a finalize and of the
+/// open of a Merk, which remove no bytes (FZ4): a part that removes some is
+/// refused.
 pub(crate) fn add_in_full(total: &mut OperationCost, part: OperationCost) -> Result<(), Error> {
     let overflow = || {
         Error::MerkError(grovedb_merk::Error::Overflow(
-            "overflow for the cost of a finalize",
+            "overflow for the cost of an estimate",
         ))
     };
     if part.storage_cost.removed_bytes.has_removal() {
         return Err(Error::CorruptedCodeExecution(
-            "the estimate of a finalize has removed bytes",
+            "the estimate of a finalize or of an open has removed bytes",
         ));
     }
     let sinsemilla = total
@@ -177,6 +178,47 @@ pub(crate) fn marked_count(keys: usize) -> Result<u32, Error> {
     })
 }
 
+/// The most bytes the cost of an element counts over what the element
+/// serializes to. A cost counts each aggregate of a tree at a fixed width, a
+/// count and a sum at 8 bytes and a sum of 128 bits at 16, where the element
+/// has a varint that can be one byte, and the length of the flags as a
+/// varint, which is a byte longer than the element has it from 128 bytes to
+/// 250. The longest is an indexed tree by its count and its sum of 128 bits
+/// that names its axes: 28 bytes. A worst case that is told how long an
+/// element can be takes its node to cost this much more.
+pub(crate) const MOST_BYTES_OF_A_COST_OVER_ITS_ELEMENT: u32 = 64;
+
+/// The most bytes an element may serialize to for an estimate to size its
+/// node: 65,536 under what 32 bits hold, as `EstimatedLayerSizes::check_sizes`
+/// has it for the sizes of a layer. The estimates add the key, the hashes,
+/// the feature, a link and the lengths of a node to those bytes, well under
+/// that many, in 32 bits.
+pub(crate) const MOST_BYTES_OF_A_SIZED_ELEMENT: u32 = u32::MAX - 65_536;
+
+/// `len`, the bytes an element serializes to, as an estimate of grove
+/// version 6 takes them: refused where the arithmetic that sizes a node
+/// from them would not hold them. The estimates of the grove versions
+/// before take any length, and wrap or panic near the end of 32 bits.
+pub(crate) fn sized_for_a_node(len: usize) -> Result<u32, Error> {
+    u32::try_from(len)
+        .ok()
+        .filter(|len| *len <= MOST_BYTES_OF_A_SIZED_ELEMENT)
+        .ok_or(Error::Overflow(
+            "an element longer than an estimate can size a node by",
+        ))
+}
+
+/// The bytes `value` serializes to, or a refusal where an estimate cannot
+/// size a node by them (`sized_for_a_node`). An estimate that grove version
+/// 6 selects asks this before it calls a helper that adds in 32 bits
+/// unchecked.
+pub(crate) fn element_len_for_an_estimate(
+    value: &Element,
+    grove_version: &GroveVersion,
+) -> Result<u32, Error> {
+    sized_for_a_node(value.serialized_size(grove_version)?)
+}
+
 /// The hash calls of the put of `value` under a key of `key_len` bytes,
 /// for the node of the element and nothing above it
 /// (`docs/lignindb/cost-model.md`, ES2), counted from the bytes of the
@@ -191,20 +233,26 @@ pub(crate) fn marked_count(keys: usize) -> Result<u32, Error> {
 /// - for a reference, the hash that combines it with the hash of its
 ///   target. Reading the target is no part of this;
 /// - the hash of the key with the value's hash, and the two of the node.
+///
+/// `serialized_len` is the bytes `value` serializes to, as the caller
+/// measured them (`element_len_for_an_estimate`).
 pub(crate) fn element_put_hash_calls(
     key_len: u32,
     value: &Element,
+    serialized_len: u32,
     grove_version: &GroveVersion,
 ) -> Result<u32, Error> {
     let overflow = || Error::Overflow("overflow for the hash calls of an element");
+    // `serialized_len` is what is hashed for an element that keeps no list
+    // of its referrers, which is not encoded again here.
     let len = if value.supports_backward_references() {
-        value
+        let len = value
             .stripped_of_backward_references()
-            .serialized_size(grove_version)?
+            .serialized_size(grove_version)?;
+        u32::try_from(len).map_err(|_| overflow())?
     } else {
-        value.serialized_size(grove_version)?
+        serialized_len
     };
-    let len = u32::try_from(len).map_err(|_| overflow())?;
     let hashed = len
         .checked_add(len.required_space() as u32)
         .ok_or_else(overflow)?;
@@ -234,14 +282,22 @@ pub(crate) fn element_put_hash_calls(
 /// which counted the blocks of a length that is the element's cost: longer
 /// than its bytes for an element with a sum, and without the length the
 /// bytes are hashed with.
+///
+/// `serialized_len` is the bytes of `value` as the caller measured them
+/// (`element_len_for_an_estimate`).
 pub(crate) fn set_element_put_hash_calls(
     cost: &mut OperationCost,
     key: &KeyInfo,
     value: &Element,
+    serialized_len: u32,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
-    cost.hash_node_calls =
-        element_put_hash_calls(u32::from(key.max_length()), value, grove_version)?;
+    cost.hash_node_calls = element_put_hash_calls(
+        u32::from(key.max_length()),
+        value,
+        serialized_len,
+        grove_version,
+    )?;
     Ok(())
 }
 

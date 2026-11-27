@@ -3,7 +3,9 @@
 //!
 //! For every Merk that hosts a marked element: its open, what the finalize
 //! does inside it (`add_worst_case_merk_finalize`), and for each marked
-//! element the hashes of its new value.
+//! element the hashes of its new value. The bytes of a node and the hash of
+//! a carried element are those of an element as long as the caller says one
+//! can be.
 
 use std::collections::HashMap;
 
@@ -21,19 +23,20 @@ use crate::{
     batch::KeyInfoPath,
     estimated_costs::{
         add_in_full, hash_blocks, hash_calls, marked_count, marked_hosts, missing_layer,
+        MOST_BYTES_OF_A_COST_OVER_ITS_ELEMENT,
     },
     Error, GroveDb,
 };
 
 /// The hash calls of the value a finalize gives a marked element of at most
-/// `biggest_host_element` bytes: the hash of the element with its length;
+/// `biggest_element` bytes: the hash of the element with its length;
 /// its combination with the roots below it, which for an indexed tree is
 /// two hashes, and for one of several axes two more for the digest of their
 /// roots; and the hash of the key with it.
-fn marked_element_hashes(key_len: u32, biggest_host_element: u32) -> Result<u32, Error> {
+fn marked_element_hashes(key_len: u32, biggest_element: u32) -> Result<u32, Error> {
     let overflow = || Error::Overflow("overflow for the hash calls of a marked element");
-    let hashed = biggest_host_element
-        .checked_add(biggest_host_element.required_space() as u32)
+    let hashed = biggest_element
+        .checked_add(biggest_element.required_space() as u32)
         .ok_or_else(overflow)?;
     let hashed_with_key = key_len.required_space() as u32 + key_len + HASH_LENGTH_U32;
     hash_blocks(hashed)
@@ -46,16 +49,11 @@ impl GroveDb {
     pub(super) fn worst_case_finalize_v0(
         stop_points: &[KeyInfoPath],
         paths: &HashMap<KeyInfoPath, WorstCaseLayerInformation>,
-        biggest_host_element: u32,
+        biggest_element: u32,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         // The estimate in full, or a refusal with nothing added.
-        match Self::worst_case_finalize_cost(
-            stop_points,
-            paths,
-            biggest_host_element,
-            grove_version,
-        ) {
+        match Self::worst_case_finalize_cost(stop_points, paths, biggest_element, grove_version) {
             Ok(cost) => Ok(()).wrap_with_cost(cost),
             Err(error) => Err(error).wrap_with_cost(OperationCost::default()),
         }
@@ -64,9 +62,16 @@ impl GroveDb {
     fn worst_case_finalize_cost(
         stop_points: &[KeyInfoPath],
         paths: &HashMap<KeyInfoPath, WorstCaseLayerInformation>,
-        biggest_host_element: u32,
+        biggest_element: u32,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
+        // The value of a node as its cost counts it is longer than the
+        // element by what a cost counts over an element's bytes.
+        let biggest_value = biggest_element
+            .checked_add(MOST_BYTES_OF_A_COST_OVER_ITS_ELEMENT)
+            .ok_or(Error::Overflow(
+                "overflow for the longest value of a finalize",
+            ))?;
         let mut cost = OperationCost::default();
         for (host_path, keys) in marked_hosts(stop_points) {
             let layer = paths
@@ -82,14 +87,14 @@ impl GroveDb {
                 TreeType::NormalTree,
                 grove_version,
             )?;
-            add_worst_case_merk_finalize(&mut host, layer, marked, grove_version)
+            add_worst_case_merk_finalize(&mut host, layer, marked, biggest_value, grove_version)
                 .map_err(Error::MerkError)?;
             for key in &keys {
                 add_in_full(
                     &mut host,
                     hash_calls(marked_element_hashes(
                         u32::from(key.max_length()),
-                        biggest_host_element,
+                        biggest_element,
                     )?),
                 )?;
             }
