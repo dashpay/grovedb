@@ -10,7 +10,13 @@
 //! ([`model::UNMADE`]). The model has the hashes that the rules make
 //! ([`Rules`]), so a node that the model's check passes has them all.
 
-use std::{cell::Cell, sync::atomic::Ordering};
+use std::{
+    cell::Cell,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use lignin_format::tree_page::{Hash, HashField, Side};
 use lignin_tree::{
@@ -970,6 +976,168 @@ fn the_call_makes_the_hashes_of_the_merks_that_stale_hosts_point_at() {
     assert_eq!(db.private_ids(), 0);
 }
 
+/// Rules that make the value hash of a node from its value and from the
+/// roots of the Merks it hosts, each with whether it is there. For a node
+/// that hosts none they are the rules of these tests.
+struct Taking(Arc<AtomicU64>);
+
+impl Taking {
+    fn of(value: &[u8], hosted: &[Option<Hash>]) -> Hash {
+        let mut parts = vec![value];
+        for root in hosted {
+            match root {
+                Some(root) => parts.extend([&[1][..], &root[..]]),
+                None => parts.push(&[0]),
+            }
+        }
+        hash_of(&parts)
+    }
+}
+
+impl HashRules for Taking {
+    fn value_hash(
+        &mut self,
+        _: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Hash, Refusal> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(Self::of(value, hosted))
+    }
+
+    fn kv_hash(&mut self, key: &[u8], value_hash: &Hash) -> Result<Hash, Refusal> {
+        Rules(&self.0).kv_hash(key, value_hash)
+    }
+
+    fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
+        Rules(&self.0).node_hash(node)
+    }
+}
+
+/// What [`hosting_run`] found.
+#[derive(Debug, PartialEq, Eq)]
+struct HostingRun {
+    /// The root hash of [`TOP`] and the value hash of its first host, as
+    /// the commit published them.
+    committed: (Hash, Hash),
+    /// The same two, as the call gave the one and a read after it the
+    /// other, where a call was made.
+    called: Option<(Hash, Hash)>,
+    /// The root hash of the Merk under the first host by the model, which
+    /// has the hashes of every node that hosts nothing.
+    child: Hash,
+    /// How many nodes the commit made hashes of, and how often it called
+    /// the rules.
+    at_commit: (usize, u64),
+}
+
+/// Writes every node of [`TOP`] again as it is, with every hash left to
+/// the engine, and gives the Merk under its first host a node with the
+/// value `child`, in a store whose hashes are made by [`Taking`]. With
+/// `call` the hashes are made by a call before the commit, and otherwise
+/// by the commit. The check at the end of the store makes every hash of
+/// every Merk again by the same rules.
+fn hosting_run(child: u8, call: bool) -> HostingRun {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world);
+    let calls = Arc::new(AtomicU64::new(0));
+    db.check_hashes_by(Box::new(Taking(calls.clone())));
+
+    let tx = world.begin();
+    let under = left(&world, &tx, UNDER[0], |items| {
+        drop(items.insert(key(50), vec![child; 60]))
+    });
+    let view = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(TOP)));
+    let node = |(key, value): (&Vec<u8>, &Val)| match value {
+        Val::Node(node) => (key.clone(), node.clone(), false),
+        Val::Flat(_) => panic!("a Merk of nodes"),
+    };
+    let mut top = OwnedMerk {
+        nodes: view.iter().map(node).collect(),
+        ..OwnedMerk::change(sub(TOP), &view, &Committed::items(&view))
+    };
+    for (at, name) in UNDER.into_iter().enumerate() {
+        top.hosted.insert(host_of(at), vec![sub(name)]);
+    }
+    leave(&mut top);
+    let written = top.nodes.len() + under.nodes.len();
+    world
+        .apply(&tx, &batch(vec![under, top]))
+        .expect("the change");
+    assert_eq!(tx.txn.stats().stale_nodes, written);
+    let child = expected(&world, &tx, UNDER[0]).expect("a root");
+
+    let host = |txn: &WriteTxn<'_>| {
+        let read = txn.node(sub(TOP), &host_of(0), |view| {
+            view.map(|view| *view.value_hash())
+        });
+        read.expect("a read").expect("the host")
+    };
+    let called = call.then(|| {
+        let scope = tx.txn.scope().expect("a scope");
+        let made = scope.evaluate(sub(TOP), &mut Taking(calls.clone()));
+        scope.merge();
+        assert_eq!(tx.txn.stats().stale_nodes, 0);
+        (
+            made.expect("the hashes are made").expect("a root"),
+            host(&tx.txn),
+        )
+    });
+    let before = calls.load(Ordering::Relaxed);
+    let published = db.commit_by(&versions, &tx.txn, &mut Taking(calls.clone()));
+    let published = published.expect("a commit").expect("a version");
+    let at_commit = (published.evaluated, calls.load(Ordering::Relaxed) - before);
+
+    let after = world.begin();
+    let root = after.txn.evaluate(sub(TOP), &mut Taking(calls.clone()));
+    let committed = (root.expect("a read").expect("a root"), host(&after.txn));
+    HostingRun {
+        committed,
+        called,
+        child,
+        at_commit,
+    }
+}
+
+/// The root hash that a call gives for a Merk depends on the Merks its
+/// nodes host, as the one that the commit publishes does (Done when, line
+/// 1). The rules here make a host's value hash of its value and of the
+/// roots it hosts. Every node of the Merk at the top is written as it
+/// was, so its keys and values are the same in every run, and only the
+/// Merk under one host differs.
+///
+/// - The call gives the root hash that the commit publishes, and the host
+///   is read after it with the value hash that is committed. The commit
+///   after it makes no hash and calls no rule.
+/// - A commit with no call before it publishes the same two hashes.
+/// - The host's value hash is the one the rules make of its value and of
+///   the root of the Merk it hosts.
+/// - With another Merk under the host, both hashes are others.
+#[test]
+fn the_root_hash_that_the_call_gives_depends_on_the_hosted_roots() {
+    let called = hosting_run(1, true);
+    let alone = hosting_run(1, false);
+    assert_eq!(called.called, Some(called.committed));
+    assert_eq!(called.at_commit, (0, 0));
+    assert_eq!(alone.committed, called.committed);
+    assert_eq!(alone.child, called.child);
+    assert!(alone.at_commit.0 > 0 && alone.at_commit.1 > 0);
+    assert_eq!(
+        called.committed.1,
+        Taking::of(b"tree", &[Some(called.child)])
+    );
+
+    let other = hosting_run(2, true);
+    assert_eq!(other.called, Some(other.committed));
+    assert_eq!(other.at_commit, (0, 0));
+    assert_ne!(other.child, called.child);
+    assert_ne!(other.committed.0, called.committed.0, "the root at the top");
+    assert_ne!(other.committed.1, called.committed.1, "the host");
+    assert_eq!(other.committed.1, Taking::of(b"tree", &[Some(other.child)]));
+    assert_eq!(hosting_run(2, false).committed, other.committed);
+}
+
 /// The key of an element of [`TOP`] that hosts two Merks.
 const HOST: &[u8] = b"host of two";
 /// The Merk at the first place of [`HOST`], and the one at the second.
@@ -1327,6 +1495,218 @@ fn write_under<'s>(
         ..OwnedBatch::default()
     };
     world.apply_in(tx, scope, &own.through(scope))
+}
+
+/// A change of the Merk `name`, which hangs under a host that the batch
+/// does not write, with every hash left to the engine.
+fn anchored<'s>(world: &World<'s>, tx: &Tx<'s>, name: u8) -> OwnedMerk {
+    let merk = left(world, tx, name, |items| {
+        drop(items.insert(key(70), vec![7; 30]))
+    });
+    OwnedMerk {
+        anchored: true,
+        ..merk
+    }
+}
+
+/// A write of the first host of [`TOP`] with another value and with its
+/// hashes left to the engine, which says nothing of the Merk under it:
+/// the host's cell keeps its pointer, and the writer reads nothing of
+/// that Merk.
+fn host_alone<'s>(world: &World<'s>, tx: &Tx<'s>) -> OwnedBatch {
+    batch(vec![left(world, tx, TOP, |items| {
+        drop(items.insert(host_of(0), b"tree, held".to_vec()))
+    })])
+}
+
+/// A call for a Merk that hangs under a host makes its hashes while
+/// another open scope holds the host's Merk, and that Merk alone (SC2,
+/// SC3): the other scope wrote the host, whose cell kept its pointer, and
+/// read nothing below it. So it is whether that scope's writes are laid
+/// out or kept in the write set, and whether it merges or rolls back.
+///
+/// - The call gives the root hash of the Merk under the host, and its
+///   nodes are read with their hashes made.
+/// - Frames that are made again have the made hashes, and the host's
+///   pointer: a call for the Merk at the top is given the root under the
+///   host, with the hash that the first call gave.
+/// - The other scope's rollback takes its write of the host, and leaves
+///   what the call made.
+#[test]
+fn a_call_for_a_merk_makes_its_hashes_beside_a_scope_that_holds_its_host() {
+    let cases = [(true, true), (true, false), (false, true), (false, false)];
+    for (laid, merges) in cases {
+        let (db, versions) = Db::new(128);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world);
+        let calls = || db.counts.rule_calls.load(Ordering::Relaxed);
+        let tx = world.begin();
+        // The hashes of two Merks under hosts are left by a writer that
+        // merged, and it wrote no host.
+        let under = [UNDER[0], UNDER[2]].map(|name| anchored(&world, &tx, name));
+        let to_make = under.each_ref().map(|merk| calls_for(merk) + 1);
+        let left_stale: usize = under.iter().map(|merk| merk.nodes.len()).sum();
+        let written = OwnedBatch {
+            merks: under.into(),
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &written).expect("the change");
+        let child = expected(&world, &tx, UNDER[0]);
+
+        // The scope that is opened first has its writes laid out.
+        let first = tx.txn.scope().expect("a scope");
+        let second = tx.txn.scope().expect("a scope beside it");
+        let (holder, caller) = match laid {
+            true => (first, second),
+            false => (second, first),
+        };
+        let model_writes = tx.model.borrow().writes.len();
+        let host = host_alone(&world, &tx).through(&holder);
+        world.apply_in(&tx, &holder, &host).expect("the host");
+        assert_eq!(holder.is_laid_out(), laid);
+        let hosts_stale = stale_through(&world, &tx, &holder, &[TOP]);
+        assert!(!hosts_stale[0].1.is_empty());
+
+        // The call for the Merk under the host.
+        let made = stale_through(&world, &tx, &caller, &[UNDER[0]]);
+        let first_write = world.latest().get();
+        let before = calls();
+        let hash = caller.evaluate(sub(UNDER[0]), &mut Rules(&db.counts.rule_calls));
+        assert_eq!(
+            hash.expect("the hashes are made"),
+            child,
+            "{laid}, {merges}"
+        );
+        assert_eq!(calls() - before, to_make[0], "{laid}, {merges}");
+        let none = vec![(UNDER[0], BTreeSet::new())];
+        assert_eq!(stale_through(&world, &tx, &caller, &[UNDER[0]]), none);
+
+        // A call that a rule refuses at the last hash gives the frames
+        // up: they are made again from the write set.
+        let rebuilds = tx.txn.stats().rebuilds;
+        let mut refusing = Refusing {
+            rules: Rules(&db.counts.rule_calls),
+            left: to_make[1] as usize - 1,
+        };
+        let refused = caller.evaluate(sub(UNDER[2]), &mut refusing);
+        assert!(matches!(refused, Err(TxnError::Hash(HashError::Rule(_)))));
+        assert_eq!(stale_through(&world, &tx, &caller, &[UNDER[0]]), none);
+        assert_eq!(tx.txn.stats().rebuilds, rebuilds + 1, "{laid}, {merges}");
+        assert_eq!(stale_through(&world, &tx, &holder, &[TOP]), hosts_stale);
+
+        // The other scope ends, and the caller is alone.
+        match merges {
+            true => holder.merge(),
+            false => {
+                holder.rollback();
+                tx.model.borrow_mut().writes.truncate(model_writes);
+            }
+        }
+        tell(&world, &tx, UNDER[0], Some(&made[0].1), first_write);
+        if !merges {
+            // The write of the host went with its scope, and what the
+            // call made stayed: the hashes of one Merk are left.
+            let top = vec![(TOP, BTreeSet::new())];
+            assert_eq!(stale_through(&world, &tx, &caller, &[TOP]), top);
+            assert_eq!(stale_through(&world, &tx, &caller, &[UNDER[0]]), none);
+            assert_eq!(tx.txn.stats().stale_nodes, left_stale - made[0].1.len());
+            // The caller writes the host as that scope did.
+            let host = host_alone(&world, &tx).through(&caller);
+            world.apply_in(&tx, &caller, &host).expect("the host");
+        }
+
+        // The host's cell points at the root of the Merk under it: the
+        // call for the Merk at the top reads that root, and is given the
+        // hash that the first call gave.
+        let mut rules = Hosting {
+            rules: Rules(&db.counts.rule_calls),
+            hosted: BTreeMap::new(),
+        };
+        let top = evaluate_with(&world, &tx, &caller, TOP, &[TOP], &mut rules);
+        assert_eq!(
+            top.expect("the hashes are made"),
+            expected(&world, &tx, TOP)
+        );
+        let given: BTreeMap<Vec<u8>, Vec<Option<Hash>>> =
+            [(host_of(0), vec![child])].into_iter().collect();
+        assert_eq!(rules.hosted, given, "{laid}, {merges}");
+        caller.merge();
+        assert_eq!(
+            evaluate_merged(&world, &tx, UNDER[2]),
+            expected(&world, &tx, UNDER[2])
+        );
+        assert_eq!(tx.txn.stats().stale_nodes, 0);
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])));
+        world.check_committed();
+        assert_eq!(db.private_ids(), 0, "{laid}, {merges}");
+    }
+}
+
+/// A scope that drops or clears a Merk holds every Merk below it (SC3,
+/// CV9): a call for a Merk under one of its hosts is refused as any read
+/// of that Merk is, with the Merk that the other scope took, and no rule
+/// is called. It is so whether that scope's writes are laid out or kept
+/// in the write set. Once the scope has rolled back, the call makes the
+/// hashes.
+#[test]
+fn a_call_for_a_merk_below_one_that_another_scope_takes_is_refused() {
+    let cases = [(true, true), (true, false), (false, true), (false, false)];
+    for (laid, drops) in cases {
+        let (db, versions) = Db::new(128);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world);
+        let tx = world.begin();
+        let written = OwnedBatch {
+            merks: vec![anchored(&world, &tx, UNDER[0])],
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &written).expect("the change");
+        let child = expected(&world, &tx, UNDER[0]);
+
+        let first = tx.txn.scope().expect("a scope");
+        let second = tx.txn.scope().expect("a scope beside it");
+        let (holder, caller) = match laid {
+            true => (first, second),
+            false => (second, first),
+        };
+        let model_writes = tx.model.borrow().writes.len();
+        let taken = OwnedBatch {
+            subtrees: vec![match drops {
+                true => OwnedSubtree::Drop(sub(TOP)),
+                false => OwnedSubtree::Clear(sub(TOP)),
+            }],
+            ..OwnedBatch::default()
+        };
+        (world.apply_in(&tx, &holder, &taken.through(&holder))).expect("the Merk is taken");
+        assert_eq!(holder.is_laid_out(), laid);
+
+        let calls = db.counts.rule_calls.load(Ordering::Relaxed);
+        let refused = caller.evaluate(sub(UNDER[0]), &mut Rules(&db.counts.rule_calls));
+        match refused {
+            Err(TxnError::ScopeOverlap { unit }) => {
+                assert_eq!(unit, Unit::data(sub(TOP)), "{laid}, {drops}")
+            }
+            other => panic!("{laid}, {drops}: the Merk above is another scope's: {other:?}"),
+        }
+        let read = caller.node(sub(UNDER[0]), &key(2), |view| view.is_some());
+        assert!(
+            matches!(read, Err(TxnError::ScopeOverlap { unit }) if unit == Unit::data(sub(TOP))),
+            "{laid}, {drops}: a read is refused alike: {read:?}"
+        );
+        assert_eq!(db.counts.rule_calls.load(Ordering::Relaxed), calls);
+
+        holder.rollback();
+        tx.model.borrow_mut().writes.truncate(model_writes);
+        let made = evaluate(&world, &tx, &caller, UNDER[0], &[UNDER[0]]);
+        assert_eq!(made.expect("the hashes are made"), child, "{laid}, {drops}");
+        caller.merge();
+        assert_eq!(tx.txn.stats().stale_nodes, 0);
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])));
+        world.check_committed();
+        assert_eq!(db.private_ids(), 0, "{laid}, {drops}");
+    }
 }
 
 /// The claims of a call are those of the Merks it comes to (SC3): a read
@@ -1937,6 +2317,244 @@ fn a_call_that_a_rule_refuses_adds_nothing() {
     let other = tx.txn.evaluate(sub(5), &mut Rules(&calls));
     assert_eq!(other.expect("a hash"), made_before);
     assert!(committed(db.commit(&versions, &tx.txn).expect("a commit")));
+}
+
+/// A node that a scope reads from its entry in the write set has the
+/// stale hashes that its writer stated, as it has where no call is made
+/// (`NodeView::stale`): a stale value hash with no key-value hash beside
+/// it, and the mark of the hash of a child that the node does not have.
+/// Its cell has them as the pages mark them, once the scope's writes are
+/// laid out. The call goes by the pages: it makes the key-value hash with
+/// the value hash, and nothing of a node whose only mark is of a child
+/// that is not there.
+#[test]
+fn a_node_that_is_read_from_its_entry_has_the_stale_hashes_its_writer_stated() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(137);
+    planted(&mut world, &mut rng);
+    let tx = world.begin();
+    let beside = tx.txn.scope().expect("a scope");
+    let writer = tx.txn.scope().expect("a scope beside it");
+
+    // Two leaves are given another value. The writer leaves the value
+    // hash of the one, and marks the hash of a left child of the other,
+    // which has none. It makes every other hash.
+    let (_, records) = model::records(&items(&world, &tx, 1));
+    let leaf = |node: &model::NodeRec| Side::BOTH.iter().all(|side| node.link(*side).is_none());
+    let leaves = records.iter().filter(|(_, node)| leaf(node));
+    let mut leaves = leaves.map(|(key, _)| key.clone());
+    let (valued, childless) = (leaves.next().expect("a leaf"), leaves.next().expect("two"));
+    let mut merk = world.merk(&tx, 1, |items| {
+        for key in [&valued, &childless] {
+            items.insert(key.clone(), value(&mut rng, 70));
+        }
+    });
+    let value_alone = Stale::of(HashField::Value);
+    let no_child = Stale::of(HashField::Child(Side::Left));
+    merk.stale.insert(valued.clone(), value_alone);
+    merk.stale.insert(childless.clone(), no_child);
+    let through = batch(vec![merk]).through(&writer);
+    world.apply_in(&tx, &writer, &through).expect("the change");
+    assert!(!writer.is_laid_out());
+
+    let read = |key: &[u8]| {
+        let seen = |view: Option<NodeView<'_>>| view.map(|view| (view.stale(), view.is_record()));
+        writer
+            .node(sub(1), key, seen)
+            .expect("a read")
+            .expect("a node")
+    };
+    assert_eq!(read(&valued), (value_alone, true));
+    assert_eq!(read(&childless), (no_child, true));
+    writer.lay_out().expect("the change is laid out");
+    assert_eq!(
+        read(&valued),
+        (value_alone.with(HashField::KeyValue), false)
+    );
+    assert_eq!(read(&childless), (Stale::NONE, false));
+    assert_eq!(tx.txn.stats().stale_nodes, 1);
+
+    // The call makes the two hashes of the one node, and reads the root's.
+    let calls = db.counts.rule_calls.load(Ordering::Relaxed);
+    let first_write = world.latest().get();
+    let made = writer.evaluate(sub(1), &mut Rules(&db.counts.rule_calls));
+    assert_eq!(made.expect("a hash"), expected(&world, &tx, 1));
+    assert_eq!(db.counts.rule_calls.load(Ordering::Relaxed) - calls, 3);
+    let written = [valued.clone()].into_iter().collect();
+    tell(&world, &tx, 1, Some(&written), first_write);
+    assert_eq!(read(&valued), (Stale::NONE, false));
+    assert_eq!(tx.txn.stats().stale_nodes, 0);
+    beside.rollback();
+    writer.merge();
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+}
+
+/// How a call ends that makes no hash of its Merk.
+#[derive(Debug, Clone, Copy)]
+enum Ends {
+    /// A rule refuses after this many calls.
+    Refused(usize),
+    /// A rule panics at its call of this number.
+    Panicked(u64),
+}
+
+/// A call that ends at its rules leaves its scope the claims it had
+/// before a hash was to be made (SC3): the read of the Merk, and no
+/// write, although the stale hashes were left by a writer that merged and
+/// the call would have written them. So a scope beside it reads the Merk,
+/// where the first rule refuses, where one refuses or panics in the
+/// middle and the frames are given up, and where the last one does. With
+/// that read standing the caller's next call is refused before a rule is
+/// called, and keeps its read. Once the read is gone the call makes the
+/// hashes, and the Merk is the caller's to write: the read is refused.
+#[test]
+fn a_call_that_ends_at_its_rules_leaves_its_scope_no_write_claim() {
+    for laid in [true, false] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        let mut rng = Rng::new(131);
+        planted(&mut world, &mut rng);
+        let tx = world.begin();
+        let merk = changed(&world, &tx, &mut rng, 1, 0);
+        let to_make = calls_for(&merk) as usize + 1;
+        world.apply(&tx, &batch(vec![merk])).expect("the change");
+        let root_hash = expected(&world, &tx, 1);
+        // The scope that is opened first has its writes laid out.
+        let first = tx.txn.scope().expect("a scope");
+        let second = tx.txn.scope().expect("a scope beside it");
+        let (caller, beside) = match laid {
+            true => (first, second),
+            false => (second, first),
+        };
+        let reads = |scope: &Scope<'_, '_>| scope.node(sub(1), &key(2), |view| view.is_some());
+        let unit = Unit::data(sub(1));
+
+        let ends = [
+            Ends::Refused(0),
+            Ends::Refused(to_make / 2),
+            Ends::Panicked(to_make as u64 / 2),
+            Ends::Refused(to_make - 1),
+        ];
+        for end in ends {
+            let calls = std::sync::atomic::AtomicU64::new(0);
+            let rebuilds = tx.txn.stats().rebuilds;
+            match end {
+                Ends::Refused(left) => {
+                    let mut rules = Refusing {
+                        rules: Rules(&calls),
+                        left,
+                    };
+                    let refused = caller.evaluate(sub(1), &mut rules);
+                    let refused = refused.expect_err("a rule refuses");
+                    assert!(
+                        matches!(refused, TxnError::Hash(HashError::Rule(_))),
+                        "{laid}, {end:?}: {refused:?}"
+                    );
+                }
+                Ends::Panicked(at) => {
+                    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut rules = Panicking {
+                            rules: Rules(&calls),
+                            at,
+                        };
+                        caller.evaluate(sub(1), &mut rules)
+                    }));
+                    assert!(
+                        panicked.is_err(),
+                        "{laid}: the rules panic at their call {at}"
+                    );
+                }
+            }
+            // A third scope reads the Merk, and ends.
+            let third = tx.txn.scope().expect("a third scope");
+            let read = reads(&third);
+            assert!(read.expect("the caller holds no write"), "{laid}, {end:?}");
+            third.rollback();
+            let given_up = tx.txn.stats().rebuilds - rebuilds;
+            match end {
+                Ends::Refused(0) => assert_eq!(given_up, 0, "{laid}: no hash was stored"),
+                Ends::Refused(left) if left < to_make - 1 => assert!(given_up <= 1),
+                _ => assert_eq!(given_up, 1, "{laid}, {end:?}"),
+            }
+        }
+
+        // The scope beside the caller reads the Merk: the call would
+        // write it, and is refused with no rule called.
+        assert!(reads(&beside).expect("a read beside a read"));
+        let calls = db.counts.rule_calls.load(Ordering::Relaxed);
+        let refused = evaluate(&world, &tx, &caller, 1, &[1]);
+        match refused {
+            Err(TxnError::ScopeOverlap { unit: held }) => assert_eq!(held, unit, "{laid}"),
+            other => panic!("{laid}: another scope has read the Merk: {other:?}"),
+        }
+        assert_eq!(db.counts.rule_calls.load(Ordering::Relaxed), calls);
+        let third = tx.txn.scope().expect("a third scope");
+        assert!(reads(&third).expect("the caller holds its read still"));
+        third.rollback();
+        beside.rollback();
+
+        // Nothing stands against the call now.
+        let made = evaluate(&world, &tx, &caller, 1, &[1]).expect("the hashes are made");
+        assert_eq!(made, root_hash, "{laid}");
+        let third = tx.txn.scope().expect("a third scope");
+        match reads(&third) {
+            Err(TxnError::ScopeOverlap { unit: held }) => assert_eq!(held, unit, "{laid}"),
+            other => panic!("{laid}: the caller wrote the Merk: {other:?}"),
+        }
+        third.rollback();
+        caller.merge();
+        assert_eq!(tx.txn.stats().stale_nodes, 0);
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])));
+        world.check_committed();
+    }
+}
+
+/// A put that left a hash stale and that the walk from the root came to
+/// is not searched for: the write set's list of those puts is for the
+/// ones that no stale hash leads to. Here the frames were made again, and
+/// keep no place of a node of the Merk, so a search for one would go
+/// below the root and be counted.
+#[test]
+fn the_call_searches_for_no_put_that_its_walk_came_to() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(139);
+    planted(&mut world, &mut rng);
+    let tx = world.begin();
+    let merk = changed(&world, &tx, &mut rng, 1, 0);
+    let to_make = calls_for(&merk) as usize + 1;
+    world.apply(&tx, &batch(vec![merk])).expect("the change");
+    let root_hash = expected(&world, &tx, 1);
+    let stale = stale_in(&world, &tx, 1);
+    assert!(stale.len() > 8);
+
+    // A call that is refused at its last hash gives the frames up, and a
+    // read of another Merk makes them again.
+    let calls = AtomicU64::new(0);
+    let mut refusing = Refusing {
+        rules: Rules(&calls),
+        left: to_make - 1,
+    };
+    let refused = tx.txn.evaluate(sub(1), &mut refusing);
+    assert!(matches!(refused, Err(TxnError::Hash(HashError::Rule(_)))));
+    let rebuilds = tx.txn.stats().rebuilds;
+    let read = tx.txn.node(sub(2), &key(1), |view| view.is_some());
+    assert!(!read.expect("a read of another Merk"));
+    assert_eq!(tx.txn.stats().rebuilds, rebuilds + 1);
+
+    let first_write = world.latest().get();
+    let lookups = world.path.stats().keyed_lookups();
+    let made = tx.txn.evaluate(sub(1), &mut Rules(&calls));
+    assert_eq!(made.expect("the hashes are made"), root_hash);
+    assert_eq!(world.path.stats().keyed_lookups() - lookups, 0);
+    tell(&world, &tx, 1, Some(&stale), first_write);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
 }
 
 /// Rules that panic at their call number `at`.
