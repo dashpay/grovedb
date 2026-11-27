@@ -792,7 +792,10 @@ fn both_kinds_of_owners_are_asked() {
     let (mut moved, mut not_found) = (0, 0);
     for _ in 0..8 {
         match cleaner.pass_values(&odd) {
-            Ok(pass) => moved += pass.cleaned.map_or(0, |(_, cleaned)| cleaned.moved),
+            Ok(pass) => {
+                let cleaned = pass.cleaned.iter().chain(&pass.swept);
+                moved += cleaned.map(|(_, cleaned)| cleaned.moved).sum::<u64>();
+            }
             Err(CleanerError::Values(ValueStoreError::OwnersNotFound { cleaned, .. })) => {
                 // Neither the value that died nor the one that lives has
                 // an owner on this side.

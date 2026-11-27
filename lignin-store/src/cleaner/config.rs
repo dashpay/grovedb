@@ -112,12 +112,11 @@ pub struct CleanerConfig {
     pub value_min_file_dead_percent: u8,
     /// The share of dead bytes of the value log, in a hundred, over which a
     /// pass cleans the file with the largest share of dead bytes whatever
-    /// that share is, from one byte in a hundred. It is not a bound a pass
-    /// keeps: a pass cleans one such file, and while it is over, each pass
-    /// takes the next. Where the deaths are spread over every file, no
-    /// file may reach the floor, and the value log comes to rest at this
-    /// share once the cleaner has caught up, with what the commits free
-    /// faster than the passes clean on top. Below
+    /// that share is, from one byte in a hundred. Once the cleaner has
+    /// caught up, the value log's dead share is at most this: the worst
+    /// case, which a log whose deaths are spread evenly over its files
+    /// reaches. It is not a bound a pass keeps, and the log can come to rest
+    /// well under its target, a pass giving back whole files. Below
     /// [`Self::value_dead_percent`] it is over whenever the target is.
     pub value_ceiling_dead_percent: u8,
     /// How long the background loop sleeps between two passes when nobody
@@ -138,10 +137,9 @@ impl CleanerConfig {
     /// With these, the dead space of a store stays below 20 in a hundred
     /// under a steady load of commits, as read after a pass of the
     /// cleaner: in the segments, 14 that the cleaner leaves, and at most 4
-    /// more in what was emptied and waits to be deleted. The value log
-    /// comes to rest at 20, the ceiling, where its deaths are spread
-    /// evenly over its files, and between 18 and 20 where files reach the
-    /// floor before the log reaches the ceiling. That is for a store with no
+    /// more in what was emptied and waits to be deleted. In the value log,
+    /// at most 20, the ceiling, once the cleaner has caught up: the worst
+    /// case, for deaths spread evenly over its files. That is for a store with no
     /// reader on an old version, no operation that runs for long, and
     /// blocks that are large against [`Self::min_segment_len`]. What a
     /// burst of commits kills faster than [`Self::max_pass_bytes`] and

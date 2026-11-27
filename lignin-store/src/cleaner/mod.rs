@@ -348,29 +348,32 @@
 //! write it again, so a file is worth cleaning for the share of it that
 //! is dead:
 //!
-//! - The file with the largest share of dead bytes is cleaned if at least
+//! - Above [`CleanerConfig::value_dead_percent`] (18 by default), the
+//!   file with the largest share of dead bytes is cleaned if at least
 //!   [`CleanerConfig::value_min_file_dead_percent`] of it is dead (40 in a
-//!   hundred by default). A target alone, with files of which a little is
+//!   hundred by default). The shares are of the files that a cleaning can
+//!   help and of those being filled. A target alone, with files of which a little is
 //!   dead, has the cleaner copy files that are mostly live: under a churn
 //!   of the reference workload at a target of 14, nine bytes in ten of
 //!   what it copied came from files less than a fifth dead.
 //! - Over [`CleanerConfig::value_ceiling_dead_percent`] (20 by default),
-//!   that file is cleaned whatever its share, from one byte in a hundred,
-//!   one file a pass. **This is the worst case of the value log's dead
-//!   share:** where the deaths are spread evenly over the files, as
-//!   regroupings spread them, no file need reach the floor, and the log
-//!   comes to rest at the ceiling once the cleaner has caught up, with
-//!   what the commits free faster than the passes clean on top. Where
-//!   they are not, files reach the floor first, and the log comes to rest
-//!   between the target and the ceiling.
+//!   that file is cleaned whatever its share, from one byte in a hundred.
+//!   **The worst case of the value log's dead share:** once the cleaner
+//!   has caught up, it is at most the ceiling. It is not a bound a pass
+//!   keeps, and the log can come to rest well under its target, a pass
+//!   giving back whole files. Where deaths are spread evenly over the
+//!   files, as regroupings spread them, no file need reach the floor, and
+//!   the log rises to the ceiling before files that are mostly live are
+//!   copied.
 //! - After it, the files that are at least 90 in a hundred dead are
 //!   cleaned in the same pass, most dead first, while their live bytes
 //!   stay within [`CleanerConfig::max_pass_bytes`]: a burst of deletes
 //!   empties files faster than one a pass.
 //! - A file whose cleaning moved nothing, because write transactions held
-//!   the pages of its values, is set aside: it is looked at again eight
-//!   passes later, however many files are set aside, and no file under
-//!   the floor is taken in its place.
+//!   the pages of its values, is set aside: the seven passes after that
+//!   one pass it over, and from the eighth on it may be taken again,
+//!   however many files are set aside. No file under the floor is taken
+//!   in its place.
 //!
 //! With a target of nothing dead, any dead byte is enough, whatever the
 //! floor: that is how `lignin compact` asks for every byte back.
@@ -383,9 +386,9 @@
 //!
 //! A move is refused while a write transaction holds a private copy of
 //! the page (PV7), and the copy that was appended for it is dead. A file
-//! whose cleaning moved nothing for that reason is set aside for eight
-//! passes, however many files are set aside with it, and the passes
-//! between are for the other files worth cleaning. Each try of a file
+//! whose cleaning moved nothing for that reason is passed over by the
+//! seven passes after that one, however many files are set aside with it,
+//! and those passes are for the other files worth cleaning. Each try of a file
 //! that a long transaction keeps busy appends its live values again for
 //! nothing; a file is tried because the floor let the cleaner take it,
 //! so at least that share of it is dead, unless the log is over its
@@ -407,8 +410,9 @@
 //! [`CleanerConfig::max_pass_bytes`] and one block more, counting the
 //! copies whose links were gone when they were to be switched, and reads
 //! the page table a few times at most. A pass over the value log cleans
-//! one file, and the loop sleeps [`CleanerConfig::idle`] between two
-//! turns. A pass that moved nothing on, with no segment waiting to be
+//! one file whole, and after it the files that are nearly empty while
+//! their live bytes stay within [`CleanerConfig::max_pass_bytes`], and the
+//! loop sleeps [`CleanerConfig::idle`] between two turns. A pass that moved nothing on, with no segment waiting to be
 //! deleted and no trim waiting for an operation, is remembered: the next
 //! one does not read the page table if it finds the store as that pass
 //! left it. It looks at a few counts and at the list of segments. The

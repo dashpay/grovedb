@@ -35,9 +35,10 @@ const ASK_AGAIN_AFTER: u32 = 16;
 
 /// For how many passes a file is set aside after a cleaning that moved
 /// nothing, because write transactions held copies of the pages of its
-/// values: it is looked at again this many passes later. Each try appends
-/// the file's live values again, and the copies are dead. The wait is the
-/// same however many files are set aside.
+/// values: set aside by pass n, it is passed over until pass n plus this,
+/// from which it may be taken again. Each try appends the file's live
+/// values again, and the copies are dead. The wait is the same however
+/// many files are set aside.
 pub(super) const BUSY_PASSES: u64 = 8;
 
 /// The share of a file's bytes, in a hundred, that are dead from which a
@@ -271,18 +272,19 @@ impl<'s> Cleaner<'s> {
     /// The first is the file with the largest share of dead bytes, if that
     /// share is at least the floor
     /// ([`CleanerConfig::value_min_file_dead_percent`]): a file that is
-    /// mostly live costs many copies for little space. Over the ceiling
-    /// ([`CleanerConfig::value_ceiling_dead_percent`]) a file one byte in
-    /// a hundred of which is dead is enough, so that a log whose deaths
-    /// are spread over every file is held there. With a target of nothing
-    /// dead, any dead byte is enough. After the first, the files that are
+    /// mostly live costs many copies for little space; one byte in a
+    /// hundred at least, whatever the floor is set to. Over the ceiling
+    /// ([`CleanerConfig::value_ceiling_dead_percent`]) one byte in a
+    /// hundred is enough, so that a log whose deaths are spread over every
+    /// file is brought back under it. With a target of nothing dead, any
+    /// dead byte is enough. After the first, the files that are
     /// at least [`SWEEP_DEAD_PERCENT`] dead follow, most dead first, as
     /// long as their live bytes stay within
     /// [`CleanerConfig::max_pass_bytes`].
     ///
     /// A file whose last cleaning moved nothing, because write
     /// transactions held copies of the pages of its values, is passed
-    /// over for [`BUSY_PASSES`] passes.
+    /// over until [`BUSY_PASSES`] passes after the one that set it aside.
     ///
     /// [`CleanerConfig::value_dead_percent`]: super::CleanerConfig::value_dead_percent
     /// [`CleanerConfig::value_min_file_dead_percent`]: super::CleanerConfig::value_min_file_dead_percent

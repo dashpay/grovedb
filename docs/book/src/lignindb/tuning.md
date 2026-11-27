@@ -137,9 +137,9 @@ is `CleanerConfig::new`.
 | Option | Default | What it is | When to change it |
 | --- | --- | --- | --- |
 | `CleanerConfig::target_dead_percent` | 14 % | the share of dead bytes of the segments that the cleaner works towards | lower to take less disk, at the price of more bytes written for each byte given back; higher for fewer writes and more disk |
-| `CleanerConfig::value_dead_percent` | 18 % | the same for the value log: above it, a pass cleans the closed file with the largest share of dead bytes if that file is worth it (the next two rows), and after it the files that are at least 90 % dead, within `max_pass_bytes`. A file whose last cleaning moved nothing, because write transactions held its pages, is left for a few passes | as above |
+| `CleanerConfig::value_dead_percent` | 18 % | the same for the value log: above it, a pass cleans the closed file with the largest share of dead bytes if that file is worth it (the next two rows), and after it the files that are at least 90 % dead, within `max_pass_bytes`. A file whose last cleaning moved nothing, because write transactions held its pages, is passed over by the seven passes after that one | as above |
 | `CleanerConfig::value_min_file_dead_percent` | 40 % | the floor: the share of a value-log file's own bytes that must be dead for a pass to clean it while the value log is under its ceiling. Each live value of a file costs a copy and a page step that has its page read and written again | lower to keep the value log smaller, at the price of copying files that are mostly live; leave it |
-| `CleanerConfig::value_ceiling_dead_percent` | 20 % | over this share of dead bytes in the value log, a pass cleans the file most worth it whatever its own share. **It is the worst case of the value log's dead space**: where deaths are spread evenly over the files, no file need reach the floor, and the log is held here | with `value_dead_percent`; keep it above it |
+| `CleanerConfig::value_ceiling_dead_percent` | 20 % | over this share of dead bytes in the value log, a pass cleans the file most worth it whatever its own share. **It is the worst case of the value log's dead space**: once the cleaner has caught up, the share is at most this, and a log whose deaths are spread evenly over its files, so that no file reaches the floor, rises to it | with `value_dead_percent`; keep it above it |
 | `CleanerConfig::checkpoint_dead_percent` | 4 % | the most bytes of segment blocks, as a share of the bytes of all segment blocks, that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
 | `CleanerConfig::seal_dead_percent` | 2 % | a file that is being filled is closed for cleaning when its dead bytes are this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::max_segment_percent` | 1 % | a file that is being filled is closed when it holds this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
@@ -154,11 +154,11 @@ load of commits, as read after a pass of the cleaner (14 that the
 cleaner leaves, and at most 4 more that wait for a table checkpoint),
 for a store with no reader on an old version, no operation that runs for
 long, and blocks that are large against `min_segment_len`. The value log
-comes to rest between 18 and 20 in a hundred dead once the cleaner has
-caught up, at 20 where its deaths are spread evenly over its files: of the
-files it can clean, the cleaner copies those at least 40 in a hundred dead,
-and files that are mostly live only while the log is over 20, one a pass.
-What the commits free faster than the passes clean shows on top. What a burst
+is at most 20 in a hundred dead once the cleaner has caught up, and rises
+to that where its deaths are spread evenly over its files: while it is
+over 18, the cleaner copies files at least 40 in a hundred dead, and over
+20 the most dead file whatever its share. It can come to rest well under
+18, a cleaning giving back whole files. What a burst
 of commits frees faster than the cleaner moves shows until it has caught
 up. A snapshot that is kept holds what was freed after its version, and
 a checkpoint that is kept holds the files it links, whatever the
