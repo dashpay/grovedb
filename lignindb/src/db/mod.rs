@@ -1908,11 +1908,14 @@ impl Db {
     }
 
     /// What the segments and the value log hold now, as the cleaner counts
-    /// them ([`Cleaner::space`] and [`Cleaner::value_space`]): a read of the
-    /// whole page table and of the value log's counts of live bytes, which
-    /// changes nothing. It waits for a pass of the cleaner that is under
-    /// way, as a pass waits for it; a commit does not wait for it. A
-    /// measurement that states how much of the store is dead calls it.
+    /// them ([`Cleaner::space`] and [`Cleaner::value_space`]): the two reads
+    /// a pass of the cleaner makes, one after the other, so the two are of
+    /// two moments, and they change nothing. The first reads the whole page
+    /// table under the cleaner's own lock, so it waits for a pass that is
+    /// under way and a pass waits for it; the second copies the value
+    /// log's counts of live bytes under the lock that a commit takes to
+    /// change them, for as long as the copy takes. A measurement that
+    /// states how much of the store is dead calls it.
     pub fn space(&self) -> Result<(Space, ValueSpace), CleanerError> {
         let cleaner = self.shared.cleaner();
         Ok((cleaner.space()?, cleaner.value_space()?))

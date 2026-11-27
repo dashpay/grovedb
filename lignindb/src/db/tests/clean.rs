@@ -564,6 +564,7 @@ fn the_space_of_a_store_says_what_its_writes_left_dead() {
     let db = Db::open(dir.path(), &still).expect("the database is opened again");
     let (segments, values) = db.space().expect("the space");
     assert!(segments.block_bytes() > 0, "{segments:?}");
+    assert!(segments.live_bytes() > 0, "{segments:?}");
     assert!(segments
         .segments
         .iter()
