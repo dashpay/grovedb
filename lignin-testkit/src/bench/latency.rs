@@ -1369,7 +1369,10 @@ fn mount_in(mounts: &str, path: &Path) -> Option<String> {
         let (Some(kind), Some(source)) = (after.first(), after.get(1)) else {
             continue;
         };
-        if !path.starts_with(point) {
+        // The system writes a space, a tab, a new line and a backslash of a
+        // mount point as a backslash and three octal digits.
+        let point = unescaped(point);
+        if !path.starts_with(&point) {
             continue;
         }
         if found.as_ref().is_none_or(|(len, _)| point.len() >= *len) {
@@ -1381,6 +1384,33 @@ fn mount_in(mounts: &str, path: &Path) -> Option<String> {
         }
     }
     found.map(|(_, mount)| mount)
+}
+
+/// A field of `mountinfo` with its escapes undone: `\040` is a space, and
+/// so for every backslash with three octal digits.
+fn unescaped(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let octal = bytes.get(at + 1..at + 4).filter(|digits| {
+            bytes[at] == b'\\' && digits.iter().all(|digit| (b'0'..=b'7').contains(digit))
+        });
+        match octal {
+            Some(digits) => {
+                let value = digits
+                    .iter()
+                    .fold(0u32, |value, digit| value * 8 + u32::from(digit - b'0'));
+                out.push(value as u8);
+                at += 4;
+            }
+            None => {
+                out.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
@@ -2407,6 +2437,15 @@ mod tests {
             Some("ext4 from /dev/vda1: rw,relatime; rw")
         );
         assert_eq!(mount_in("", Path::new("/tmp")), None);
+        // A mount point with a space in it is written with an escape, and a
+        // directory under it is on that mount and not on the one above.
+        let spaced =
+            format!("{mounts}250 234 7:1 / /mnt/e4a/my\\040disk rw,noatime - ext4 /dev/loop1 rw\n");
+        assert_eq!(
+            mount_in(&spaced, Path::new("/mnt/e4a/my disk/scratch")).as_deref(),
+            Some("ext4 from /dev/loop1: rw,noatime; rw")
+        );
+        assert_eq!(unescaped("a\\040b\\134c\\011d\\9"), "a b\\c\td\\9");
         // A line that is no mount is passed over.
         let with_another = format!("not a line of mounts\n{mounts}");
         assert_eq!(
