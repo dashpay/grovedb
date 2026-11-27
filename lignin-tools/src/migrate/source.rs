@@ -58,6 +58,15 @@
 //! read-only open replays them in memory: the migration is of the state the
 //! node would recover to at its next start, and the log stays as it is.
 //!
+//! **A directory with an entry of LigninDB's is refused**, before anything
+//! of it is opened or locked: GroveDB's look at the names of its entries
+//! (`grovedb::engine::entries::look`), which the open that chooses the
+//! engine asks too, is to say RocksDB or nothing. A RocksDB open of a
+//! LigninDB directory makes a RocksDB database beside the LigninDB one,
+//! which would be read in place of the state the directory holds; the
+//! look refuses entries of both engines, and the source refuses a
+//! directory that it says is LigninDB's.
+//!
 //! **The source is not to change while it is read.** [`Source::unchanged`]
 //! compares the names, the lengths and the modification times of the
 //! directory's entries with what they were at the open. RocksDB's info log
@@ -80,6 +89,8 @@ use std::{
     time::SystemTime,
 };
 
+use grovedb::engine::{entries::look, EngineKind};
+use grovedb_storage::Error as StorageError;
 use rocksdb::{ColumnFamily, DBRawIterator, Options, ReadOptions, DB};
 
 use crate::ToolError;
@@ -138,6 +149,25 @@ impl Keyspace {
 
 fn source_error(dir: &Path, what: impl std::fmt::Display) -> ToolError {
     ToolError::Migrate(format!("the source {}: {what}", dir.display()))
+}
+
+/// Refuses `dir` where GroveDB's look at its entries, which opens nothing,
+/// says that it holds LigninDB's entries, alone or with RocksDB's, and
+/// where it cannot list it. A directory that is not there, or in which no
+/// entry says an engine, is left to the open.
+fn of_rocksdb_alone(dir: &Path) -> Result<(), ToolError> {
+    let words = match look(dir) {
+        Ok(None | Some((EngineKind::RocksDb, _))) => return Ok(()),
+        Ok(Some((EngineKind::Lignin, entry))) => format!(
+            "it holds `{}`, an entry that only a LigninDB database makes, and this command reads \
+             a RocksDB database alone: nothing was opened or locked. Find out which database \
+             there holds the node's state",
+            entry.to_string_lossy()
+        ),
+        Err(StorageError::NotSupported(words) | StorageError::StorageError(words)) => words,
+        Err(error) => error.to_string(),
+    };
+    Err(source_error(dir, words))
 }
 
 /// One entry of the source's directory: its name, its length and when it
@@ -283,10 +313,12 @@ impl std::fmt::Debug for Source {
 impl Source {
     /// Opens the database in `dir` for reading.
     ///
-    /// It is refused where `dir` holds no RocksDB database, where a
-    /// process has the database open for writing, and where its column
-    /// families are not the four of a GroveDB.
+    /// It is refused where `dir` holds an entry of LigninDB's, which is
+    /// found before anything is opened or locked, where it holds no RocksDB
+    /// database, where a process has the database open for writing, and
+    /// where its column families are not the four of a GroveDB.
     pub(crate) fn open(dir: &Path) -> Result<Self, ToolError> {
+        of_rocksdb_alone(dir)?;
         if !dir.join("CURRENT").is_file() {
             return Err(source_error(
                 dir,
