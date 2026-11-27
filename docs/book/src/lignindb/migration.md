@@ -241,7 +241,11 @@ Set two variables before the next block:
   of it: a migration that is gone on with after a failure is then gone
   on with by another build. The block prints the commit it builds, on
   the line that begins with the words building GroveDB at; on a run of
-  it after a failure it is to print the same one.
+  it after a failure it is to print the same one. These steps are for a
+  release whose `lignin migrate` refuses a source that holds an entry of
+  a LigninDB database (step 4), and keep no check of their own for it:
+  for a release whose `lignin migrate` does not, follow the runbook of
+  that release.
 - `WORK`: a directory for the source code, the build and the reports of
   each step. The build takes a few GiB. One `WORK` holds the reports of
   one migration: keep it until the way back is closed, since step 11
