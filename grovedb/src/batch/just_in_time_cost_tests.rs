@@ -1,7 +1,7 @@
 //! This tests just in time costs
 //! Just in time costs modify the tree in the same batch
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use std::{collections::BTreeMap, option::Option::None};
 
@@ -34,10 +34,10 @@ mod tests {
         removed_bytes
     }
 
-    fn apply_batch(
-        grove_db: &TempGroveDb,
+    fn apply_batch<'db>(
+        grove_db: &'db TempGroveDb,
         ops: Vec<QualifiedGroveDbOp>,
-        tx: &Transaction,
+        tx: &Transaction<'db>,
         grove_version: &GroveVersion,
     ) -> OperationCost {
         grove_db
@@ -59,9 +59,9 @@ mod tests {
             .expect("expected to not error")
     }
 
-    fn expect_storage_flags(
-        grove_db: &TempGroveDb,
-        tx: &Transaction,
+    fn expect_storage_flags<'db>(
+        grove_db: &'db TempGroveDb,
+        tx: &Transaction<'db>,
         expected_storage_flags: StorageFlags,
         grove_version: &GroveVersion,
     ) {
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(storage_flags, expected_storage_flags);
     }
 
-    fn verify_references(grove_db: &TempGroveDb, tx: &Transaction) {
+    fn verify_references<'db>(grove_db: &'db TempGroveDb, tx: &Transaction<'db>) {
         let issues = grove_db
             .visualize_verify_grovedb(Some(tx), true, false, &Default::default())
             .unwrap();
@@ -200,7 +200,7 @@ mod tests {
         .unwrap()
         .expect("cannot get element");
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
 
         let cost = db
             .apply_partial_batch(
@@ -334,7 +334,7 @@ mod tests {
         .unwrap()
         .expect("cannot get element");
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
 
         let cost = db
             .apply_partial_batch(

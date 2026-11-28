@@ -11,6 +11,9 @@
 #[cfg(feature = "minimal")]
 pub mod merk;
 
+#[cfg(feature = "minimal")]
+pub mod cost_model;
+
 /// Debug inspection support for GroveDbg.
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
@@ -26,8 +29,11 @@ pub mod owner;
 /// Algorithms for generating and verifying Merkle proofs.
 pub mod proofs;
 
+#[cfg(feature = "minimal")]
+pub mod store;
+
 /// Various helpers useful for tests or benchmarks.
-#[cfg(feature = "test_utils")]
+#[cfg(any(feature = "test_utils", all(test, feature = "minimal")))]
 pub mod test_utils;
 
 /// The core tree data structure.

@@ -24,7 +24,7 @@ graph TD
             LEFT["<b>left:</b> Option&lt;Link&gt;"]
             RIGHT["<b>right:</b> Option&lt;Link&gt;"]
         end
-        OLD["<b>old_value:</b> Option&lt;Vec&lt;u8&gt;&gt; — giá trị trước đó cho delta chi phí"]
+        OLD["<b>baseline:</b> Baseline — giá trị trước đó cho delta chi phí"]
         KNOWN["<b>known_storage_cost:</b> Option&lt;KeyValueStorageCost&gt;"]
     end
 
@@ -43,7 +43,7 @@ Trong mã nguồn (`merk/src/tree/mod.rs`):
 ```rust
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_value: Option<Vec<u8>>,        // Giá trị trước đó cho theo dõi chi phí
+    pub(crate) baseline: Baseline,                  // Giá trị trước đó cho theo dõi chi phí
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 

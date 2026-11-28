@@ -1,0 +1,61 @@
+[package]
+name = "lignin-tools"
+description = "The lignin command: inspect, verify, compact and migrate LigninDB databases"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[[bin]]
+name = "lignin"
+path = "src/main.rs"
+
+[features]
+# `lignin migrate`, the migrator from a RocksDB GroveDB (OPS-02). It is the
+# one subcommand that reads RocksDB, so RocksDB is compiled only for a build
+# that asks for it: `cargo build -p lignin-tools --features migrate`.
+migrate = [
+    "dep:rocksdb",
+    "dep:grovedb",
+    "dep:grovedb-path",
+    "dep:grovedb-storage",
+    "dep:rustix",
+    "dep:nix",
+]
+
+[dependencies]
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
+lignin-store = { version = "7.0.0", path = "../lignin-store" }
+lignin-tree = { version = "7.0.0", path = "../lignin-tree" }
+lignindb = { version = "7.0.0", path = "../lignindb" }
+# Merk's hash rules, by which `lignin verify` makes every stored hash
+# again. Merk on LigninDB alone: no RocksDB is built for the command.
+grovedb-merk = { version = "7.0.0", path = "../merk", default-features = false, features = ["lignin_storage"] }
+grovedb-version = { version = "7.0.0", path = "../grovedb-version" }
+# The migrator alone: the source's files through RocksDB's read-only open,
+# the LigninDB engine of GroveDB for what an element hosts and where a
+# root-key record is kept, paths and prefixes, and the lock probe
+# of the source.
+rocksdb = { version = "0.25.0", optional = true }
+grovedb = { version = "7.0.0", path = "../grovedb", default-features = false, features = ["lignin_storage"], optional = true }
+grovedb-path = { version = "7.0.0", path = "../path", optional = true }
+grovedb-storage = { version = "7.0.0", path = "../storage", default-features = false, optional = true }
+rustix = { version = "1", features = ["fs"], optional = true }
+
+# The migrator's lock on its source, on Linux: one that belongs to the open
+# of the file that asked for it, which `rustix` does not ask for.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.32", default-features = false, features = ["fs"], optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Elements as GroveDB serializes them, for the databases of the tests.
+grovedb-element = { version = "7.0.0", path = "../grovedb-element" }
+
+# The pipe of one test of the migrator's lock probe, by a call that Linux and
+# macOS both have: `rustix` makes no pipe on macOS.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.32", default-features = false, features = ["fs"] }

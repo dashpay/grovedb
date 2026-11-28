@@ -1,0 +1,16 @@
+# The engines Merk's test suite runs on, one a line: its name, then the Cargo
+# feature of `grovedb-merk` that compiles the engine.
+#
+# `cargo test -p grovedb-merk` runs the suite on the first. Another is
+# selected by name: `MERK_TEST_ENGINE=node-store-only cargo test -p
+# grovedb-merk`. CI runs the suite once for every line
+# (`.github/workflows/grovedb.yml`). In a build without the feature of the
+# selected engine the suite has no engine, and the tests that need one are
+# left out.
+#
+# A name is given its engine type in `src/test_utils/engine.rs`
+# (`SuiteEngine`). `docs/lignindb/test-engines.md` says what registering an
+# engine takes.
+rocksdb          rocksdb_storage
+node-store-only  rocksdb_storage
+lignin           lignin_storage

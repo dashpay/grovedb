@@ -29,7 +29,7 @@ mod tests {
         tree::{combine_hash, value_hash},
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+
     use grovedb_version::version::{
         v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4, GroveVersion,
     };
@@ -101,28 +101,16 @@ mod tests {
     /// Number of records physically present in the data namespace of
     /// `prefix` (committed state).
     fn records_in(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
-        let tx = db.db.start_transaction();
-        let ctx = db
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        let mut count = 0;
-        while iter.valid().unwrap() {
-            count += 1;
-            iter.next().unwrap();
-        }
-        count
+        crate::tests::data_keyspace_len(db, prefix, None)
     }
 
     fn prefix_of(subtree: &[&[u8]]) -> [u8; 32] {
-        RocksDbStorage::build_prefix(subtree.into()).unwrap()
+        grovedb_storage::prefix::build_prefix(subtree.into()).unwrap()
     }
 
     /// The secondary namespace of an indexed tree at `subtree` for `axis`.
     fn axis_prefix_of(subtree: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
-        RocksDbStorage::secondary_prefix_for(&prefix_of(subtree), axis.tag()).unwrap()
+        grovedb_storage::prefix::secondary_prefix_for(&prefix_of(subtree), axis.tag()).unwrap()
     }
 
     fn insert(

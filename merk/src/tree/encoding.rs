@@ -2,22 +2,15 @@
 
 #[cfg(feature = "minimal")]
 use ed::{Decode, Encode};
-#[cfg(feature = "minimal")]
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
-#[cfg(feature = "minimal")]
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
-use super::TreeNode;
+use super::{Baseline, TreeNode, VALUE_ABSENT};
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::{
     error::{Error, Error::EdError},
     tree::TreeNodeInner,
-    Error::StorageError,
 };
 
 #[cfg(feature = "minimal")]
@@ -50,41 +43,10 @@ impl TreeNode {
         let mut inner = TreeNode::decode_raw_for_read(bytes)?;
         inner.kv.key = key;
         Ok(TreeNode {
-            inner: Box::new(inner),
-            old_value: None,
+            inner: super::spare::boxed(inner),
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
-    }
-
-    /// Get value from storage given key.
-    pub(crate) fn get<'db, S, K>(
-        storage: &S,
-        key: K,
-        value_defined_cost_fn: Option<
-            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<Self>, Error>
-    where
-        S: StorageContext<'db>,
-        K: AsRef<[u8]>,
-    {
-        let mut cost = OperationCost::default();
-        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(StorageError));
-
-        let tree_opt = cost_return_on_error_no_add!(
-            cost,
-            tree_bytes
-                .map(|x| TreeNode::decode_raw(
-                    &x,
-                    key.as_ref().to_vec(),
-                    value_defined_cost_fn,
-                    grove_version
-                ))
-                .transpose()
-        );
-
-        Ok(tree_opt).wrap_with_cost(cost)
     }
 }
 
@@ -93,6 +55,7 @@ impl TreeNode {
     #[inline]
     /// Encode
     pub fn encode(&self) -> Vec<u8> {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         // operation is infallible so it's ok to unwrap
         Encode::encode(&self.inner).unwrap()
     }
@@ -100,6 +63,7 @@ impl TreeNode {
     #[inline]
     /// Encode to destination writer
     pub fn encode_into(&self, dest: &mut Vec<u8>) {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         // operation is infallible so it's ok to unwrap
         Encode::encode_into(&self.inner, dest).unwrap()
     }
@@ -107,6 +71,7 @@ impl TreeNode {
     #[inline]
     /// Return length of encoding
     pub fn encoding_length(&self) -> usize {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         // operation is infallible so it's ok to unwrap
         Encode::encoding_length(&self.inner).unwrap()
     }
@@ -140,6 +105,7 @@ impl TreeNode {
             tree_inner.kv.value_defined_cost =
                 value_defined_cost_fn(tree_inner.kv.value.as_slice(), grove_version);
         }
+        self.keep_old_value();
         *self.inner = tree_inner;
         Ok(())
     }

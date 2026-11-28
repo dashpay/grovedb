@@ -8,7 +8,6 @@ use std::collections::LinkedList;
 
 use grovedb_costs::OperationCost;
 use grovedb_element::Element;
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -17,13 +16,14 @@ use super::{
 };
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp},
+    store::{stored_record, NodeStore},
     test_utils::TempMerk,
     tree::{kv::ValueDefinedCostType, Op, TreeFeatureType::ProvableCountedMerkNode, TreeNode},
     Merk, TreeType,
 };
 
 fn assert_local_count_page(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl NodeStore<'static>>,
     root: [u8; 32],
     offset: u64,
     left_to_right: bool,
@@ -105,7 +105,7 @@ fn trusted_rows_are_the_rows_a_proof_returns_at_every_offset_and_limit() {
                 .map(|row| (row.key, row.value))
                 .collect();
                 let rows = local_count_offset_page_from_view(
-                    merk.storage.raw_iter(),
+                    merk.storage.cursor(),
                     merk.root_key(),
                     TreeType::ProvableCountTree,
                     &range,
@@ -133,12 +133,7 @@ fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
     let v = GroveVersion::latest();
     let (merk, _) = make_15_key_provable_count_tree(v);
     let key = merk.root_key().expect("the fixture has a root");
-    let stored = merk
-        .storage
-        .get(&key)
-        .unwrap()
-        .unwrap()
-        .expect("the root is stored");
+    let stored = stored_record(&merk.storage, &key).expect("the root is stored");
     let mutable = TreeNode::decode_raw(
         &stored,
         key.clone(),
@@ -147,14 +142,14 @@ fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
     )
     .unwrap();
 
-    let fetched = PinnedViewSource::new(merk.storage.raw_iter())
+    let fetched = PinnedViewSource::new(merk.storage.cursor())
         .fetch_key(&key)
         .unwrap()
         .unwrap();
 
-    assert_eq!(fetched.old_value, None);
+    assert_eq!(fetched.old_value(), None);
     assert_eq!(fetched.inner, mutable.inner);
-    assert_eq!(mutable.old_value.as_ref(), Some(mutable.value_ref()));
+    assert_eq!(mutable.old_value(), Some(mutable.value_ref()));
 }
 
 /// A caller outside the walk gets only a value, charged as a storage `get`
@@ -163,13 +158,8 @@ fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
 fn should_read_only_the_value_stored_at_a_key_through_a_view() {
     let v = GroveVersion::latest();
     let (merk, _) = make_15_key_provable_count_tree(v);
-    let stored = merk
-        .storage
-        .get(b"c")
-        .unwrap()
-        .unwrap()
-        .expect("c is stored");
-    let mut view = merk.storage.raw_iter();
+    let stored = stored_record(&merk.storage, b"c").expect("c is stored");
+    let mut view = merk.storage.cursor();
 
     let present = read_value_from_view(&mut view, b"c");
     assert_eq!(
@@ -218,7 +208,7 @@ fn local_count_unit_pages_refuse_exposed_populated_trees() {
             .expect("apply should succeed");
         merk.commit(v);
         let read = local_count_offset_page_from_view(
-            merk.storage.raw_iter(),
+            merk.storage.cursor(),
             merk.root_key(),
             TreeType::ProvableCountTree,
             &range,
@@ -407,7 +397,7 @@ fn should_charge_exactly_the_nodes_a_local_page_loads() {
             nodes
                 .iter()
                 .map(|node| {
-                    let bytes = merk.storage.get([*node]).unwrap().unwrap();
+                    let bytes = stored_record(&merk.storage, &[*node]);
                     bytes.expect("the node is stored").len() as u64
                 })
                 .sum()
@@ -425,7 +415,7 @@ fn should_charge_exactly_the_nodes_a_local_page_loads() {
         };
 
         let read = local_count_offset_page_from_view(
-            merk.storage.raw_iter(),
+            merk.storage.cursor(),
             merk.root_key(),
             TreeType::ProvableCountTree,
             &range,
@@ -448,7 +438,7 @@ fn should_charge_exactly_the_nodes_a_local_page_loads() {
 
     let empty = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
     let read = local_count_offset_page_from_view(
-        empty.storage.raw_iter(),
+        empty.storage.cursor(),
         empty.root_key(),
         TreeType::ProvableCountTree,
         &range,
@@ -576,7 +566,7 @@ fn encode_proof(ops: &LinkedList<ProofOp>) -> Vec<u8> {
 /// root and the returned/skipped counts match expectations. Returns
 /// the verifier's keys for caller-side ordering assertions.
 fn round_trip_keys(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl NodeStore<'static>>,
     expected_root: [u8; 32],
     inner_range: QueryItem,
     offset: u64,
@@ -2072,7 +2062,7 @@ fn make_15_key_tree_with_non_unit_row_and_type(
 }
 
 fn assert_refuses_non_unit_row(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl NodeStore<'static>>,
     inner_range: QueryItem,
     offset: u64,
     limit: Option<u64>,
@@ -2436,11 +2426,10 @@ fn rejects_backward_reference_items_on_kv_value_hash_feature_type() {
 
 mod pinned_view_seek_failures {
     use grovedb_costs::{CostContext, CostsExt, OperationCost};
-    use grovedb_storage::RawIterator;
     use grovedb_version::version::GroveVersion;
 
     use super::super::local_count_offset_page_from_view;
-    use crate::{proofs::query::QueryItem, Error, TreeType};
+    use crate::{proofs::query::QueryItem, store::NodeCursor, Error, TreeType};
 
     /// Holds no record at any position, as an iterator past its records and one
     /// stopped on an error both report. Only `status` tells them apart.
@@ -2448,7 +2437,7 @@ mod pinned_view_seek_failures {
         failure: Option<&'static str>,
     }
 
-    impl RawIterator for NoRecordIterator {
+    impl NodeCursor for NoRecordIterator {
         fn seek_to_first(&mut self) -> CostContext<()> {
             ().wrap_with_cost(OperationCost::with_seek_count(1))
         }

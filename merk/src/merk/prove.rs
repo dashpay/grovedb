@@ -1,9 +1,9 @@
 use std::collections::LinkedList;
 
 use grovedb_costs::{CostResult, CostsExt};
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::RefWalker,
@@ -12,7 +12,7 @@ use crate::{
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Creates a Merkle proof for the list of queried keys. For each key in the
     /// query, if the key is found in the store then the value will be proven to

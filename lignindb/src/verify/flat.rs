@@ -1,0 +1,621 @@
+//! The walk of the flat keyspaces, and the directory's own check.
+
+use std::{collections::HashMap, rc::Rc};
+
+use lignin_format::{
+    flat_page::{FlatPage, FlatValue},
+    CommitVersion, PageId,
+};
+use lignin_store::load::FRAME_FORMAT;
+use lignin_tree::{
+    directory::{record::PREFIX_LEN, Directory, Prefix},
+    flat::{Committed, FlatTree},
+    OperationGuard,
+};
+
+use super::{
+    grove::{Entries, Merk},
+    pages::{out_of_line, FlatReach, Kind, Seen},
+    Grove, Place, Rule, Run,
+};
+use crate::txn::{unlinked, FlatKinds};
+
+/// What the records of a keyspace are checked against.
+#[derive(Clone, Copy)]
+enum Records<'a> {
+    /// Nothing: the keyspace holds no record of a subtree.
+    Any,
+    /// The records are of subtrees: each stands under one of `leads`,
+    /// then a prefix that the directory has an entry for. The leads are
+    /// those of every column that is kept in the keyspace.
+    Columns {
+        leads: &'a [&'a [u8]],
+        entries: &'a Entries,
+        /// Which of `leads` is the data column's, and the tree types that
+        /// keep flat records, where the store says them
+        /// ([`DataColumn`](super::DataColumn)).
+        data: Option<(usize, FlatKinds)>,
+    },
+}
+
+/// A record of the data column, under a prefix that the directory has an
+/// entry for.
+struct Record<'a> {
+    prefix: Prefix,
+    /// The key in its subtree.
+    key: &'a [u8],
+    value: FlatValue<'a>,
+    page: PageId,
+    place: Place,
+}
+
+/// How a walk came to its pages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum From {
+    /// From the root of a keyspace.
+    Tree,
+    /// From the record of a lazy range delete. A page that is gone, or
+    /// that was born after this version, was freed and is passed.
+    Left { newest_birth: CommitVersion },
+}
+
+/// A page that a walk has still to enter.
+struct Visit {
+    page: PageId,
+    /// The page that names this one, or `None` for a root.
+    parent: Option<PageId>,
+    /// The level of the branch that names the page.
+    above: Option<u8>,
+    /// The keys of the page are at or after `low` and before `high`.
+    low: Option<Rc<[u8]>>,
+    high: Option<Rc<[u8]>>,
+    /// What stands before the keys of this tree in the keys of its
+    /// keyspace: the heads of the buckets of long keys it is in.
+    outer: Rc<[u8]>,
+}
+
+impl Visit {
+    /// The root of a tree, or a page that a range delete left below a
+    /// branch of level `above`.
+    fn root(page: PageId, above: Option<u8>) -> Self {
+        Self {
+            page,
+            parent: None,
+            above,
+            low: None,
+            high: None,
+            outer: Rc::from(&[][..]),
+        }
+    }
+}
+
+impl Run<'_, '_, '_> {
+    /// Walks every flat keyspace of the store, checks the directory
+    /// against itself, and returns its entries.
+    pub(super) fn walk_flat_trees<G: OperationGuard + ?Sized>(
+        &mut self,
+        guard: &G,
+    ) -> Option<Entries> {
+        let store = self.store;
+        let mut entries = None;
+        if let Grove::Directory {
+            tree,
+            columns,
+            data,
+        } = store.grove
+        {
+            if self.walk_flat(&tree, Records::Any) {
+                entries = self.read_directory(&tree, guard);
+            } else {
+                self.add(Rule::Directory, Place::Page(tree.root()), not_scanned);
+            }
+            // Several columns may share one keyspace, each under a lead of
+            // its own (`lignin_tree::drop::Column`): a keyspace is walked
+            // once, with the leads of all its columns.
+            let mut walked: Vec<PageId> = Vec::new();
+            for column in columns {
+                let root = column.tree.root();
+                if walked.contains(&root) {
+                    continue;
+                }
+                walked.push(root);
+                let sharing: Vec<usize> = (0..columns.len())
+                    .filter(|other| columns[*other].tree.root() == root)
+                    .collect();
+                let leads: Vec<&[u8]> =
+                    (sharing.iter()).map(|other| columns[*other].lead).collect();
+                let records = match &entries {
+                    Some(entries) => Records::Columns {
+                        leads: &leads,
+                        entries,
+                        data: data.and_then(|data| {
+                            let lead = sharing.iter().position(|other| *other == data.column)?;
+                            Some((lead, data.keeps_flat_records))
+                        }),
+                    },
+                    None => Records::Any,
+                };
+                self.walk_flat(&column.tree, records);
+            }
+        }
+        if let Some(drops) = store.flat_drops {
+            if self.walk_flat(drops.tree(), Records::Any) {
+                self.walk_left_pages(&drops, guard);
+            } else {
+                let place = Place::Page(drops.tree().root());
+                self.add(Rule::FlatDropRecord, place, not_scanned);
+                self.cut.flat = true;
+            }
+        }
+        for tree in store.flat {
+            self.walk_flat(tree, Records::Any);
+        }
+        // A page that no walk reached is reported only where every walk
+        // entered every page it was pointed at: a page that is not read
+        // may be the branch above this one, and a record of a range delete
+        // that is not read may name it.
+        let unreached: Vec<PageId> = (self.pages.iter())
+            .filter(|(_, seen)| matches!(seen, Seen::Flat(None)) && !self.cut.flat)
+            .map(|(page, _)| *page)
+            .collect();
+        for page in unreached {
+            let what = || "no keyspace reaches the page, and no range delete left it".to_owned();
+            self.add(Rule::FlatPageUnreached, Place::Page(page), what);
+        }
+        entries
+    }
+
+    /// Reads the directory in `tree`, whose pages are a tree: its own
+    /// check, and every entry. With an entry or a record of a drop that is
+    /// not read there are none.
+    fn read_directory<G: OperationGuard + ?Sized>(
+        &mut self,
+        tree: &FlatTree,
+        guard: &G,
+    ) -> Option<Entries> {
+        let store = self.store;
+        let place = Place::Page(tree.root());
+        let pages = Committed::new(store.loader, store.values, guard, self.at);
+        let directory = match Directory::load(&pages, tree.root(), tree.config()) {
+            Ok(directory) => directory,
+            Err(error) => {
+                self.add(Rule::Directory, place, || error.to_string());
+                return None;
+            }
+        };
+        // The check ends at the first record it finds wrong. What the
+        // run counts of the directory, it counts from its own scans below.
+        if let Err(error) = directory.check(&pages) {
+            self.add(Rule::Directory, place, || error.to_string());
+        }
+        let mut entries = Entries::default();
+        let mut walk = directory.entries();
+        loop {
+            match walk.next(&pages) {
+                Ok(Some((prefix, entry))) => {
+                    entries.by_prefix.insert(prefix, entries.merks.len());
+                    entries.merks.push(Merk {
+                        prefix,
+                        live: directory.is_live(&entry),
+                        tree_type: entry.tree_type().to_vec(),
+                        root: entry.root().map(|root| (root.address, root.key.to_vec())),
+                        host: (entry.host())
+                            .map(|host| (*host.parent, host.key.to_vec(), host.position)),
+                    });
+                }
+                Ok(None) => break,
+                Err(error) => return self.not_read_whole(place, &error),
+            }
+        }
+        let mut walk = directory.drops();
+        loop {
+            match walk.next(&pages) {
+                Ok(Some(dropped)) => entries.drops.push(dropped),
+                Ok(None) => break,
+                Err(error) => return self.not_read_whole(place, &error),
+            }
+        }
+        let live = entries.merks.iter().filter(|merk| merk.live).count();
+        self.census.merks = live as u64;
+        self.census.left_over_entries = (entries.merks.len() - live) as u64;
+        self.census.dropped_merks = entries.drops.len() as u64;
+        Some(entries)
+    }
+
+    /// Reports a walk of the directory's records that `error` ended before
+    /// the last of them, and gives no entries: a part of them says nothing
+    /// of the prefixes and the roots that were not read, so nothing is
+    /// compared with it and no Merk is walked from it.
+    fn not_read_whole(&mut self, place: Place, error: &dyn std::error::Error) -> Option<Entries> {
+        self.add(Rule::Directory, place, || {
+            format!(
+                "its records are not read to their end, and nothing is compared with them: {error}"
+            )
+        });
+        None
+    }
+
+    /// Walks the pages that the lazy range deletes left and that are not
+    /// freed yet.
+    fn walk_left_pages<G: OperationGuard + ?Sized>(
+        &mut self,
+        drops: &lignin_tree::drop::FlatDrops,
+        guard: &G,
+    ) {
+        let store = self.store;
+        let pages = Committed::new(store.loader, store.values, guard, self.at);
+        let records = match drops.pending(&pages) {
+            Ok(records) => records,
+            Err(error) => {
+                let place = Place::Page(drops.tree().root());
+                self.add(Rule::FlatDropRecord, place, || error.to_string());
+                self.cut.flat = true;
+                return;
+            }
+        };
+        for record in records {
+            let from = From::Left {
+                newest_birth: record.at.next().unwrap_or(record.at),
+            };
+            for left in &record.pages {
+                let visit = Visit::root(left.page, left.above);
+                self.walk_flat_from(visit, drops.tree(), Records::Any, from);
+            }
+        }
+    }
+
+    /// Walks the keyspace `tree` from its root, and returns whether its
+    /// records can be read by a scan: the walk read every page it was
+    /// pointed at, and found nothing.
+    ///
+    /// Any finding of the walk counts, also one that leaves every page
+    /// read, as a key or a level out of its place does. The records are
+    /// read by the engine's cursor (`lignin_tree::flat`), which finds its
+    /// way by the separators and the levels, and ends a scan at the first
+    /// key that is not of the scan's range. Over leaves that are out of
+    /// their order it can end before the last record with no error, and
+    /// what it gave would then be taken for all there is.
+    fn walk_flat(&mut self, tree: &FlatTree, records: Records<'_>) -> bool {
+        let before = self.found.count();
+        let whole = self.walk_flat_from(Visit::root(tree.root(), None), tree, records, From::Tree);
+        whole && before == self.found.count()
+    }
+
+    /// Walks the flat pages from `first`, and returns whether the walk
+    /// read every page it was pointed at. A page that is not read was
+    /// reported where it was read first, which may be before this walk.
+    fn walk_flat_from(
+        &mut self,
+        first: Visit,
+        tree: &FlatTree,
+        records: Records<'_>,
+        from: From,
+    ) -> bool {
+        let key_limit = tree.config().key_limit();
+        let mut stack = vec![first];
+        let mut whole = true;
+        // The prefix of the record before, which the directory has.
+        let mut entered: Option<Prefix> = None;
+        while let Some(visit) = stack.pop() {
+            self.begin_step();
+            let page = visit.page;
+            let named_by = visit.parent.map_or(Place::Page(page), Place::Page);
+            let left = matches!(from, From::Left { .. });
+            let kind = match self.see(page) {
+                Kind::None if left => continue,
+                Kind::Bad => {
+                    whole = false;
+                    continue;
+                }
+                kind => kind,
+            };
+            // A page that a range delete left and that was born after the
+            // range delete can have committed is another page: the one
+            // that was left was freed, and its id was given out again, to a
+            // page of either kind. The reclaimer passes it
+            // (`lignin_tree::drop`), and so does this walk, before it asks
+            // what the page is.
+            let frame = self.frame(page);
+            if let (From::Left { newest_birth }, Ok(frame)) = (from, &frame)
+                && frame.born() > newest_birth
+            {
+                continue;
+            }
+            if kind != Kind::Flat {
+                let rule = match from {
+                    From::Tree => Rule::FlatDanglingPage,
+                    From::Left { .. } => Rule::FlatDropRecord,
+                };
+                self.add(rule, named_by, || match kind {
+                    Kind::Tree => format!("page {page} is named as a flat page and is a tree page"),
+                    _ => format!("page {page} is named as a flat page and is no page"),
+                });
+                continue;
+            }
+            // The page was read as a flat page before.
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.add(Rule::PageUnreadable, Place::Page(page), || {
+                        error.to_string()
+                    });
+                    self.pages.insert(page, Seen::Bad);
+                    whole = false;
+                    continue;
+                }
+            };
+            let reach = match from {
+                From::Tree => FlatReach::Tree,
+                From::Left { .. } => FlatReach::Left,
+            };
+            match self.pages.get_mut(&page) {
+                Some(Seen::Flat(reached @ None)) => *reached = Some(reach),
+                Some(Seen::Flat(Some(before))) => {
+                    let before = *before;
+                    self.add(Rule::FlatPageNamedTwice, named_by, || {
+                        let other = match before {
+                            FlatReach::Tree => "a keyspace reaches",
+                            FlatReach::Left => "a range delete left",
+                        };
+                        format!("page {page} is named again, which {other} already")
+                    });
+                    continue;
+                }
+                _ => continue,
+            }
+            if left {
+                self.census.left_flat_pages += 1;
+            }
+            let flat = match FlatPage::from_validated(&frame, FRAME_FORMAT) {
+                Ok(flat) => flat,
+                Err(error) => {
+                    self.add(Rule::FlatPageFormat, Place::Page(page), || {
+                        error.to_string()
+                    });
+                    whole = false;
+                    continue;
+                }
+            };
+            // A page at another level than its branch states is read all
+            // the same: what it names is reached through it.
+            if let Some(above) = visit.above
+                && above.checked_sub(1) != Some(flat.level())
+            {
+                let level = flat.level();
+                self.add(Rule::FlatLevel, Place::Page(page), || {
+                    format!("the page is of level {level} below a branch of level {above}")
+                });
+            }
+            match flat {
+                FlatPage::Branch(branch) => {
+                    let mut previous: Option<Rc<[u8]>> = None;
+                    for index in 0..=branch.len() {
+                        let separator = branch.separator(index).map(|key| Rc::from(key.to_vec()));
+                        if let (Some(previous), Some(separator)) = (&previous, &separator)
+                            && separator <= previous
+                        {
+                            self.add(Rule::FlatKeyOrder, Place::Page(page), || {
+                                format!("separator {index} is not above the one before it")
+                            });
+                        }
+                        let Some(child) = branch.child(index) else {
+                            self.add(Rule::FlatPageFormat, Place::Page(page), || {
+                                format!("the branch has no child {index}")
+                            });
+                            whole = false;
+                            break;
+                        };
+                        stack.push(Visit {
+                            page: child,
+                            parent: Some(page),
+                            above: Some(branch.level()),
+                            low: higher(previous.clone(), visit.low.clone()),
+                            high: lower(separator.clone(), visit.high.clone()),
+                            outer: visit.outer.clone(),
+                        });
+                        previous = separator.or(previous);
+                    }
+                }
+                FlatPage::Leaf(leaf) => {
+                    let mut before: Option<Vec<u8>> = None;
+                    for (slot, (key, value)) in leaf.iter().enumerate() {
+                        let key = key.to_vec();
+                        let place = Place::FlatEntry { page, slot };
+                        let in_order = before.as_ref().is_none_or(|before| *before < key)
+                            && visit.low.as_ref().is_none_or(|low| low[..] <= key[..])
+                            && visit.high.as_ref().is_none_or(|high| key[..] < high[..]);
+                        if !in_order {
+                            self.add(Rule::FlatKeyOrder, place, || {
+                                "the key is not in its place in the order of its tree".to_owned()
+                            });
+                        }
+                        if key.len() > key_limit {
+                            match bucket_root(&key, key_limit, value) {
+                                Some(root) => {
+                                    let outer = [&visit.outer[..], &key[..key_limit]].concat();
+                                    stack.push(Visit {
+                                        page: root,
+                                        parent: Some(page),
+                                        above: None,
+                                        low: None,
+                                        high: None,
+                                        outer: Rc::from(outer),
+                                    });
+                                }
+                                None => self.add(Rule::FlatBucket, place, || {
+                                    format!(
+                                        "a key of {} bytes, above the limit of {key_limit}, is \
+                                         no bucket",
+                                        key.len()
+                                    )
+                                }),
+                            }
+                        } else if !left {
+                            self.census.flat_records += 1;
+                            if let Records::Columns {
+                                leads,
+                                entries,
+                                data,
+                            } = records
+                            {
+                                let full = [&visit.outer[..], &key[..]].concat();
+                                let prefix = record_prefix(&full, leads, &entries.by_prefix);
+                                let known = match prefix {
+                                    Some(prefix) if entered == Some(prefix) => true,
+                                    Some(prefix) => entries.by_prefix.contains_key(&prefix),
+                                    None => false,
+                                };
+                                if known {
+                                    entered = prefix;
+                                } else {
+                                    self.add(
+                                        Rule::FlatRecordWithoutEntry,
+                                        place,
+                                        || match prefix {
+                                            Some(prefix) => format!(
+                                                "the record is under the prefix {}, which the \
+                                         directory has no entry for",
+                                                Place::Merk(prefix)
+                                            ),
+                                            None => "the record's key holds no prefix".to_owned(),
+                                        },
+                                    );
+                                }
+                                // A key that reads as a record of the data
+                                // column, under a prefix with an entry, is
+                                // held as one, whatever other column of the
+                                // keyspace it reads as a record of.
+                                if let Some((lead, keeps_flat)) = data
+                                    && let Some(rest) = full.strip_prefix(leads[lead])
+                                    && let Some((prefix, within)) =
+                                        rest.split_first_chunk::<PREFIX_LEN>()
+                                    && entries.by_prefix.contains_key(prefix)
+                                {
+                                    let record = Record {
+                                        prefix: *prefix,
+                                        key: within,
+                                        value,
+                                        page,
+                                        place,
+                                    };
+                                    self.check_kind(entries, &record, keeps_flat);
+                                }
+                            }
+                        }
+                        before = Some(key);
+                    }
+                }
+            }
+        }
+        self.cut.flat |= !whole;
+        whole
+    }
+
+    /// Holds a record of the data column to the tree type of its
+    /// subtree's entry ([`DataColumn`](super::DataColumn)).
+    ///
+    /// Under an entry of a tree type that keeps a Merk, the record is a
+    /// node that no node links. Where the entry names a root, the record's
+    /// key is kept for the walk of that Merk, which holds it against the
+    /// keys of the nodes. Nothing is asked of a record under an entry that
+    /// is not in use.
+    fn check_kind(&mut self, entries: &Entries, record: &Record<'_>, keeps_flat: FlatKinds) {
+        let Some(index) = entries.by_prefix.get(&record.prefix).copied() else {
+            return;
+        };
+        let merk = &entries.merks[index];
+        if !merk.live {
+            return;
+        }
+        if !keeps_flat(&merk.tree_type) {
+            // Nothing is said of the form of a value that is not read.
+            // That it is not read is reported here unless the read of
+            // its page reported it.
+            let form = |bytes| unlinked::decode(record.key, bytes).err();
+            let mut unread = None;
+            let refused = match record.value {
+                FlatValue::Inline(bytes) => form(bytes),
+                FlatValue::OutOfLine(_) => match out_of_line(record.value) {
+                    Some(value) => match self.values.fetch(value, record.page) {
+                        Ok(bytes) => form(bytes),
+                        Err(fault) => {
+                            unread = Some(fault);
+                            None
+                        }
+                    },
+                    None => None,
+                },
+            };
+            if let Some(fault) = unread {
+                self.value_fault(&fault, record.place);
+            }
+            if let Some(refused) = refused {
+                let prefix = record.prefix;
+                self.add(Rule::RecordKind, record.place, || {
+                    format!(
+                        "the record is in the data of {}, whose entry is of a tree type that \
+                         keeps a Merk: {refused}",
+                        Place::Merk(prefix)
+                    )
+                });
+            }
+        }
+        if merk.root.is_some() {
+            let keys = self.records.entry(index).or_default();
+            keys.insert(record.key.to_vec(), record.place);
+        }
+    }
+}
+
+/// What is said of a keyspace whose records are not read because its walk
+/// did not pass ([`Run::walk_flat`]).
+fn not_scanned() -> String {
+    "the pages of its keyspace have a finding of their own, so its records are not read".to_owned()
+}
+
+/// The lower of two upper bounds.
+fn lower(a: Option<Rc<[u8]>>, b: Option<Rc<[u8]>>) -> Option<Rc<[u8]>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The higher of two lower bounds.
+fn higher(a: Option<Rc<[u8]>>, b: Option<Rc<[u8]>>) -> Option<Rc<[u8]>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The root of the tree of the bucket of long keys stored under `key`, if
+/// the entry is one: the key is the head and one zero byte, and the value
+/// is a page id (`lignin_tree::flat`).
+fn bucket_root(key: &[u8], key_limit: usize, value: FlatValue<'_>) -> Option<PageId> {
+    if key.len() != key_limit + 1 || key.last() != Some(&0) {
+        return None;
+    }
+    match value {
+        FlatValue::Inline(bytes) => bytes.try_into().ok().and_then(PageId::decode),
+        FlatValue::OutOfLine(_) => None,
+    }
+}
+
+/// The prefix of the subtree that the record under `key` is of, in a
+/// keyspace whose columns begin their keys with `leads`: the one that
+/// `prefixes` has, where one lead is the beginning of another.
+fn record_prefix(key: &[u8], leads: &[&[u8]], prefixes: &HashMap<Prefix, usize>) -> Option<Prefix> {
+    let under = |lead: &&[u8]| {
+        let rest = key.strip_prefix(*lead)?;
+        rest.first_chunk::<PREFIX_LEN>().copied()
+    };
+    let mut found = leads.iter().filter_map(under);
+    let first = found.next()?;
+    match prefixes.contains_key(&first) {
+        true => Some(first),
+        false => found
+            .find(|prefix| prefixes.contains_key(prefix))
+            .or(Some(first)),
+    }
+}

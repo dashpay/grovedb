@@ -1,0 +1,52 @@
+[package]
+name = "lignin-testkit"
+description = "LigninDB test kit: workloads, golden corpus, differential fuzzer, crash simulation and benchmarks"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
+grovedb = { version = "7.0.0", path = "../grovedb", features = ["unsafe-dump-load"] }
+grovedb-commitment-tree = { version = "7.0.0", path = "../grovedb-commitment-tree" }
+grovedb-costs = { version = "7.0.0", path = "../costs" }
+grovedb-epoch-based-storage-flags = { version = "7.0.0", path = "../grovedb-epoch-based-storage-flags" }
+grovedb-merk = { version = "7.0.0", path = "../merk" }
+grovedb-path = { version = "7.0.0", path = "../path" }
+grovedb-storage = { version = "7.0.0", path = "../storage", features = ["rocksdb_storage"] }
+grovedb-version = { version = "7.0.0", path = "../grovedb-version" }
+bincode = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
+lignin-store = { version = "7.0.0", path = "../lignin-store" }
+lignin-tree = { version = "7.0.0", path = "../lignin-tree" }
+lignindb = { version = "7.0.0", path = "../lignindb" }
+rustix = { version = "1", features = ["time"] }
+serde = { workspace = true }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tempfile = { workspace = true }
+
+# The LigninDB engine behind GroveDB (`grovedb::engine::lignin`), which the
+# engine crash campaign drives (`crash::engine`), and Merk's hash rules for
+# the physical checker. The engine the golden corpus is pinned to has
+# neither feature: `corpus/record-at-pin.sh` takes these two lines out of
+# its copy of this manifest, and the code that needs them is compiled only
+# where GroveDB has the `Engine` seam (`build.rs`).
+[target.'cfg(all())'.dependencies]
+grovedb = { version = "7.0.0", path = "../grovedb", features = ["lignin_storage"] }
+grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storage"] }
+
+[dev-dependencies]
+grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storage"] }
+# The migrator from RocksDB, which `tests/migrate.rs` runs on the groves of
+# the corpus. With `migrate` the tool asks GroveDB for `lignin_storage`,
+# which the engine the golden corpus is pinned to does not have:
+# `corpus/record-at-pin.sh` takes this line out of its copy of this manifest.
+lignin-tools = { version = "7.0.0", path = "../lignin-tools", features = ["migrate"] }
+lignindb = { version = "7.0.0", path = "../lignindb", features = ["testing"] }
+rustix = { version = "1", features = ["fs", "time"] }
+syn = { version = "2", features = ["full", "visit"] }

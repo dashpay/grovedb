@@ -37,7 +37,7 @@ use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 use crate::{
     tree::{
         kv::{ValueDefinedCostType, KV},
-        TreeFeatureType, TreeNode, TreeNodeInner, NULL_HASH,
+        Baseline, TreeFeatureType, TreeNode, TreeNodeInner, NULL_HASH,
     },
     Error,
 };
@@ -120,11 +120,12 @@ impl TreeNode {
         kv.feature_type = feature_type;
         let mut node = TreeNode {
             inner: Box::new(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
             }),
-            old_value: Some(old_value),
+            baseline: Baseline::Was(old_value),
             known_storage_cost: None,
         };
         node.just_in_time_tree_node_value_update(
@@ -415,10 +416,12 @@ mod tests {
                 BasicMerkNode,
             );
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
             });
+            node.keep_old_value();
             node.inner.kv = node
                 .inner
                 .kv
@@ -465,7 +468,7 @@ mod tests {
             );
             assert!(!storage_cost.new_node);
             assert_eq!(node.inner.kv.value, new);
-            assert_eq!(node.old_value, Some(new));
+            assert_eq!(node.baseline.get(&node.inner.kv.value), Some(&new));
         }
     }
 
@@ -504,10 +507,12 @@ mod tests {
                 BasicMerkNode,
             );
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
             });
+            node.keep_old_value();
             node.inner.kv = node
                 .inner
                 .kv
@@ -552,7 +557,7 @@ mod tests {
             );
             assert_eq!(node.inner.kv.value, rewritten);
             assert_eq!(node.inner.kv.value_defined_cost, Some(rewritten_cost));
-            assert_eq!(node.old_value, Some(rewritten));
+            assert_eq!(node.baseline.get(&node.inner.kv.value), Some(&rewritten));
         }
     }
 
@@ -575,10 +580,12 @@ mod tests {
             let old = item(b"old", 1);
             let kv = KV::from_fields(key, old, NULL_HASH, NULL_HASH, BasicMerkNode);
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
             });
+            node.keep_old_value();
             node.inner.kv = node
                 .inner
                 .kv
@@ -634,10 +641,12 @@ mod tests {
                 BasicMerkNode,
             );
             let mut node = TreeNode::new_with_tree_inner(TreeNodeInner {
+                marks: Default::default(),
                 left: None,
                 right: None,
                 kv,
             });
+            node.keep_old_value();
             node.inner.kv = node.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
                 new.clone(),
                 ValueDefinedCostType::SpecializedValueDefinedCost(new_cost),

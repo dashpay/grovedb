@@ -45,9 +45,9 @@ use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
 use super::ClearOptions;
-use crate::{Error, GroveDb, TransactionArg};
+use crate::{Engine, Error, GroveDb, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Delete all elements in a specified subtree.
     /// Returns if we successfully cleared the subtree.
     ///
@@ -58,11 +58,11 @@ impl GroveDb {
     /// for a raw clear that trusts the claim.
     /// Ordinary `Reference` elements have no registrations and remain the
     /// caller's responsibility. V1–V3 retain their historical behavior.
-    pub fn clear_subtree<'b, B, P>(
-        &self,
+    pub fn clear_subtree<'db, 'b, B, P>(
+        &'db self,
         path: P,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> Result<bool, Error>
     where
@@ -79,11 +79,11 @@ impl GroveDb {
     /// Returns if we successfully cleared the subtree
     ///
     /// Version dispatch (consensus-critical) — see the module documentation.
-    fn clear_subtree_with_costs<'b, B, P>(
-        &self,
+    fn clear_subtree_with_costs<'db, 'b, B, P>(
+        &'db self,
         path: P,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where

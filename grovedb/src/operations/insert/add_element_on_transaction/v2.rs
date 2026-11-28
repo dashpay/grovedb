@@ -61,24 +61,23 @@ use grovedb_merk::{
     Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use super::super::{check_wide_sum_tree_creation, InsertOptions};
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// `add_element_on_transaction` v2 — see the module documentation.
-    pub(crate) fn add_element_on_transaction_v2<'db, B: AsRef<[u8]>>(
+    pub(crate) fn add_element_on_transaction_v2<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<E::Subtree<'a>>, Error> {
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(
@@ -107,15 +106,15 @@ impl GroveDb {
     }
 
     /// V4 insertion mechanics applied to an already prepared Merk.
-    pub(crate) fn add_element_to_cached_merk_v2<'db, B: AsRef<[u8]>>(
+    pub(crate) fn add_element_to_cached_merk_v2<'a, 'db: 'a, B: AsRef<[u8]>>(
         &'db self,
-        subtree_to_insert_into: &mut Merk<PrefixedRocksDbTransactionContext<'db>>,
+        subtree_to_insert_into: &mut Merk<E::Subtree<'a>>,
         path: SubtreePath<B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();

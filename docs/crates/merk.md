@@ -11,9 +11,9 @@ Merk is a high-performance Merkle AVL tree implementation that combines the self
 #### TreeNode Structure
 ```rust
 pub struct TreeNode {
-    pub inner: Box<TreeNodeInner>,
-    pub old_value: Option<Vec<u8>>,
-    pub known_storage_cost: Option<u32>,
+    pub(crate) inner: Box<TreeNodeInner>,
+    pub(crate) baseline: Baseline,
+    pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 
 pub struct TreeNodeInner {

@@ -3,14 +3,13 @@
 use std::{collections::VecDeque, marker::PhantomData};
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::store::NodeStore;
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    Storage, StorageBatch, StorageContext,
-};
 use grovedb_version::version::GroveVersion;
 
-use crate::{element::elements_iterator::ElementIteratorExtensions, Element, Error, Transaction};
+use crate::{
+    element::elements_iterator::ElementIteratorExtensions, Element, Engine, Error, Transaction,
+};
 
 /// Structure for traversing a GroveDb in a breadth-first manner.
 ///
@@ -18,33 +17,33 @@ use crate::{element::elements_iterator::ElementIteratorExtensions, Element, Erro
 /// performance reasons. It bypasses Merk, skipping any caching features as
 /// well. Originally designed for tree deletions, caution is advised when
 /// involving other cached operations in related processes.
-pub(crate) struct GroveVisitor<'db, 'b, B, V: Visit<'b, B>> {
-    storage: &'db RocksDbStorage,
-    transaction: &'db Transaction<'db>,
+pub(crate) struct GroveVisitor<'db, 'tx: 'db, 'b, B, V: Visit<'b, B, E>, E: Engine> {
+    storage: &'db E,
+    transaction: &'db Transaction<'tx, E>,
     visitor: V,
     grove_version: &'db GroveVersion,
-    batch: StorageBatch,
+    batch: E::Batch,
     recursive: bool,
     _base: PhantomData<&'b B>,
 }
 
-pub(crate) struct WalkResult {
+pub(crate) struct WalkResult<E: Engine> {
     /// Whether a visitor stopped the traversal early. The delete flow always
     /// allows subtree deletion so it never short-circuits; kept for the
     /// clear-subtree flow which will refuse to clear a merk containing
     /// subtrees.
     #[allow(dead_code)]
     pub short_circuited: bool,
-    pub batch: StorageBatch,
+    pub batch: E::Batch,
 }
 
-impl<'db, 'b, B, V> GroveVisitor<'db, 'b, B, V>
+impl<'db, 'tx: 'db, 'b, B, V, E: Engine> GroveVisitor<'db, 'tx, 'b, B, V, E>
 where
-    V: Visit<'b, B>,
+    V: Visit<'b, B, E>,
 {
     pub(crate) fn new(
-        storage: &'db RocksDbStorage,
-        transaction: &'db Transaction<'db>,
+        storage: &'db E,
+        transaction: &'db Transaction<'tx, E>,
         visitor: V,
         recursive: bool,
         grove_version: &'db GroveVersion,
@@ -63,7 +62,7 @@ where
     pub(crate) fn walk_from(
         mut self,
         from: SubtreePathBuilder<'b, B>,
-    ) -> CostResult<WalkResult, Error>
+    ) -> CostResult<WalkResult<E>, Error>
     where
         B: AsRef<[u8]>,
     {
@@ -75,7 +74,7 @@ where
         while let Some(subtree_path) = queue.pop_front() {
             let storage = self
                 .storage
-                .get_transactional_storage_context(
+                .subtree(
                     SubtreePath::from(&subtree_path),
                     Some(&self.batch),
                     self.transaction,
@@ -83,6 +82,7 @@ where
                 .unwrap_add_cost(&mut cost);
 
             if cost_return_on_error!(&mut cost, self.visitor.visit_merk(subtree_path.clone())) {
+                drop(storage);
                 return Ok(WalkResult {
                     short_circuited: true,
                     batch: self.batch,
@@ -90,7 +90,8 @@ where
                 .wrap_with_cost(cost);
             }
 
-            let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
+            let mut raw_iter =
+                Element::iterator(NodeStore::cursor(&storage)).unwrap_add_cost(&mut cost);
 
             while let Some((key, value)) = cost_return_on_error!(
                 &mut cost,
@@ -110,6 +111,7 @@ where
                         .visit_element(subtree_path.clone(), &key, &storage, value)
                 ) {
                     drop(raw_iter);
+                    drop(storage);
                     return Ok(WalkResult {
                         short_circuited: true,
                         batch: self.batch,
@@ -128,7 +130,7 @@ where
 }
 
 /// Configurable logic to execute during a traversal process.
-pub(crate) trait Visit<'b, B> {
+pub(crate) trait Visit<'b, B, E: Engine> {
     /// Called on entering a subtree, if wish to stop traversal `true` shall be
     /// returned.
     fn visit_merk(&mut self, path: SubtreePathBuilder<'b, B>) -> CostResult<bool, Error>;
@@ -139,7 +141,7 @@ pub(crate) trait Visit<'b, B> {
         &mut self,
         path: SubtreePathBuilder<'b, B>,
         key: &[u8],
-        storage: &PrefixedRocksDbTransactionContext,
+        storage: &E::Subtree<'_>,
         element: Element,
     ) -> CostResult<bool, Error>;
 }

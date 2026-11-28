@@ -28,7 +28,17 @@
 
 //! Worst case costs for Merk
 
+#[cfg(feature = "minimal")]
+mod add_worst_case_merk_finalize;
+#[cfg(feature = "minimal")]
+mod add_worst_case_merk_propagate;
+
 use std::cmp::Ordering;
+
+#[cfg(feature = "minimal")]
+pub use add_worst_case_merk_finalize::add_worst_case_merk_finalize;
+#[cfg(feature = "minimal")]
+pub use add_worst_case_merk_propagate::add_worst_case_merk_propagate_versioned;
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
@@ -167,6 +177,10 @@ pub const MERK_BIGGEST_VALUE_SIZE: u32 = u16::MAX as u32;
 #[cfg(feature = "minimal")]
 /// Merk biggest key size
 pub const MERK_BIGGEST_KEY_SIZE: u32 = 256;
+#[cfg(feature = "minimal")]
+/// The node type whose feature and whose link cost the most bytes: a count
+/// and a sum of 128 bits.
+pub const MERK_BIGGEST_NODE_TYPE: NodeType = NodeType::ProvableCountProvableBigSumNode;
 
 #[cfg(feature = "minimal")]
 /// Worst case cost of a merk propagation
@@ -243,6 +257,7 @@ pub fn add_average_case_cost_for_is_empty_tree_except(
 #[cfg(test)]
 mod tests {
     use grovedb_costs::OperationCost;
+    use grovedb_version::version::v6::GROVE_V6;
 
     use super::*;
 
@@ -291,6 +306,251 @@ mod tests {
         add_average_case_cost_for_is_empty_tree_except(&mut average_cost, 2, 11);
         assert_eq!(average_cost.seek_count, 3);
         assert_eq!(average_cost.storage_loaded_bytes, 33);
+    }
+
+    #[test]
+    fn es2_a_worst_case_level_is_what_it_was_on_every_grove_version_in_force() {
+        for version in grovedb_version::version::GROVE_VERSIONS {
+            for input in [
+                WorstCaseLayerInformation::MaxElementsNumber(0),
+                WorstCaseLayerInformation::MaxElementsNumber(30),
+                WorstCaseLayerInformation::MaxElementsNumber(u32::MAX),
+                WorstCaseLayerInformation::NumberOfLevels(2),
+                WorstCaseLayerInformation::NumberOfLevels(9),
+            ] {
+                let mut versioned = OperationCost::default();
+                add_worst_case_merk_propagate_versioned(&mut versioned, &input, version).unwrap();
+                let mut released = OperationCost::default();
+                add_worst_case_merk_propagate(&mut released, &input).unwrap();
+                assert_eq!(versioned, released, "{input:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn es2_a_worst_case_level_has_the_most_levels_and_two_seeks_a_node_on_grove_version_6() {
+        let worst = |input| {
+            let mut cost = OperationCost::default();
+            add_worst_case_merk_propagate_versioned(&mut cost, &input, &GROVE_V6).unwrap();
+            cost
+        };
+        let node = |nodes: u32| OperationCost {
+            seek_count: 2 * nodes,
+            storage_cost: grovedb_costs::storage_cost::StorageCost {
+                replaced_bytes: nodes * MERK_BIGGEST_VALUE_SIZE,
+                ..Default::default()
+            },
+            storage_loaded_bytes: u64::from(nodes)
+                * u64::from(MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE),
+            hash_node_calls: 2 * nodes,
+            ..Default::default()
+        };
+        // For each level the node on the way and four beside it that a
+        // double rotation at that level changes, and one for the other
+        // child of a removed node. A Merk with no node has none.
+        assert_eq!(worst(WorstCaseLayerInformation::NumberOfLevels(0)), node(0));
+        assert_eq!(worst(WorstCaseLayerInformation::NumberOfLevels(1)), node(6));
+        assert_eq!(
+            worst(WorstCaseLayerInformation::NumberOfLevels(2)),
+            node(11)
+        );
+        assert_eq!(
+            worst(WorstCaseLayerInformation::NumberOfLevels(9)),
+            node(46)
+        );
+        // Thirty elements fit in five levels at the fewest and take six at
+        // the most.
+        assert_eq!(
+            worst(WorstCaseLayerInformation::MaxElementsNumber(30)),
+            node(5 * 6 + 1)
+        );
+        // A height no Merk can have.
+        for unreal in [92, u32::MAX] {
+            assert!(matches!(
+                add_worst_case_merk_propagate_versioned(
+                    &mut OperationCost::default(),
+                    &WorstCaseLayerInformation::NumberOfLevels(unreal),
+                    &GROVE_V6,
+                ),
+                Err(Error::Overflow(_))
+            ));
+        }
+        let mut released = OperationCost::default();
+        add_worst_case_merk_propagate(
+            &mut released,
+            &WorstCaseLayerInformation::MaxElementsNumber(30),
+        )
+        .unwrap();
+        assert_eq!(released.seek_count, 5 + 2);
+
+        let mut unknown = GROVE_V6.clone();
+        unknown
+            .merk_versions
+            .worst_case_costs
+            .add_worst_case_merk_propagate = 2;
+        assert!(matches!(
+            add_worst_case_merk_propagate_versioned(
+                &mut OperationCost::default(),
+                &WorstCaseLayerInformation::NumberOfLevels(1),
+                &unknown,
+            ),
+            Err(Error::VersionError(_))
+        ));
+    }
+
+    #[test]
+    fn es3_a_worst_case_finalize_in_one_merk_bounds_every_changed_node() {
+        let worst = |input, marked, biggest_value| {
+            let mut cost = OperationCost::default();
+            add_worst_case_merk_finalize(&mut cost, &input, marked, biggest_value, &GROVE_V6)
+                .unwrap();
+            cost
+        };
+        // A node whose value is 100 bytes, of the kind that costs the most.
+        // What it replaces: the value with its two hashes and a feature of
+        // 25 bytes, 189, the two bytes of that length, and a link of the
+        // key's 256 bytes, a hash, four and 24 for the aggregates. What a
+        // read of it loads: the value, two hashes, a feature of a tag, a
+        // count of ten bytes and a sum of 16, and two links, each a byte
+        // that says it is there, the length of the key, its 255 bytes, a
+        // hash, two heights and aggregates as long as the feature.
+        let replaced = 100 + 64 + 25 + 2 + (256 + 32 + 4 + 24);
+        let record = 100 + 64 + 27 + 2 * (1 + 1 + 255 + 32 + 2 + 27);
+        // Four levels and three marked elements: six nodes above them, nine
+        // changed. Each is fetched and put, and each marked one is read by
+        // its key as well.
+        let several = worst(WorstCaseLayerInformation::NumberOfLevels(4), 3, 100);
+        assert_eq!(several.seek_count, 9 + 9 + 3);
+        assert_eq!(several.storage_loaded_bytes, (9 + 3) * record);
+        assert_eq!(several.storage_cost.replaced_bytes, 9 * replaced);
+        assert_eq!(several.storage_cost.added_bytes, 0);
+        assert!(!several.storage_cost.removed_bytes.has_removal());
+        assert_eq!(several.hash_node_calls, 2 * 9);
+        // Seven elements fit in three levels and take four at the most.
+        assert_eq!(
+            worst(WorstCaseLayerInformation::MaxElementsNumber(7), 3, 100),
+            several
+        );
+        assert_eq!(
+            worst(WorstCaseLayerInformation::NumberOfLevels(4), 0, 100),
+            OperationCost::default()
+        );
+        // A byte more of value is a byte more of every read and every put,
+        // at any length: the bound follows what its caller gives, past the
+        // 65,535 bytes the worst case of a level takes a value to be.
+        for value in [0, 100, MERK_BIGGEST_VALUE_SIZE, 1_000_000] {
+            let (at, longer) = (
+                worst(WorstCaseLayerInformation::NumberOfLevels(1), 1, value),
+                worst(WorstCaseLayerInformation::NumberOfLevels(1), 1, value + 1),
+            );
+            assert!(at.storage_cost.replaced_bytes >= value);
+            assert!(longer.storage_cost.replaced_bytes > at.storage_cost.replaced_bytes);
+            assert_eq!(longer.storage_loaded_bytes, at.storage_loaded_bytes + 2);
+        }
+        for version in grovedb_version::version::GROVE_VERSIONS {
+            assert!(matches!(
+                add_worst_case_merk_finalize(
+                    &mut OperationCost::default(),
+                    &WorstCaseLayerInformation::NumberOfLevels(4),
+                    3,
+                    100,
+                    version
+                ),
+                Err(Error::NotSupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn es3_a_worst_case_finalize_bounds_a_node_of_every_kind_at_the_value_it_is_given() {
+        use crate::tree::kv::KV;
+        // The most bytes a node replaces, for a value of the length the
+        // estimate is given: no node of that value replaces more, as an
+        // item's node or as a tree's, under any key and of any node type.
+        let node_types = [
+            NodeType::NormalNode,
+            NodeType::SumNode,
+            NodeType::BigSumNode,
+            NodeType::CountNode,
+            NodeType::CountSumNode,
+            NodeType::ProvableCountNode,
+            NodeType::ProvableCountSumNode,
+            NodeType::ProvableSumNode,
+            NodeType::ProvableCountProvableSumNode,
+            NodeType::ProvableCountProvableBigSumNode,
+            NodeType::CountBigSumNode,
+            NodeType::ProvableBigSumNode,
+        ];
+        for node_type in node_types {
+            // Every node type is listed above: one that Merk gains does not
+            // compile here until it is.
+            match node_type {
+                NodeType::NormalNode
+                | NodeType::SumNode
+                | NodeType::BigSumNode
+                | NodeType::CountNode
+                | NodeType::CountSumNode
+                | NodeType::ProvableCountNode
+                | NodeType::ProvableCountSumNode
+                | NodeType::ProvableSumNode
+                | NodeType::ProvableCountProvableSumNode
+                | NodeType::ProvableCountProvableBigSumNode
+                | NodeType::CountBigSumNode
+                | NodeType::ProvableBigSumNode => {}
+            }
+            assert!(node_type.feature_len() <= MERK_BIGGEST_NODE_TYPE.feature_len());
+            assert!(node_type.cost() <= MERK_BIGGEST_NODE_TYPE.cost());
+            for value in [0u32, 1, 63, 100, 65_535, 65_536, 1_000_000] {
+                let mut cost = OperationCost::default();
+                add_worst_case_merk_finalize(
+                    &mut cost,
+                    &WorstCaseLayerInformation::NumberOfLevels(1),
+                    1,
+                    value,
+                    &GROVE_V6,
+                )
+                .unwrap();
+                for key in [0u32, 1, 32, 255] {
+                    let as_an_item = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                        key, value, node_type,
+                    );
+                    let as_a_tree = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key, value, node_type,
+                    );
+                    assert!(cost.storage_cost.replaced_bytes >= as_an_item);
+                    assert!(cost.storage_cost.replaced_bytes >= as_a_tree);
+                }
+            }
+        }
+        // A value too long for a node to be sized by it is refused, and the
+        // cost is as it was given.
+        let before = OperationCost {
+            seek_count: 5,
+            ..Default::default()
+        };
+        for too_long in [u32::MAX - 65_535, u32::MAX] {
+            let mut cost = before.clone();
+            assert!(matches!(
+                add_worst_case_merk_finalize(
+                    &mut cost,
+                    &WorstCaseLayerInformation::NumberOfLevels(1),
+                    1,
+                    too_long,
+                    &GROVE_V6,
+                ),
+                Err(Error::Overflow(_))
+            ));
+            assert_eq!(cost, before);
+        }
+        let mut cost = before.clone();
+        add_worst_case_merk_finalize(
+            &mut cost,
+            &WorstCaseLayerInformation::NumberOfLevels(1),
+            1,
+            u32::MAX - 65_536,
+            &GROVE_V6,
+        )
+        .expect("the longest value a node is sized by");
     }
 
     #[test]

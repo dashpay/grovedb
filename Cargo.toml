@@ -20,6 +20,13 @@ members = [
     "grovedb-private-document-store",
     "grovedb-bincode",
     "grovedb-bincode-derive",
+    "lignin-format",
+    "lignin-io",
+    "lignin-store",
+    "lignin-tree",
+    "lignindb",
+    "lignin-tools",
+    "lignin-testkit",
 ]
 
 [workspace.dependencies]

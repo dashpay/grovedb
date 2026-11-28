@@ -1,0 +1,25 @@
+[package]
+name = "lignin-io"
+description = "LigninDB file layer: the Vfs trait, the std backend and the fault-injecting backend"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[features]
+# The direct I/O path of Linux (`lignin_io::linux`). On any other system the
+# feature builds nothing.
+direct_io = ["rustix/io_uring", "rustix/mm"]
+
+[dependencies]
+
+# The std backend's calls that `std` does not have: on macOS the plain
+# `fsync` and `fstatfs`, and the hint of a read (`posix_fadvise` on Linux,
+# `fcntl(F_RDADVISE)` on macOS).
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

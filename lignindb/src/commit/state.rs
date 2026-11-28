@@ -1,0 +1,390 @@
+//! What the commits of one open database share.
+
+use std::{
+    fmt,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, MutexGuard, PoisonError, TryLockError,
+    },
+    time::{Duration, Instant},
+};
+
+use lignin_format::CommitVersion;
+use lignin_store::flush::{FlushError, Published};
+use lignin_tree::value::CarriedValues;
+
+use super::error::Stopped;
+use crate::snapshot::Versions;
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a commit keeps from one commit to the next, under the commit lock.
+#[derive(Debug, Default)]
+pub(super) struct Scratch {
+    /// The bytes of the group that is being written.
+    pub(super) group: Vec<u8>,
+}
+
+/// Counts of what the commits of a session did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CommitStats {
+    /// Commits that were published.
+    pub published: u64,
+    /// Commits of an empty write set, which took no version (CV2).
+    pub empty: u64,
+    /// Commits that failed with a conflict (CF2).
+    pub conflicts: u64,
+    /// Commits that were not made: their group is not in the log.
+    pub failed: u64,
+    /// Commits that were published and whose sync failed.
+    pub not_durable: u64,
+    /// The bytes of the groups that were appended.
+    pub group_bytes: u64,
+    /// Values that the groups of published commits repeat because their
+    /// cells or entries were carried to another page: the value log's move
+    /// rule (`value-log-format.md` O5, `log-format.md` LG23).
+    pub values_carried: u64,
+    /// The bytes of the values of [`Self::values_carried`].
+    pub value_bytes_carried: u64,
+    /// Groups that were written again because the log no longer ended
+    /// where they were written for (`log-format.md` LG22).
+    pub rewritten: u64,
+    /// Rollbacks that were made through the committer.
+    pub rollbacks: u64,
+    /// Waits for write-back, after a commit or a rollback, that ended with
+    /// write-back still over its bounds
+    /// ([`Room::Stalled`](lignin_store::flush::Room::Stalled)).
+    pub stalls: u64,
+    /// Errors of write-back in a turn that a committer made or waited for,
+    /// after its commit or its rollback. They change no commit.
+    pub write_back_errors: u64,
+    /// How long commits waited for the commit lock, in all: for another
+    /// commit, and for whoever else takes that lock (a checkpoint's
+    /// sample, a reclaiming that loads a directory handle again).
+    pub lock_waited: Duration,
+    /// How long commits waited for the lock on the counts of live values
+    /// where they take it for the place of their group, in all, with the
+    /// commit lock held: for a page step of the background work or of
+    /// another committer's placing, for the mark of a table checkpoint or
+    /// for a turn of the log. A commit whose sync
+    /// policy has it sync the log takes that lock again for a moment
+    /// there, which is not counted.
+    pub counts_waited: Duration,
+    /// How long commits spent in
+    /// [`LogStore::append_group`](lignin_store::wal::LogStore::append_group),
+    /// in all: the check of the group, the log's own lock, and the append
+    /// to the log's file with whatever the system has it wait for.
+    pub appending: Duration,
+    /// How long committers spent placing values after their commits and
+    /// their rollbacks, in all
+    /// ([`WriteBack::place_ready`](lignin_store::flush::WriteBack::place_ready)),
+    /// with what that call waits for. The wait for room
+    /// that follows it is counted by write-back
+    /// ([`FlushStats::room_waited`](lignin_store::flush::FlushStats::room_waited)).
+    pub placing: Duration,
+    /// How long committers spent reclaiming versions that nobody pins,
+    /// after their commits, in all.
+    pub reclaiming: Duration,
+}
+
+#[derive(Debug, Default)]
+struct Counters {
+    published: AtomicU64,
+    empty: AtomicU64,
+    conflicts: AtomicU64,
+    failed: AtomicU64,
+    not_durable: AtomicU64,
+    group_bytes: AtomicU64,
+    values_carried: AtomicU64,
+    value_bytes_carried: AtomicU64,
+    rewritten: AtomicU64,
+    rollbacks: AtomicU64,
+    stalls: AtomicU64,
+    write_back_errors: AtomicU64,
+    lock_waited_nanos: AtomicU64,
+    counts_waited_nanos: AtomicU64,
+    appending_nanos: AtomicU64,
+    placing_nanos: AtomicU64,
+    reclaiming_nanos: AtomicU64,
+}
+
+/// What the commits of one open database share: the commit lock, whether
+/// the session still takes commits, and counts.
+///
+/// It is made when the database is opened and lives beside its stores. A
+/// [`Committer`](super::Committer) is a view of the stores and of this.
+#[derive(Default)]
+pub struct CommitState {
+    /// The commit lock (`transactions.md` CM2, level 1 of LT7).
+    commit: Mutex<Scratch>,
+    stopped: Mutex<Option<Stopped>>,
+    /// Whether a sync of the log that fails stops the session.
+    ends_at_failed_sync: bool,
+    counters: Counters,
+    /// Whom an error of write-back in a committer's own turn is told.
+    report: Option<Report>,
+    /// What a test runs between the last step before a publication and
+    /// the publication, with the commit lock held.
+    #[cfg(test)]
+    before_publication: Mutex<Option<Hook>>,
+    /// What a test runs when a commit is about to take the commit lock:
+    /// every check it makes without the lock is behind it.
+    #[cfg(test)]
+    before_lock: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+/// What a test runs before a version is published.
+#[cfg(test)]
+type Hook = Box<dyn Fn(CommitVersion) + Send + Sync>;
+
+/// Whom an error of write-back is told.
+type Report = Box<dyn Fn(&FlushError) + Send + Sync>;
+
+/// The commit lock, held (`transactions.md` CM2): no commit is made and no
+/// version is published until this is dropped. Beside a commit, the
+/// sampling step of a checkpoint takes it (CK2), and holds it for that
+/// step and no longer.
+pub struct CommitLock<'a> {
+    pub(super) scratch: MutexGuard<'a, Scratch>,
+}
+
+impl fmt::Debug for CommitLock<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommitLock").finish_non_exhaustive()
+    }
+}
+
+impl CommitState {
+    /// The state of a session that has made no commit.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// As [`Self::new`], and `report` is told every error of write-back in
+    /// a turn that a committer made or waited for after its commit or its
+    /// rollback, as the caller of
+    /// [`WriteBack::run`](lignin_store::flush::WriteBack::run) is told
+    /// those of the background loop. Such an error changes no commit: it
+    /// is counted, and without `report` that is all.
+    pub fn reporting(report: impl Fn(&FlushError) + Send + Sync + 'static) -> Self {
+        Self {
+            report: Some(Box::new(report)),
+            ..Self::default()
+        }
+    }
+
+    /// As `self`, and the session stops at a sync of the log that fails
+    /// ([`Stopped::NotDurable`]): the commit whose sync failed is
+    /// published and reported [`NotDurable`], and every commit after it is
+    /// refused with [`Stopped`], also one that was waiting for the commit
+    /// lock. Without this the session goes on, and its caller ends it
+    /// (see "A sync that failed stays failed for the session" in the
+    /// [module documentation](super)).
+    ///
+    /// [`NotDurable`]: super::CommitError::NotDurable
+    /// [`Stopped`]: super::CommitError::Stopped
+    pub fn ending_at_a_failed_sync(mut self) -> Self {
+        self.ends_at_failed_sync = true;
+        self
+    }
+
+    /// Stops a session that ends at a failed sync: a sync of the log
+    /// failed with `version` the latest. The caller holds the commit
+    /// lock, so no commit is published after the sync that failed.
+    pub(crate) fn sync_failed(&self, version: CommitVersion, error: &FlushError) {
+        if self.ends_at_failed_sync {
+            self.stop(Stopped::NotDurable {
+                version,
+                reason: error.to_string(),
+            });
+        }
+    }
+
+    /// Takes the commit lock (CM2). It waits for a commit that is being
+    /// made, and for nothing else.
+    pub fn lock(&self) -> CommitLock<'_> {
+        CommitLock {
+            scratch: lock(&self.commit),
+        }
+    }
+
+    /// Takes the commit lock if no commit is being made, and waits for
+    /// none: for whoever must not wait for a commit, or may be called by
+    /// the thread that is making one.
+    pub(crate) fn try_lock(&self) -> Option<CommitLock<'_>> {
+        let scratch = match self.commit.try_lock() {
+            Ok(scratch) => scratch,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(CommitLock { scratch })
+    }
+
+    /// Why the session takes no commit any more, if it does not.
+    pub fn stopped(&self) -> Option<Stopped> {
+        lock(&self.stopped).clone()
+    }
+
+    /// Stops the session: from here on it takes no commit. The first
+    /// reason stands, and is returned.
+    pub(super) fn stop(&self, reason: Stopped) -> Stopped {
+        lock(&self.stopped).get_or_insert(reason).clone()
+    }
+
+    /// The counts so far.
+    pub fn stats(&self) -> CommitStats {
+        let counters = &self.counters;
+        let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        CommitStats {
+            published: read(&counters.published),
+            empty: read(&counters.empty),
+            conflicts: read(&counters.conflicts),
+            failed: read(&counters.failed),
+            not_durable: read(&counters.not_durable),
+            group_bytes: read(&counters.group_bytes),
+            values_carried: read(&counters.values_carried),
+            value_bytes_carried: read(&counters.value_bytes_carried),
+            rewritten: read(&counters.rewritten),
+            rollbacks: read(&counters.rollbacks),
+            stalls: read(&counters.stalls),
+            write_back_errors: read(&counters.write_back_errors),
+            lock_waited: Duration::from_nanos(read(&counters.lock_waited_nanos)),
+            counts_waited: Duration::from_nanos(read(&counters.counts_waited_nanos)),
+            appending: Duration::from_nanos(read(&counters.appending_nanos)),
+            placing: Duration::from_nanos(read(&counters.placing_nanos)),
+            reclaiming: Duration::from_nanos(read(&counters.reclaiming_nanos)),
+        }
+    }
+
+    /// Has `hook` run before each version is published from here on, on
+    /// the committing thread, which holds the commit lock: everything of
+    /// the commit is done but the publication.
+    #[cfg(test)]
+    pub(crate) fn run_before_publication(
+        &self,
+        hook: impl Fn(CommitVersion) + Send + Sync + 'static,
+    ) {
+        *lock(&self.before_publication) = Some(Box::new(hook));
+    }
+
+    /// Has `hook` run by every commit when it is about to take the commit
+    /// lock, on its own thread, after the last check it makes without the
+    /// lock.
+    #[cfg(test)]
+    pub(crate) fn run_before_lock(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *lock(&self.before_lock) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_lock(&self) {
+        if let Some(hook) = &*lock(&self.before_lock) {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_publication(&self, version: CommitVersion) {
+        if let Some(hook) = &*lock(&self.before_publication) {
+            hook(version);
+        }
+    }
+
+    /// Counts an error of write-back and tells it to whoever asked.
+    pub(super) fn write_back_failed(&self, error: &FlushError) {
+        (self.counters.write_back_errors).fetch_add(1, Ordering::Relaxed);
+        if let Some(report) = &self.report {
+            report(error);
+        }
+    }
+
+    pub(super) fn count(&self, what: Counted) {
+        let counters = &self.counters;
+        let counter = match what {
+            Counted::Published { group_len, carried } => {
+                counters.group_bytes.fetch_add(group_len, Ordering::Relaxed);
+                counters
+                    .values_carried
+                    .fetch_add(carried.values, Ordering::Relaxed);
+                counters
+                    .value_bytes_carried
+                    .fetch_add(carried.bytes, Ordering::Relaxed);
+                &counters.published
+            }
+            Counted::Empty => &counters.empty,
+            Counted::Conflict => &counters.conflicts,
+            Counted::Failed => &counters.failed,
+            Counted::NotDurable => &counters.not_durable,
+            Counted::Rewritten => &counters.rewritten,
+            Counted::Rollback => &counters.rollbacks,
+            Counted::Stall => &counters.stalls,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts the time since `began` as spent on `what`.
+    pub(super) fn spent(&self, what: Spent, began: Instant) {
+        let counters = &self.counters;
+        let counter = match what {
+            Spent::LockWait => &counters.lock_waited_nanos,
+            Spent::CountsWait => &counters.counts_waited_nanos,
+            Spent::Appending => &counters.appending_nanos,
+            Spent::Placing => &counters.placing_nanos,
+            Spent::Reclaiming => &counters.reclaiming_nanos,
+        };
+        let nanos = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        counter.fetch_add(nanos, Ordering::Relaxed);
+    }
+}
+
+impl fmt::Debug for CommitState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommitState")
+            .field("stopped", &self.stopped())
+            .field("stats", &self.stats())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The parts of a committer's time that are counted apart
+/// ([`CommitStats`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Spent {
+    LockWait,
+    CountsWait,
+    Appending,
+    Placing,
+    Reclaiming,
+}
+
+/// One thing a commit counts.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Counted {
+    Published {
+        group_len: u64,
+        carried: CarriedValues,
+    },
+    Empty,
+    Conflict,
+    Failed,
+    NotDurable,
+    Rewritten,
+    Rollback,
+    Stall,
+}
+
+/// What write-back asks of whoever publishes commits and keeps the pins
+/// and the guards (`lignin_store::flush`): the latest published version,
+/// every commit up to which has installed its pages (CM3 steps 7 and 8),
+/// and an operation guard for a piece of its work (PN5).
+impl Published for Versions {
+    fn latest(&self) -> CommitVersion {
+        Versions::latest(self)
+    }
+
+    fn guarded(&self, work: &mut dyn FnMut()) {
+        let _guard = self.guard();
+        work()
+    }
+}

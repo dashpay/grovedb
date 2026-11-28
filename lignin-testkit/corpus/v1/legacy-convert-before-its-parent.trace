@@ -1,0 +1,259 @@
+lignin-golden-trace 1
+name legacy-convert-before-its-parent
+seed 0x0
+grove-version 1
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-convert-before-its-parent
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c884cr697e
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 117, 109, 115], element: sum_tree: None 0 })
+  cost seeks=5 loaded=150 added=124 replaced=77 removed=- hashes=9 sinsemilla=0
+  root ae4385276d28b4bc97fbc7c6864a50b7a0fb2932cebe52f2132fa5fad5ad5ebc
+c57a6r9f8d
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], element: sum_item: 1 })
+  cost seeks=8 loaded=313 added=164 replaced=164 removed=- hashes=15 sinsemilla=0
+  root b13e40cfd862a963669cdcb85efc87ed9a137081e10a2d3c1619085c784d1b75
+c408br9561
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [101, 109, 112, 116, 121], element: sum_tree: None 0 })
+  cost seeks=10 loaded=386 added=142 replaced=294 removed=- hashes=18 sinsemilla=0
+  root a2848bc27feee036b23420bb6b67600a5e0c6f304a28968de2b1167b3dd0ffe5
+c776ar4ec9
+  step 4
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [102, 105, 108, 108, 101, 100], element: sum_tree: None 0 })
+  cost seeks=13 loaded=500 added=144 replaced=398 removed=- hashes=20 sinsemilla=0
+  root 29f35a489c11f3fd2f26f93086783952b402eeb2d73ac1e38db79411c660bc77
+c8c42rae81
+  step 5
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115], [102, 105, 108, 108, 101, 100]], key: [97], element: sum_item: 9 })
+  cost seeks=14 loaded=705 added=164 replaced=373 removed=- hashes=24 sinsemilla=0
+  root f6dc5765310eedceb99bf270f260cde87d4ec30d60b599733a5266b84273a997
+cbe38r3637
+  step 6
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [108, 101, 102, 116, 45, 111, 117, 116], element: not_summed(sum_tree: None 0) })
+  cost seeks=13 loaded=546 added=149 replaced=373 removed=- hashes=20 sinsemilla=0
+  root 614448c9bc14e85cc03798865bf53736f3e0f1782c531b11782aecca1f6384cb
+c6db9rdbe9
+  step 7
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115], [108, 101, 102, 116, 45, 111, 117, 116]], key: [97], element: sum_item: 70 })
+  cost seeks=16 loaded=829 added=164 replaced=481 removed=- hashes=26 sinsemilla=0
+  root ac461936fe25f2ba09f4f78b76c9620d8b9ce659a734060fd3f2e9e9039ae83d
+cb160r134c
+  step 8
+  # Write(Insert { path: [[116, 111, 112]], key: [114, 97, 110, 107, 101, 100], element: provable_sum_indexed_tree: primary=None, secondary=None, sum: 0 })
+  cost seeks=7 loaded=232 added=129 replaced=164 removed=- hashes=12 sinsemilla=0
+  root 052d89c05ed5ae4f039dc178f0fc5340b1decec09883df5c310fcfa85a0c3eec
+c7555rc1d6
+  step 9
+  # Write(IndexedInsert { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [97], element: sum_item: -40, tree: Sum })
+  cost seeks=20 loaded=866 added=357 replaced=254 removed=- hashes=30 sinsemilla=0
+  root 0f02cd832b52c88ce91ea33d8565aa05963e10bd9adb57046841150a1aa677b9
+c528drcb32
+  step 10
+  # Write(IndexedInsert { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [112, 111, 116], element: sum_tree: None 0, tree: Sum })
+  cost seeks=23 loaded=1121 added=337 replaced=535 removed=- hashes=36 sinsemilla=0
+  root 78353606ce3ede933379e308dddbc5ae3ad70b79ca73fc45e2eb5e4597086bad
+c70ffr52d4
+  step 11
+  # Write(Insert { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [112, 111, 116]], key: [97], element: sum_item: 10 })
+  cost seeks=27 loaded=1502 added=363 replaced=637 removed=199 hashes=37 sinsemilla=0
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7ddr52d4
+  step 12
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 13
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [101, 109, 112, 116, 121], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 14
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [102, 105, 108, 108, 101, 100], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 15
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [112, 111, 116], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7ddr52d4
+  step 16
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 17
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [102, 105, 108, 108, 101, 100], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 18
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [112, 111, 116], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cceebv171a
+  step 19
+  # Read(Get { path: [[116, 111, 112]], key: [115, 117, 109, 115] })
+  cost seeks=2 loaded=196 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 040105656d7074791400
+cb7dde02b4r52d4
+  step 20
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [108, 101, 102, 116, 45, 111, 117, 116], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7ddr52d4
+  step 21
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+c7f48v38ea
+  step 22
+  # Read(Get { path: [[116, 111, 112], [115, 117, 109, 115]], key: [108, 101, 102, 116, 45, 111, 117, 116] })
+  cost seeks=3 loaded=315 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 040101618c00
+cb7dde02b4r52d4
+  step 23
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [115, 117, 109, 115], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 24
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [114, 97, 110, 107, 101, 100], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7ddr52d4
+  step 25
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cceebv171a
+  step 26
+  # Read(Get { path: [[116, 111, 112]], key: [115, 117, 109, 115] })
+  cost seeks=2 loaded=196 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 040105656d7074791400
+c10fbv22e5
+  step 27
+  # Read(Get { path: [[116, 111, 112]], key: [114, 97, 110, 107, 101, 100] })
+  cost seeks=3 loaded=280 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 1501016101097fffffffffffffd8613b00
+cb7dde41f4qb7ddp24bc
+  step 28
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: BigSum, traversal: RankedPage { k: 8, offset: 0 … (521 characters)
+  # failed: not supported: the big sum axis is not served at this grove version
+  # prove failed: not supported: the big sum axis is not served at this grove version
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7dde02b4r52d4
+  step 29
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [101, 109, 112, 116, 121], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 30
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [102, 105, 108, 108, 101, 100], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7dde02b4r52d4
+  step 31
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [112, 111, 116], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+c3c11ea7b1r52d4
+  step 32
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115], [102, 105, 108, 108, 101, 100]], key: [98], element: sum_item: 9223372036854775807 })
+  # failed: merk error: overflow error sum is overflowing
+  cost seeks=4 loaded=400 added=0 replaced=0 removed=- hashes=8 sinsemilla=0
+  failed MerkError::Overflow
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+c4d05ea7b1r52d4
+  step 33
+  # Write(Insert { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [112, 111, 116]], key: [98], element: sum_item: 9223372036854775807 })
+  # failed: merk error: overflow error sum is overflowing
+  cost seeks=4 loaded=358 added=0 replaced=0 removed=- hashes=8 sinsemilla=0
+  failed MerkError::Overflow
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+c4d05ea7b1r52d4
+  step 34
+  # Write(Insert { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [112, 111, 116]], key: [99], element: sum_item: 9223372036854775807 })
+  # failed: merk error: overflow error sum is overflowing
+  cost seeks=4 loaded=358 added=0 replaced=0 removed=- hashes=8 sinsemilla=0
+  failed MerkError::Overflow
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cb7ddr52d4
+  step 35
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4f46e6b7a25847cf0c84604a3a45814cdd919866a3c394badf957adc651516bc
+cceebv171a
+  step 36
+  # Read(Get { path: [[116, 111, 112]], key: [115, 117, 109, 115] })
+  cost seeks=2 loaded=196 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 040105656d7074791400
+c10fbv22e5
+  step 37
+  # Read(Get { path: [[116, 111, 112]], key: [114, 97, 110, 107, 101, 100] })
+  cost seeks=3 loaded=280 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 1501016101097fffffffffffffd8613b00
+c38d4v16f2
+  step 38
+  # Read(Get { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [112, 111, 116] })
+  cost seeks=3 loaded=275 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 040101611400
+c4d88vc89eq8e2apcff9
+  step 39
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [115, 117, 109, 115]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, proven… (409 characters)
+  cost seeks=9 loaded=1298 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 4
+  row 746f70/73756d73 61 030200
+  row 746f70/73756d73 656d707479 04000000
+  row 746f70/73756d73 66696c6c6564 040101611200
+  row 746f70/73756d73 6c6566742d6f7574 10040101618c00
+  skipped 0
+  prove-cost seeks=9 loaded=779 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  proof 303 002f0403746f70000802010473756d7300381dfd9b52262343b2cecd675b37958024ff0aee5a71975e5058b046e7818b620103746f705401d5479191bd11e472c22fde50a7ed161bd694c0232423d94779ebc44397f47ba0040473756d73000a040105656d707479140018270b3b5ef8f923d2a697db8157aaef65c99a74da0a71042c388f8ea431702810010473756d739b03016100030302000405656d7074790004040000008024fe55f0add01bab3aab8026626664141804450aa5efcee35fe964b5d93ac110040666696c6c6564000604010161120038053f19fe1e638b28567c82831ccf23cefc6f6cebc9f05483e24801761fdcbb04086c6566742d6f7574000710040101618c00ea42c491b2b0b4d96ff083c1c568fcbeab33d8de386b1d117c93fc987aa107f311110001
+  verification verified
+cb7dde41f4qb7ddp24bc
+  step 40
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: BigSum, traversal: RankedPage { k: 8, offset: 0 … (521 characters)
+  # failed: not supported: the big sum axis is not served at this grove version
+  # prove failed: not supported: the big sum axis is not served at this grove version
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+stream 41 941538e453f6a8e20328ea28d111e2b90ed4bc4726a486f20888d8a6f3e235e0
+tally failed=16 unproved=2 unverified=0
+end 41 fe05a9dbcb567e3a68fdb51c468cffcf3e10add8f5a2e59085dfa8568d54a625

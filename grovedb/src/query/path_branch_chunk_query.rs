@@ -14,7 +14,7 @@ use bincode::{Decode, DecodeUntrusted, Encode};
 /// # Usage
 /// After performing a trunk query, use the terminal node keys from the
 /// `TrunkQueryResult` as the `key` parameter to retrieve deeper branches.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 pub struct PathBranchChunkQuery {
     /// Path to the tree to query
@@ -27,7 +27,7 @@ pub struct PathBranchChunkQuery {
     pub depth: u8,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 impl PathBranchChunkQuery {
     /// Create a new path branch chunk query
     ///

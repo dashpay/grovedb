@@ -18,22 +18,22 @@
 //! so a panic in the bench harness surfaces *which* operation failed
 //! rather than just a backtrace-only "called Option::unwrap on a None".
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb::{Element, GroveDb};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use tempfile::TempDir;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
 
 /// Populate a fresh cidx with `n` empty CountTree entries.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().expect("populate_cidx: create tempdir");
@@ -81,7 +81,7 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
 /// Currently unused (the matching top-k baseline bench is disabled
 /// pending a meaningful implementation), but kept for the
 /// `bench_insert_into_plain_count_tree` insert-latency baseline.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 #[allow(dead_code)]
 fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
     let grove_version = GroveVersion::latest();
@@ -129,7 +129,7 @@ fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersi
 /// top_k via cidx: secondary range scan, `O(log n + k)` — measured
 /// through the public surface (`run_path_query` over an axis
 /// `PathQuery`), the route production reads take.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 fn bench_cidx_top_k(c: &mut Criterion) {
     use grovedb::element::IndexAxis;
     use grovedb::query_result_type::QueryResultType;
@@ -179,7 +179,7 @@ fn bench_cidx_top_k(c: &mut Criterion) {
 // while iterating every CountTree child would be O(n) by inspection).
 
 /// Insert latency: dedicated cidx API vs plain CountTree insert.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 fn bench_insert_into_cidx(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_into_cidx");
     let gv = GroveVersion::latest();
@@ -217,7 +217,7 @@ fn bench_insert_into_cidx(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 fn bench_insert_into_plain_count_tree(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_into_plain_count_tree");
     let gv = GroveVersion::latest();
@@ -258,7 +258,7 @@ fn bench_insert_into_plain_count_tree(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_group!(
     benches,
     bench_cidx_top_k,
@@ -267,8 +267,8 @@ criterion_group!(
     bench_insert_into_cidx,
     bench_insert_into_plain_count_tree,
 );
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_main!(benches);
 
-#[cfg(not(feature = "minimal"))]
+#[cfg(not(feature = "rocksdb_storage"))]
 fn main() {}

@@ -29,16 +29,16 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
+mod staging;
+
 use std::collections::BTreeMap;
 
-use grovedb_storage::{Batch, StorageContext};
 use grovedb_version::version::GroveVersion;
 
 use grovedb_element::Element;
 
 use crate::{
     element::tree_type::ElementTreeTypeExtensions,
-    merk,
     merk::MerkSource,
     proofs::{
         chunk::{
@@ -50,19 +50,48 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
+    store::{NodeChange, NodeChangeSet, NodeCursor, NodeStore},
     tree::{
         combine_hash, hash::NULL_HASH, kv::ValueDefinedCostType, value_hash, AggregateData,
         RefWalker, TreeNode,
     },
     tree_type::TreeType,
-    CryptoHash, Error,
-    Error::{CostsError, StorageError},
-    Link, Merk, TreeFeatureType,
+    CryptoHash, Error, Link, Merk, MerkType, TreeFeatureType,
 };
+
+use self::staging::Staging;
+
+/// A restore at work on `$merk`: the Merk of `$restorer`, or the one its
+/// chunks are staged in.
+macro_rules! restoring {
+    ($restorer:ident, $merk:expr) => {
+        Restoring {
+            merk: $merk,
+            expected_root_hash: $restorer.expected_root_hash,
+            chunk_id_to_root_hash: &mut $restorer.chunk_id_to_root_hash,
+            parent_key_value_hash: $restorer.parent_key_value_hash,
+            parent_keys: &mut $restorer.parent_keys,
+        }
+    };
+}
 
 /// Restorer handles verification of chunks and replication of Merk trees.
 /// Chunks can be processed randomly as long as their parent has been processed
 /// already.
+///
+/// # Where the chunks are written
+///
+/// A chunk arrives before the chunks below it, and links at its lower edge
+/// to their roots, which are not there yet. The RocksDB adapter, which
+/// writes a link as bytes of the node's record, takes such a node, and each
+/// chunk is written to the Merk's store as it arrives. A store that does not
+/// ([`NodeStore::takes_links_to_absent_nodes`]) is written once: the chunks
+/// go to a store in memory, on which the restore makes the same calls and
+/// which no one else reads, and [`Restorer::finalize`] hands the finished
+/// Merk to its own store as one change set, every node once and a child
+/// before its parent ([`NodeChangeSet::state_whole_merk`]). Until then the
+/// Merk's own store holds nothing of the restore, so a restore that is
+/// given up before it is finalized leaves that store as it found it.
 ///
 /// # Height safety during restoration (audit finding #15, 2026-03-09)
 ///
@@ -100,6 +129,10 @@ use crate::{
 ///    `Restorer`.
 pub struct Restorer<S> {
     merk: Merk<S>,
+    /// The Merk the chunks are written to until every chunk has arrived,
+    /// for a store that takes no link to a node it does not hold. It is
+    /// boxed so that a `Restorer` is no larger for it.
+    staged: Option<Box<Merk<Staging>>>,
     expected_root_hash: CryptoHash,
     chunk_id_to_root_hash: BTreeMap<Vec<u8>, CryptoHash>,
     parent_key_value_hash: Option<CryptoHash>,
@@ -107,7 +140,7 @@ pub struct Restorer<S> {
     parent_keys: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
-impl<'db, S: StorageContext<'db>> Restorer<S> {
+impl<'db, S: NodeStore<'db>> Restorer<S> {
     /// Initializes a new chunk restorer with the expected root hash for the
     /// first chunk
     pub fn new(
@@ -117,8 +150,19 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     ) -> Self {
         let mut chunk_id_to_root_hash = BTreeMap::new();
         chunk_id_to_root_hash.insert(traversal_instruction_as_vec_bytes(&[]), expected_root_hash);
+        // The staged Merk keeps its own root key, whatever kind of Merk the
+        // restore is of: a restore records and reads the root key of every
+        // Merk in the Merk's store.
+        let staged = (!merk.storage.takes_links_to_absent_nodes()).then(|| {
+            Box::new(Merk::open_empty(
+                Staging::new(),
+                MerkType::BaseMerk,
+                merk.tree_type,
+            ))
+        });
         Self {
             merk,
+            staged,
             expected_root_hash,
             chunk_id_to_root_hash,
             parent_key_value_hash,
@@ -129,6 +173,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Consumes the `Restorer` and returns the underlying `Merk` without
     /// finalizing. Useful for inspecting the merk state (e.g., checking its
     /// root hash) when no chunks have been processed.
+    ///
+    /// On a store that is handed a restored Merk whole, this is the Merk as
+    /// it was before the restore, whatever chunks were processed: they are
+    /// dropped with the `Restorer`.
     pub fn into_merk(self) -> Merk<S> {
         self.merk
     }
@@ -186,7 +234,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
         let chunk_tree = Self::verify_chunk(chunk, expected_root_hash, &parent_key_value_hash)?;
 
-        let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
+        let root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         // The parent-link rewrite (and the root-key set) mutate committed
         // restorer state, so they run only AFTER the chunk write — whose
@@ -218,31 +266,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let root_key = chunk_tree.key().map(|k| k.to_vec());
 
         // next up, we need to write the chunk and build the map again
-        let chunk_write_result =
-            self.write_chunk(chunk_tree, &mut root_traversal_instruction, grove_version);
-        if chunk_write_result.is_ok() {
-            match updated_parent_link {
-                None => {
-                    self.merk.set_base_root_key(root_key).value?;
-                }
-                Some((updated_key, updated_aggregate)) => {
-                    // every non root chunk has some associated parent with a
-                    // placeholder link; update it to represent the true data
-                    self.rewrite_parent_link(
-                        chunk_id,
-                        &root_traversal_instruction,
-                        &updated_key,
-                        updated_aggregate,
-                        grove_version,
-                    )?;
-                }
-            }
-            // if we were able to successfully write the chunk, we can remove
-            // the chunk expected root hash from our chunk id map
-            self.chunk_id_to_root_hash.remove(chunk_id);
+        let chunk = VerifiedChunk {
+            chunk_id,
+            chunk_tree,
+            root_traversal_instruction,
+            updated_parent_link,
+            root_key,
+        };
+        match self.staged.as_deref_mut() {
+            Some(staged) => restoring!(self, staged).write(chunk, grove_version),
+            None => restoring!(self, &mut self.merk).write(chunk, grove_version),
         }
-
-        chunk_write_result
     }
 
     /// Process multi chunks (space optimized chunk proofs that can contain
@@ -363,6 +397,202 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         Ok(tree)
     }
 
+    /// Consumes the `Restorer` and returns a newly created, fully populated
+    /// Merk instance. This method will return an error if called before
+    /// processing all chunks.
+    ///
+    /// This is the only way to obtain the restored `Merk`. It guarantees
+    /// that all height metadata is correct before returning, regardless of
+    /// any placeholder heights stored during intermediate chunk processing.
+    /// See the struct-level doc comment on [`Restorer`] for the full safety
+    /// argument.
+    /// Values remain opaque; their encoding never changes feature semantics.
+    pub fn finalize(self, grove_version: &GroveVersion) -> Result<Merk<S>, Error> {
+        self.finalize_inner(grove_version, false)
+    }
+
+    /// Finalizes a GroveDB subtree whose values are serialized `Element`s.
+    /// Own contributions are derived from those elements, including sums
+    /// that are not authenticated by the host's node hashes. Raw Merk callers
+    /// must use [`Self::finalize`] to preserve their independent features.
+    pub fn finalize_with_grovedb_elements(
+        self,
+        grove_version: &GroveVersion,
+    ) -> Result<Merk<S>, Error> {
+        self.finalize_inner(grove_version, true)
+    }
+
+    fn finalize_inner(
+        mut self,
+        grove_version: &GroveVersion,
+        grove_db_elements: bool,
+    ) -> Result<Merk<S>, Error> {
+        // ensure all chunks have been processed
+        if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
+            return Err(Error::ChunkRestoringError(
+                ChunkError::RestorationNotComplete,
+            ));
+        }
+
+        match self.staged.take() {
+            None => restoring!(self, &mut self.merk).finish(grove_version, grove_db_elements)?,
+            Some(mut staged) => {
+                // The staged Merk is finished and checked as a Merk in its
+                // own store is, so the tree that is handed over has passed
+                // every check of a restore.
+                restoring!(self, &mut *staged).finish(grove_version, grove_db_elements)?;
+                self.hand_over(*staged, grove_version)?;
+            }
+        }
+
+        Ok(self.merk)
+    }
+
+    /// Hands the Merk that was restored in `staged` to its own store, as
+    /// one change set: it states the root, says that it is the whole Merk,
+    /// puts every node once, a child before its parent and each with its
+    /// value written, and records the root key, which a restore records
+    /// for every Merk. Then the root is loaded from the store and checked
+    /// against the expected hash.
+    fn hand_over(
+        &mut self,
+        staged: Merk<Staging>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        let root_key = staged
+            .root_key()
+            .ok_or(Error::ChunkRestoringError(InternalError(
+                "a restore that finished has no root",
+            )))?;
+        let staging = staged.storage;
+
+        // The change set says that the Merk had no node before it, and a
+        // store that is told so reads no node of the Merk to apply it. The
+        // moves of a cursor return a cost and no result: a cursor that
+        // failed says so by its status.
+        let mut cursor = self.merk.storage.cursor();
+        cursor.seek_to_first().unwrap();
+        let holds_a_node = cursor.valid().unwrap();
+        cursor.status().map_err(Error::StorageError)?;
+        drop(cursor);
+        if holds_a_node {
+            return Err(Error::NotSupported(
+                "a restore into a Merk that holds nodes, on a store that is handed a Merk whole"
+                    .to_string(),
+            ));
+        }
+
+        let mut change_set = self.merk.storage.change_set();
+        change_set.state_root(Some(&root_key));
+        change_set.state_whole_merk();
+        put_staged(&staging, &root_key, &mut change_set, grove_version)?;
+        if staging.len() != 0 {
+            return Err(Error::ChunkRestoringError(InternalError(
+                "the restored tree does not link every node that was written",
+            )));
+        }
+        change_set.put_root_key(&root_key, None)?;
+        // costs intentionally discarded — restorer does not track them
+        self.merk.storage.commit(change_set).value?;
+
+        self.merk
+            .load_base_root(
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .value?;
+        restoring!(self, &mut self.merk).check_root_hash()
+    }
+}
+
+/// Takes the node under `key` out of `staging`, with every node below it,
+/// and puts each into `change_set` after its children.
+fn put_staged<C: NodeChangeSet>(
+    staging: &Staging,
+    key: &[u8],
+    change_set: &mut C,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    let node = staging
+        .take_node(key, grove_version)?
+        .ok_or(Error::ChunkRestoringError(InternalError(
+            "a link of the restored tree names no node, or one that another link names",
+        )))?;
+    for side in [LEFT, RIGHT] {
+        if let Some(link) = node.link(side) {
+            put_staged(staging, link.key(), change_set, grove_version)?;
+        }
+    }
+    let prepared = change_set.prepare_node(&node, NodeChange::ValueWritten);
+    change_set.put_node(node.key(), prepared, None)
+}
+
+/// A chunk that was verified against the hash its restore expects, with
+/// what writing it needs.
+struct VerifiedChunk<'c> {
+    chunk_id: &'c [u8],
+    chunk_tree: ProofTree,
+    root_traversal_instruction: Vec<bool>,
+    /// The key and the aggregate of the chunk's root, for the link of its
+    /// parent: `None` for the chunk at the root of the Merk.
+    updated_parent_link: Option<(Vec<u8>, AggregateData)>,
+    root_key: Option<Vec<u8>>,
+}
+
+/// A restore at work on the Merk its chunks are written to: the Merk of
+/// its [`Restorer`], or the one they are staged in. Writing a chunk and
+/// finishing the Merk are its functions, so they are the same on both.
+struct Restoring<'a, W> {
+    merk: &'a mut Merk<W>,
+    expected_root_hash: CryptoHash,
+    chunk_id_to_root_hash: &'a mut BTreeMap<Vec<u8>, CryptoHash>,
+    parent_key_value_hash: Option<CryptoHash>,
+    parent_keys: &'a mut BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+impl<'db, W: NodeStore<'db>> Restoring<'_, W> {
+    /// Writes a verified chunk, and then what its arrival settles: the root
+    /// key after the chunk at the root of the Merk, and after any other the
+    /// link of its parent.
+    fn write(
+        &mut self,
+        chunk: VerifiedChunk<'_>,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let VerifiedChunk {
+            chunk_id,
+            chunk_tree,
+            mut root_traversal_instruction,
+            updated_parent_link,
+            root_key,
+        } = chunk;
+        let chunk_write_result =
+            self.write_chunk(chunk_tree, &mut root_traversal_instruction, grove_version);
+        if chunk_write_result.is_ok() {
+            match updated_parent_link {
+                None => {
+                    self.merk.set_base_root_key(root_key).value?;
+                }
+                Some((updated_key, updated_aggregate)) => {
+                    // every non root chunk has some associated parent with a
+                    // placeholder link; update it to represent the true data
+                    self.rewrite_parent_link(
+                        chunk_id,
+                        &root_traversal_instruction,
+                        &updated_key,
+                        updated_aggregate,
+                        grove_version,
+                    )?;
+                }
+            }
+            // if we were able to successfully write the chunk, we can remove
+            // the chunk expected root hash from our chunk id map
+            self.chunk_id_to_root_hash.remove(chunk_id);
+        }
+
+        chunk_write_result
+    }
+
     /// Write the verified chunk to storage.
     ///
     /// Note on child heights: `Child::as_link()` produces `Link::Reference`
@@ -382,7 +612,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         // this contains all the elements we want to write to storage
-        let mut batch = self.merk.storage.new_batch();
+        let mut change_set = self.merk.storage.change_set();
         let mut new_chunk_ids = Vec::new();
 
         // Chunk verification cannot tell feature-type families apart:
@@ -453,14 +683,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         // Update tree links. Heights in these links may be
                         // placeholders for Hash-node children (chunk
                         // boundaries); corrected by finalize().
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
-                        // encode the node and add it to the batch
+                        // add the node to the change set
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KV(key, value) => {
                         // Items in normal trees: value_hash = H(value),
@@ -474,12 +703,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVValueHash(key, value, vh) => {
                         // Backward-references ITEM variants must arrive as
@@ -513,12 +742,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVCount(key, value, count) => {
                         // Items in ProvableCountTree: value_hash = H(value),
@@ -532,12 +761,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVSum(key, value, sum) => {
                         // Items in ProvableSumTree: value_hash = H(value),
@@ -552,12 +781,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVCountSum(key, value, count, sum) => {
                         // Items in ProvableCountProvableSumTree:
@@ -576,12 +805,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVCountBigSum(key, value, count, sum) => {
                         // Items in ProvableCountProvableBigSumTree: the wide
@@ -597,12 +826,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::KVBigSum(key, value, sum) => {
                         // Items in ProvableBigSumTree: the wide counterpart
@@ -616,12 +845,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
-                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+                        tree.set_link(LEFT, proof_node.left.as_ref().map(Child::as_link));
+                        tree.set_link(RIGHT, proof_node.right.as_ref().map(Child::as_link));
 
                         family_check(&tree)?;
-                        let bytes = tree.encode();
-                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                        let node = change_set.prepare_node(&tree, NodeChange::ValueWritten);
+                        change_set.put_node(key, node, None)
                     }
                     Node::Hash(hash) => {
                         // the node hash points to the root of another chunk
@@ -648,12 +877,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             },
         )?;
 
-        // write the batch (costs intentionally discarded — restorer does not track them)
-        self.merk
-            .storage
-            .commit_batch(batch)
-            .value
-            .map_err(StorageError)?;
+        // write the change set (costs intentionally discarded — restorer does not track
+        // them)
+        self.merk.storage.commit(change_set).value?;
 
         Ok(new_chunk_ids)
     }
@@ -677,15 +903,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 "after successful chunk verification parent key should exist",
             )))?;
 
-        let mut parent = merk::fetch_node(
-            &self.merk.storage,
-            parent_key.as_slice(),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )?
-        .ok_or(Error::ChunkRestoringError(InternalError(
-            "cannot find expected parent in memory, most likely state corruption issue",
-        )))?;
+        let mut parent = self
+            .merk
+            .storage
+            .get_node(
+                parent_key.as_slice(),
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .value?
+            .ok_or(Error::ChunkRestoringError(InternalError(
+                "cannot find expected parent in memory, most likely state corruption issue",
+            )))?;
 
         let is_left = traversal_instruction
             .last()
@@ -701,12 +930,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *aggregate_data = updated_aggregate;
         }
 
-        let parent_bytes = parent.encode();
         self.merk
             .storage
-            .put(parent_key, &parent_bytes, None, None)
-            .value
-            .map_err(StorageError)?;
+            .write_node(&parent, NodeChange::StructureChanged)
+            .value?;
 
         self.parent_keys
             .remove(chunk_id)
@@ -726,9 +953,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// correct values. Called by `finalize()` when `verify_height` detects
     /// a discrepancy.
     fn rewrite_heights(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
-        fn rewrite_child_heights<'s, 'db, S: StorageContext<'db>>(
+        fn rewrite_child_heights<'s, 'db, S: NodeStore<'db>>(
             mut walker: RefWalker<MerkSource<'s, S>>,
-            batch: &mut <S as StorageContext<'db>>::Batch,
+            change_set: &mut S::ChangeSet,
             grove_version: &GroveVersion,
         ) -> Result<(u8, u8), Error> {
             let mut cloned_node = TreeNode::decode(
@@ -752,7 +979,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 )
                 .value?
             {
-                let left_child_heights = rewrite_child_heights(left_walker, batch, grove_version)?;
+                let left_child_heights =
+                    rewrite_child_heights(left_walker, change_set, grove_version)?;
                 left_height = left_child_heights.0.max(left_child_heights.1) + 1;
                 *cloned_node
                     .link_mut(LEFT)
@@ -771,7 +999,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .value?
             {
                 let right_child_heights =
-                    rewrite_child_heights(right_walker, batch, grove_version)?;
+                    rewrite_child_heights(right_walker, change_set, grove_version)?;
                 right_height = right_child_heights.0.max(right_child_heights.1) + 1;
                 *cloned_node
                     .link_mut(RIGHT)
@@ -781,15 +1009,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     .child_heights_mut() = right_child_heights;
             }
 
-            let bytes = cloned_node.encode();
-            batch
-                .put(walker.tree().key(), &bytes, None, None)
-                .map_err(CostsError)?;
+            let node = change_set.prepare_node(&cloned_node, NodeChange::HashOnly);
+            change_set.put_node(walker.tree().key(), node, None)?;
 
             Ok((left_height, right_height))
         }
 
-        let mut batch = self.merk.storage.new_batch();
+        let mut change_set = self.merk.storage.change_set();
         let mut tree =
             self.merk
                 .tree
@@ -799,16 +1025,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 )))?;
         let walker = RefWalker::new(&mut tree, self.merk.source());
 
-        rewrite_child_heights(walker, &mut batch, grove_version)?;
+        rewrite_child_heights(walker, &mut change_set, grove_version)?;
 
         self.merk.tree.set(Some(tree));
 
         // costs intentionally discarded — restorer does not track them
-        self.merk
-            .storage
-            .commit_batch(batch)
-            .value
-            .map_err(StorageError)
+        self.merk.storage.commit(change_set).value
     }
 
     /// Recomputes all aggregate metadata (node OWN feature values and link
@@ -853,10 +1075,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         grove_version: &GroveVersion,
         grove_db_elements: bool,
     ) -> Result<(), Error> {
-        fn rewrite_child_aggregates<'s, 'db, S: StorageContext<'db>>(
+        fn rewrite_child_aggregates<'s, 'db, S: NodeStore<'db>>(
             tree_type: TreeType,
             mut walker: RefWalker<MerkSource<'s, S>>,
-            batch: &mut <S as StorageContext<'db>>::Batch,
+            change_set: &mut S::ChangeSet,
             grove_version: &GroveVersion,
             grove_db_elements: bool,
         ) -> Result<AggregateData, Error> {
@@ -926,7 +1148,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     let child_aggregate = rewrite_child_aggregates(
                         tree_type,
                         child_walker,
-                        batch,
+                        change_set,
                         grove_version,
                         grove_db_elements,
                     )?;
@@ -957,17 +1179,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 cloned_node.set_feature_type(own);
             }
 
-            let bytes = cloned_node.encode();
-            batch
-                .put(walker.tree().key(), &bytes, None, None)
-                .map_err(CostsError)?;
+            let node = change_set.prepare_node(&cloned_node, NodeChange::ValueWritten);
+            change_set.put_node(walker.tree().key(), node, None)?;
 
             cloned_node.aggregate_data().map_err(|_| {
                 Error::CorruptedState("cannot combine aggregates during aggregate rewrite")
             })
         }
 
-        let mut batch = self.merk.storage.new_batch();
+        let mut change_set = self.merk.storage.change_set();
         let Some(mut tree) = self.merk.tree.take() else {
             // Empty tree: nothing to rewrite.
             return Ok(());
@@ -978,7 +1198,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let result = rewrite_child_aggregates(
             tree_type,
             walker,
-            &mut batch,
+            &mut change_set,
             grove_version,
             grove_db_elements,
         );
@@ -987,63 +1207,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         result?;
 
         // costs intentionally discarded — restorer does not track them
-        self.merk
-            .storage
-            .commit_batch(batch)
-            .value
-            .map_err(StorageError)
+        self.merk.storage.commit(change_set).value
     }
 
-    /// Rebuild restoration state from partial storage state
-    #[allow(dead_code)]
-    fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
-        // TODO: think about the return type some more
-        let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
-        if !bad_link_map.is_empty() {
-            self.chunk_id_to_root_hash = bad_link_map;
-            self.parent_keys = parent_keys;
-        }
-
-        Ok(())
-    }
-
-    /// Consumes the `Restorer` and returns a newly created, fully populated
-    /// Merk instance. This method will return an error if called before
-    /// processing all chunks.
-    ///
-    /// This is the only way to obtain the restored `Merk`. It guarantees
-    /// that all height metadata is correct before returning, regardless of
-    /// any placeholder heights stored during intermediate chunk processing.
-    /// See the struct-level doc comment on [`Restorer`] for the full safety
-    /// argument.
-    /// Values remain opaque; their encoding never changes feature semantics.
-    pub fn finalize(self, grove_version: &GroveVersion) -> Result<Merk<S>, Error> {
-        self.finalize_inner(grove_version, false)
-    }
-
-    /// Finalizes a GroveDB subtree whose values are serialized `Element`s.
-    /// Own contributions are derived from those elements, including sums
-    /// that are not authenticated by the host's node hashes. Raw Merk callers
-    /// must use [`Self::finalize`] to preserve their independent features.
-    pub fn finalize_with_grovedb_elements(
-        self,
-        grove_version: &GroveVersion,
-    ) -> Result<Merk<S>, Error> {
-        self.finalize_inner(grove_version, true)
-    }
-
-    fn finalize_inner(
-        mut self,
+    /// Finishes a Merk whose chunks have all been written: corrects the
+    /// heights and the aggregates the chunks could not give, verifies the
+    /// tree, and checks its root against the expected hash.
+    fn finish(
+        &mut self,
         grove_version: &GroveVersion,
         grove_db_elements: bool,
-    ) -> Result<Merk<S>, Error> {
-        // ensure all chunks have been processed
-        if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
-            return Err(Error::ChunkRestoringError(
-                ChunkError::RestorationNotComplete,
-            ));
-        }
-
+    ) -> Result<(), Error> {
         // get the latest version of the root node
         self.merk
             .load_base_root(
@@ -1113,6 +1287,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         // verify() checks links, but the root has no incoming link. A
         // feature rewrite can change its hash even when every link is valid.
+        self.check_root_hash()
+    }
+
+    /// Checks the root of the Merk against the hash the restore expects:
+    /// the root hash, or its combination with the value hash of the parent
+    /// element.
+    fn check_root_hash(&self) -> Result<(), Error> {
         let root_hash = self.merk.root_hash().unwrap();
         let restored_hash = match self.parent_key_value_hash {
             Some(value_hash) => combine_hash(&value_hash, &root_hash).unwrap(),
@@ -1123,8 +1304,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 "restored root does not match expected root hash",
             )));
         }
-
-        Ok(self.merk)
+        Ok(())
     }
 
     /// Verify that the child heights of the merk tree links correctly represent
@@ -1175,14 +1355,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             if let Some(left_tree) = link.tree() {
                 self.verify_tree_height(left_tree, left_height, grove_version)?;
             } else {
-                let left_tree = TreeNode::get(
-                    &self.merk.storage,
-                    link.key(),
-                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                    grove_version,
-                )
-                .value?
-                .ok_or(Error::CorruptedState("link points to non-existent node"))?;
+                let left_tree = self
+                    .merk
+                    .storage
+                    .get_node(
+                        link.key(),
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .value?
+                    .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
             }
         }
@@ -1191,14 +1373,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             if let Some(right_tree) = link.tree() {
                 self.verify_tree_height(right_tree, right_height, grove_version)?;
             } else {
-                let right_tree = TreeNode::get(
-                    &self.merk.storage,
-                    link.key(),
-                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                    grove_version,
-                )
-                .value?
-                .ok_or(Error::CorruptedState("link points to non-existent node"))?;
+                let right_tree = self
+                    .merk
+                    .storage
+                    .get_node(
+                        link.key(),
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .value?
+                    .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
             }
         }
@@ -1323,16 +1507,9 @@ fn own_contribution_from_subtree_total(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{
-            test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext,
-            PrefixedRocksDbTransactionContext,
-        },
-        RawIterator, Storage,
-    };
 
     use super::*;
     use crate::{
@@ -1340,7 +1517,11 @@ mod tests {
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
-        test_utils::{make_batch_seq, TempMerk},
+        store::NodeCursor,
+        test_utils::{
+            make_batch_seq, SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine,
+            TempMerk, TestEngine,
+        },
         tree_type::TreeType,
         Error::ChunkRestoringError,
         Merk, PanicSource,
@@ -1355,20 +1536,16 @@ mod tests {
             Op::Push(Node::KV(vec![3], vec![3])),
             Op::Parent,
         ];
-        assert!(Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            non_avl_tree_proof,
-            &[0; 32],
-            &None
-        )
-        .is_err());
+        assert!(
+            Restorer::<SuiteSubtree>::verify_chunk(non_avl_tree_proof, &[0; 32], &None).is_err()
+        );
     }
 
     #[test]
     fn test_chunk_verification_accepted_and_rejected_node_types() {
         // KV should be accepted (items in normal trees)
         let kv_proof = vec![Op::Push(Node::KV(vec![1], vec![1]))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kv_proof, &[0; 32], &None);
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kv_proof, &[0; 32], &None);
         // KV is now accepted; it will fail with hash mismatch (not invalid node type)
         assert!(
             !matches!(
@@ -1382,9 +1559,7 @@ mod tests {
 
         // KVValueHash should be accepted (subtrees in normal trees)
         let kvvh_proof = vec![Op::Push(Node::KVValueHash(vec![0], vec![0], [0; 32]))];
-        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            kvvh_proof, &[0; 32], &None,
-        );
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvvh_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1397,8 +1572,7 @@ mod tests {
 
         // KVCount should be accepted (items in provable count trees)
         let kvc_proof = vec![Op::Push(Node::KVCount(vec![0], vec![0], 1))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvc_proof, &[0; 32], &None);
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvc_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1415,8 +1589,7 @@ mod tests {
         // chunking a ProvableSumTree would produce chunks the verifier
         // refused to restore.
         let kvs_proof = vec![Op::Push(Node::KVSum(vec![0], vec![0], 7))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvs_proof, &[0; 32], &None);
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvs_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1433,9 +1606,7 @@ mod tests {
         // `create_proof_node_for_chunk` (which maps PCPS Items to
         // KVCountSum) would be rejected at restore time.
         let kvcs_proof = vec![Op::Push(Node::KVCountSum(vec![0], vec![0], 1, 7))];
-        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            kvcs_proof, &[0; 32], &None,
-        );
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvcs_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1448,11 +1619,8 @@ mod tests {
 
         // should not accept kvhash
         let invalid_chunk_proof = vec![Op::Push(Node::KVHash([0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
+        let verification_result =
+            Restorer::<SuiteSubtree>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -1462,11 +1630,8 @@ mod tests {
 
         // should not accept kvdigest
         let invalid_chunk_proof = vec![Op::Push(Node::KVDigest(vec![0], [0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
+        let verification_result =
+            Restorer::<SuiteSubtree>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -1476,11 +1641,8 @@ mod tests {
 
         // should not accept kvrefvaluehash
         let invalid_chunk_proof = vec![Op::Push(Node::KVRefValueHash(vec![0], vec![0], [0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
+        let verification_result =
+            Restorer::<SuiteSubtree>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -1502,11 +1664,11 @@ mod tests {
         let crafted_hash: CryptoHash = [0xAB; 32];
         let malicious_chunk = vec![Op::Push(Node::Hash(crafted_hash))];
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1566,11 +1728,11 @@ mod tests {
             Op::Child,
         ];
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1625,11 +1787,11 @@ mod tests {
         merk.tree.set(Some(merk_tree.clone()));
         let mut tree_walker = RefWalker::new(&mut merk_tree, PanicSource {});
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1836,14 +1998,14 @@ mod tests {
     }
 
     fn assert_raw_db_entries_eq(
-        restored: &Merk<PrefixedRocksDbImmediateStorageContext>,
-        original: &Merk<PrefixedRocksDbImmediateStorageContext>,
+        restored: &Merk<SuiteImmediateSubtree>,
+        original: &Merk<SuiteImmediateSubtree>,
         length: usize,
     ) {
         assert_eq!(restored.root_hash().unwrap(), original.root_hash().unwrap());
 
-        let mut original_entries = original.storage.raw_iter();
-        let mut restored_entries = restored.storage.raw_iter();
+        let mut original_entries = original.storage.cursor();
+        let mut restored_entries = restored.storage.cursor();
         original_entries.seek_to_first().unwrap();
         restored_entries.seek_to_first().unwrap();
 
@@ -1875,11 +2037,11 @@ mod tests {
     fn test_restoration_single_chunk_strategy(batch_size: u64) {
         let grove_version = GroveVersion::latest();
         // build the source merk
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1894,11 +2056,11 @@ mod tests {
             .expect("apply failed");
 
         // build the restoration merk
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1967,11 +2129,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2036,11 +2198,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2118,11 +2280,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2209,11 +2371,11 @@ mod tests {
     #[test]
     fn test_process_multi_chunk_rejects_dangling_chunk_id() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2243,11 +2405,11 @@ mod tests {
             .unwrap()
             .expect("apply failed");
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2293,11 +2455,11 @@ mod tests {
             .expect("apply failed");
 
         // build the restoration merk
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2365,93 +2527,132 @@ mod tests {
         test_restoration_multi_chunk_strategy(10000, Some(1200));
     }
 
-    #[test]
-    fn test_restoration_interruption() {
+    /// Restores a Merk of forty nodes into a store that is handed a Merk
+    /// whole, up to its `finalize`.
+    fn staged_restorer(
+        target: &crate::store::mem::MemNodeStore,
+    ) -> Restorer<crate::store::mem::MemNodeStore> {
         let grove_version = GroveVersion::latest();
-        let mut merk = TempMerk::new(grove_version);
-        let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
-            .unwrap()
-            .expect("apply failed");
-        assert_eq!(merk.height(), Some(4));
-
-        let storage = TempStorage::new();
-        let tx = storage.start_transaction();
-        let restoration_merk = Merk::open_base(
-            storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
-                .unwrap(),
-            TreeType::NormalTree,
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )
-        .unwrap()
-        .unwrap();
-
-        // restorer root hash should be empty
-        assert_eq!(restoration_merk.root_hash().unwrap(), [0; 32]);
-
-        // at the start both merks should have different root hash values
-        assert_ne!(
-            merk.root_hash().unwrap(),
-            restoration_merk.root_hash().unwrap()
-        );
-
-        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
-
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
-        assert_eq!(
-            restorer.chunk_id_to_root_hash.get(vec![].as_slice()),
-            Some(merk.root_hash().unwrap()).as_ref()
-        );
-
-        // first restore the first chunk
-        let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1, grove_version).unwrap();
-        let new_chunk_ids = restorer
-            .process_chunk(
-                &traversal_instruction_as_vec_bytes(&[]),
-                chunk,
+        let open = |store: crate::store::mem::MemNodeStore| {
+            Merk::open_base(
+                store,
+                TreeType::NormalTree,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
-            .expect("should process chunk");
-        assert_eq!(new_chunk_ids.len(), 4);
-        assert_eq!(next_chunk_index, Some(2));
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
-        assert_eq!(restorer.parent_keys.len(), 4);
+            .unwrap()
+            .unwrap()
+        };
+        let mut source = open(crate::store::mem::MemNodeStore::new());
+        source
+            .apply::<_, Vec<_>>(&make_batch_seq(0..40), &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+        let mut chunk_producer = ChunkProducer::new(&source).unwrap();
+        let mut restorer = Restorer::new(open(target.clone()), source.root_hash().unwrap(), None);
+        let mut chunk_id_opt = Some(vec![]);
+        while let Some(chunk_id) = chunk_id_opt {
+            let (chunk, next_chunk_id) = chunk_producer.chunk(&chunk_id, grove_version).unwrap();
+            restorer
+                .process_chunk(&chunk_id, chunk, grove_version)
+                .expect("should process chunk successfully");
+            chunk_id_opt = next_chunk_id;
+        }
+        restorer
+    }
 
-        // store old state for later reference
-        let old_chunk_id_to_root_hash = restorer.chunk_id_to_root_hash.clone();
-        let old_parent_keys = restorer.parent_keys.clone();
-
-        // drop the restorer and the restoration merk
-        drop(restorer);
-        // open the restoration merk again and build a restorer from it
-        let restoration_merk = Merk::open_base(
-            storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
-                .unwrap(),
-            TreeType::NormalTree,
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
+    /// A node with no child, under `key`.
+    fn lone_node(key: &[u8]) -> TreeNode {
+        TreeNode::new(
+            key.to_vec(),
+            vec![7; 5],
+            None,
+            TreeFeatureType::BasicMerkNode,
         )
         .unwrap()
-        .unwrap();
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
+    }
 
-        // assert the state of the restorer
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
-        assert_eq!(restorer.parent_keys.len(), 0);
+    /// The hand-over takes the tree a restore finished: every staged node
+    /// is linked from the root, and by one link.
+    #[test]
+    fn the_hand_over_refuses_what_is_no_tree() {
+        use crate::store::mem::MemNodeStore;
+        let grove_version = GroveVersion::latest();
 
-        // recover state
-        let recovery_attempt = restorer.attempt_state_recovery(grove_version);
-        assert!(recovery_attempt.is_ok());
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
-        assert_eq!(restorer.parent_keys.len(), 4);
+        // A staged node that no link of the tree leads to.
+        let target = MemNodeStore::linked();
+        let restorer = staged_restorer(&target);
+        let staged = restorer.staged.as_ref().expect("the restore is staged");
+        staged
+            .storage
+            .write_node(&lone_node(b"stray"), NodeChange::ValueWritten)
+            .unwrap()
+            .unwrap();
+        let refused = restorer.finalize(grove_version).map(|_| ());
+        assert!(
+            matches!(
+                refused,
+                Err(ChunkRestoringError(InternalError(what))) if what.contains("does not link")
+            ),
+            "{refused:?}"
+        );
+        assert!(target.records().is_empty());
+        assert_eq!(target.take_statements(), vec![]);
 
-        // assert equality to old state
-        assert_eq!(old_chunk_id_to_root_hash, restorer.chunk_id_to_root_hash);
-        assert_eq!(old_parent_keys, restorer.parent_keys);
+        // A node that two links name, and a link that names no node.
+        let staging = Staging::new();
+        let child = lone_node(b"b");
+        let to_child = Link::Reference {
+            hash: child.hash().unwrap(),
+            child_heights: (0, 0),
+            key: b"b".to_vec(),
+            aggregate_data: AggregateData::NoAggregateData,
+        };
+        let mut parent = lone_node(b"c");
+        parent.set_link(LEFT, Some(to_child.clone()));
+        parent.set_link(RIGHT, Some(to_child));
+        for node in [&child, &parent] {
+            staging
+                .write_node(node, NodeChange::ValueWritten)
+                .unwrap()
+                .unwrap();
+        }
+        // The first walk takes the child for the left link and finds none
+        // for the right one. The second finds no node under the root's key.
+        for _ in 0..2 {
+            let mut change_set = MemNodeStore::new().change_set();
+            let refused = put_staged(&staging, b"c", &mut change_set, grove_version);
+            assert!(
+                matches!(
+                    refused,
+                    Err(ChunkRestoringError(InternalError(what))) if what.contains("names no node")
+                ),
+                "{refused:?}"
+            );
+            assert_eq!(staging.len(), 0);
+        }
+    }
+
+    /// A restore that finished has a root. A staged Merk with none is
+    /// refused, and nothing is handed over.
+    #[test]
+    fn the_hand_over_refuses_a_staged_merk_with_no_root() {
+        use crate::store::mem::MemNodeStore;
+        let grove_version = GroveVersion::latest();
+        let target = MemNodeStore::linked();
+        let mut restorer = staged_restorer(&target);
+        let empty = Merk::open_empty(Staging::new(), MerkType::BaseMerk, TreeType::NormalTree);
+        let refused = restorer.hand_over(empty, grove_version);
+        assert!(
+            matches!(
+                refused,
+                Err(ChunkRestoringError(InternalError(what))) if what.contains("has no root")
+            ),
+            "{refused:?}"
+        );
+        assert!(target.records().is_empty());
+        assert_eq!(target.take_statements(), vec![]);
+        assert_eq!(target.root_key().unwrap().unwrap(), None);
     }
 
     // ---------- write_chunk node dispatch coverage ----------
@@ -2470,11 +2671,11 @@ mod tests {
         let grove_version = GroveVersion::latest();
 
         // Source merk: one leaf with the given feature_type.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2492,11 +2693,11 @@ mod tests {
             .expect("apply leaf");
 
         // Empty restoration merk with the matching tree_type.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2586,11 +2787,11 @@ mod tests {
     ) {
         let grove_version = GroveVersion::latest();
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2604,11 +2805,11 @@ mod tests {
             .expect("apply elements");
 
         // Empty restoration merk with the matching tree_type.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2917,11 +3118,11 @@ mod tests {
             let expected = parent_hash.map_or(root_hash, |parent| {
                 combine_hash(&parent, &root_hash).unwrap()
             });
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = Merk::open_base(
                 storage
-                    .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                    .immediate_subtree(SubtreePath::empty(), &tx)
                     .unwrap(),
                 TreeType::ProvableCountTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2947,14 +3148,12 @@ mod tests {
     /// Opens an empty restoration merk of `tree_type` on `storage` inside
     /// `tx`.
     fn open_restoration_merk<'a>(
-        storage: &'a TempStorage,
-        tx: &'a <grovedb_storage::rocksdb_storage::RocksDbStorage as Storage<'a>>::Transaction,
+        storage: &'a TempEngine,
+        tx: &'a SuiteTransaction<'a>,
         tree_type: TreeType,
-    ) -> Merk<PrefixedRocksDbImmediateStorageContext<'a>> {
+    ) -> Merk<SuiteImmediateSubtree<'a>> {
         Merk::open_base(
-            storage
-                .get_immediate_storage_context(SubtreePath::empty(), tx)
-                .unwrap(),
+            storage.immediate_subtree(SubtreePath::empty(), tx).unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             GroveVersion::latest(),
@@ -3025,7 +3224,7 @@ mod tests {
             );
 
             // The honest chunk restores.
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
@@ -3047,7 +3246,7 @@ mod tests {
 
             // The forged chunk passes verification but must be refused at
             // element-mode finalization.
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
@@ -3111,7 +3310,7 @@ mod tests {
             ),
         ] {
             let root_hash = ProofTree::from(node.clone()).hash().unwrap();
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
@@ -3139,7 +3338,7 @@ mod tests {
             .expect("apply failed");
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = open_restoration_merk(&storage, &tx, TreeType::NormalTree);
         let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);

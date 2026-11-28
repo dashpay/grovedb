@@ -99,7 +99,7 @@ fn encode_proof(ops: &LinkedList<ProofOp>) -> Vec<u8> {
 
 /// Round-trip: prove → encode → verify, assert root + sum match.
 fn round_trip(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl crate::store::NodeStore<'static>>,
     expected_root: [u8; 32],
     inner_range: QueryItem,
     expected_sum: i64,
@@ -479,7 +479,7 @@ fn integration_overflow_at_i64_max_is_rejected() {
 /// by `prove_aggregate_sum_on_range` agree for the given range, and
 /// that both equal `expected_sum`.
 fn no_proof_sum_matches_prover(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl crate::store::NodeStore<'static>>,
     inner_range: QueryItem,
     expected_sum: i64,
     grove_version: &GroveVersion,

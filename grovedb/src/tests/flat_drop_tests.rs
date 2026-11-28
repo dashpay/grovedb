@@ -29,10 +29,7 @@ mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{pending_prefix_drops_namespace, RocksDbStorage},
-        RawIterator, Storage, StorageContext,
-    };
+    use grovedb_storage::{Storage, StorageContext};
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use crate::{
@@ -41,44 +38,38 @@ mod tests {
         Element, Error, PendingPrefixDropsReport,
     };
 
+    /// Whether the engine of the suite keeps the records of a tree that was
+    /// dropped flat under their prefix until the drain of the drop's
+    /// record. RocksDB does: the drain deletes the ranges. LigninDB drops
+    /// the subtree with the commit of the drop, and its drain removes the
+    /// record and what the drop left beside the subtree
+    /// (`docs/lignindb/engine.md`, "Flat drops and their drain"). So a read
+    /// of the data records under the dropped prefix made directly, and a
+    /// tree made again at the dropped path before the drain, find the old
+    /// data records on the one and not on the other: an open difference by
+    /// the owner's ruling D-327,
+    /// which the three tests that name this constant assert for the
+    /// engine they run on. Everything else of a flat drop and its drain
+    /// is asserted alike.
+    const KEPT_UNTIL_THE_DRAIN: bool = !cfg!(any(
+        grovedb_test_engine = "lignin",
+        grovedb_test_engine = "either-lignin"
+    ));
+
     /// Number of keys physically present in the data namespace under
     /// `prefix` (committed state).
     fn data_namespace_key_count(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
-        let tx = db.db.start_transaction();
-        let ctx = db
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        let mut count = 0;
-        while iter.valid().unwrap() {
-            count += 1;
-            iter.next().unwrap();
-        }
-        count
+        crate::tests::data_keyspace_len(db, prefix, None)
     }
 
     /// Whether a pending-prefix-drop redo record exists for `prefix`
     /// (committed state).
     fn record_exists(db: &TempGroveDb, prefix: [u8; 32]) -> bool {
-        let tx = db.db.start_transaction();
-        let ctx = db
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(
-                *pending_prefix_drops_namespace(),
-                None,
-                &tx,
-            )
-            .unwrap();
-        ctx.get_meta(prefix)
-            .unwrap()
-            .expect("read record")
-            .is_some()
+        crate::tests::pending_prefix_drop_recorded(db, prefix)
     }
 
     fn prefix_of(path: &[&[u8]]) -> [u8; 32] {
-        RocksDbStorage::build_prefix(path.into()).unwrap()
+        grovedb_storage::prefix::build_prefix(path.into()).unwrap()
     }
 
     /// A populated flat tree at `[TEST_LEAF]/key` with `entries` items.
@@ -154,10 +145,12 @@ mod tests {
 
     /// Write `value` at `key` straight into the data storage of the subtree
     /// at `path`, bypassing Merk.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn put_raw(db: &TempGroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
         let tx = db.start_transaction();
         let storage = db
             .db
+            .storage()
             .get_immediate_storage_context(path.into(), &tx)
             .unwrap();
         storage
@@ -170,10 +163,12 @@ mod tests {
 
     /// The bytes stored at `key` in the data storage of the subtree at
     /// `path`, read without Merk.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn get_raw_bytes(db: &TempGroveDb, path: &[&[u8]], key: &[u8]) -> Vec<u8> {
         let tx = db.start_transaction();
         let storage = db
             .db
+            .storage()
             .get_immediate_storage_context(path.into(), &tx)
             .unwrap();
         storage
@@ -359,9 +354,13 @@ mod tests {
         db.commit_transaction(tx).unwrap().expect("commit");
 
         // Committed but not yet flushed: the grove is consistent, the
-        // orphaned bytes still exist, the record is durable.
+        // orphaned bytes still exist where the engine keeps them until the
+        // drain, the record is durable.
         assert_grove_verifies(&db, grove_version);
-        assert!(data_namespace_key_count(&db, prefix) > 0);
+        assert_eq!(
+            data_namespace_key_count(&db, prefix) > 0,
+            KEPT_UNTIL_THE_DRAIN
+        );
         assert!(record_exists(&db, prefix));
 
         let report = db
@@ -409,6 +408,7 @@ mod tests {
         assert_grove_verifies(&db, grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn flush_resumes_after_simulated_crash_between_tombstones_and_record_removal() {
         let grove_version = GroveVersion::latest();
@@ -433,6 +433,7 @@ mod tests {
         // Simulate a crash after the tombstones were written but before
         // the record was removed.
         db.db
+            .storage()
             .delete_prefix_ranges(&[prefix])
             .expect("manual tombstones");
         assert_eq!(data_namespace_key_count(&db, prefix), 0);
@@ -510,14 +511,17 @@ mod tests {
         // record drains is a contract violation: the old tree's stale nodes
         // still sit inside the re-derived (identical) prefix, polluting the
         // new tree's namespace — verification-visible, even though the
-        // root hash and live reads are unaffected.
+        // root hash and live reads are unaffected. On an engine that
+        // dropped the old tree's records with the drop there is nothing
+        // under the prefix but the new tree, and the grove verifies.
         let polluted = db
             .verify_grovedb(None, true, false, grove_version)
             .map(|issues| !issues.is_empty())
             .unwrap_or(true);
-        assert!(
-            polluted,
-            "recreated-path pollution should be visible to verify_grovedb"
+        assert_eq!(
+            polluted, KEPT_UNTIL_THE_DRAIN,
+            "recreated-path pollution is visible to verify_grovedb where the engine keeps the \
+             dropped records until the drain, and nowhere else"
         );
     }
 
@@ -776,6 +780,7 @@ mod tests {
         assert_grove_verifies(&db, grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_count_a_record_whose_liveness_check_fails_and_keep_draining() {
         let grove_version = GroveVersion::latest();
@@ -1027,7 +1032,7 @@ mod tests {
         let primary_prefix = prefix_of(&[TEST_LEAF, b"cidx"]);
         let secondary_prefixes: Vec<[u8; 32]> = (0..3u8)
             .map(|axis_tag| {
-                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_tag).unwrap()
+                grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis_tag).unwrap()
             })
             .collect();
         assert!(data_namespace_key_count(&db, primary_prefix) > 0);
@@ -1185,7 +1190,10 @@ mod tests {
             .expect("apply batch in tx");
         db.commit_transaction(tx).unwrap().expect("commit");
 
-        assert!(data_namespace_key_count(&db, prefix) > 0);
+        assert_eq!(
+            data_namespace_key_count(&db, prefix) > 0,
+            KEPT_UNTIL_THE_DRAIN
+        );
         assert!(record_exists(&db, prefix));
         let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
         assert_eq!(report.reclaimed_records, 1);
@@ -1243,7 +1251,8 @@ mod tests {
             .expect("insert row");
         }
         let primary_prefix = prefix_of(&[TEST_LEAF, b"cidx"]);
-        let count_secondary = RocksDbStorage::secondary_prefix_for(&primary_prefix, 0).unwrap();
+        let count_secondary =
+            grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, 0).unwrap();
         assert!(data_namespace_key_count(&db, count_secondary) > 0);
 
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(

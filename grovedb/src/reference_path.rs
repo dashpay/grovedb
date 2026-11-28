@@ -14,11 +14,11 @@ use grovedb_version::check_grovedb_v0_with_cost;
 use crate::{
     merk_cache::{MerkCache, MerkHandle},
     operations::MAX_REFERENCE_HOPS,
-    Element, Error,
+    Element, Engine, Error,
 };
 
-pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
-    pub target_merk: MerkHandle<'db, 'c>,
+pub(crate) struct ResolvedReference<'db, 'b, 'c, B, E: Engine> {
+    pub target_merk: MerkHandle<'db, 'c, E>,
     pub target_path: SubtreePathBuilder<'b, B>,
     pub target_key: Vec<u8>,
     pub target_element: Element,
@@ -28,12 +28,12 @@ pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
     pub hops: usize,
 }
 
-pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
+pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
+    merk_cache: &'c MerkCache<'db, '_, 'b, B, E>,
     path: SubtreePathBuilder<'b, B>,
     key: &[u8],
     ref_path: ReferencePathType,
-) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
+) -> CostResult<ResolvedReference<'db, 'b, 'c, B, E>, Error> {
     // TODO: this is a new version of follow reference
 
     check_grovedb_v0_with_cost!(
@@ -81,7 +81,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
             cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
         let (element, value_hash) = cost_return_on_error!(
             &mut cost,
-            referred_merk.for_merk(|m| {
+            referred_merk.read_merk(|m| {
                 Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(
                     |e| match e {
                         grovedb_merk::error::Error::PathKeyNotFound(s) => {
@@ -145,12 +145,12 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
 
 /// Follow references stopping at the immediate element without following
 /// further.
-pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
+pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
+    merk_cache: &'c MerkCache<'db, '_, 'b, B, E>,
     path: SubtreePathBuilder<'b, B>,
     key: &[u8],
     ref_path: ReferencePathType,
-) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
+) -> CostResult<ResolvedReference<'db, 'b, 'c, B, E>, Error> {
     check_grovedb_v0_with_cost!(
         "follow_reference_once",
         merk_cache
@@ -180,7 +180,7 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
         cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
     let (element, value_hash) = cost_return_on_error!(
         &mut cost,
-        referred_merk.for_merk(|m| {
+        referred_merk.read_merk(|m| {
             Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(|e| {
                 match e {
                     grovedb_merk::error::Error::PathKeyNotFound(s) => {
@@ -218,7 +218,7 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
     .wrap_with_cost(cost)
 }
 
-#[cfg(test)]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use grovedb_element::{reference_path::ReferencePathType, Element};
     use grovedb_merk::proofs::Query;

@@ -1,0 +1,281 @@
+#!/usr/bin/env bpftrace
+// What the threads of `lignin-bench latency` are off a processor for.
+//
+//   bpftrace trace.bt PID LONG_US OFF_US TID MEASURING
+//
+// PID is the process. TID is the thread to follow, the measuring one
+// (`traced.sh` finds it), or 0 for every thread of the process. MEASURING
+// is the measuring thread. The harness is run with `--mark-blocks`. Lines:
+//
+//   OFFCPU  a followed thread was off a processor for OFF_US or more, at
+//           some moment of the measured blocks, which are between the
+//           harness's two lines: when,
+//           its state when it left, the file system of the file it was
+//           writing or allocating for (0,0 outside such a call), the waking
+//           thread, which is the one that made it runnable again and need
+//           not be one that held what it waited for, the kernel stack and
+//           the user stack it left with, and the kernel stack of the waking.
+//           The user stack is read by frame pointers: `build.sh` keeps them.
+//   INCALL  before an OFFCPU record of a thread that was inside a write or
+//           an allocation: the wait's thread and beginning, which call, and
+//           the file. A wait without one was in neither.
+//           Left out: on the measuring thread the pause of the harness,
+//           which is the first sleep the thread asks for after the line of
+//           a commit and before the line of the next block; on any other
+//           thread every sleep it asked for. A sleep that an engine asks
+//           for on the measuring thread inside a block, as RocksDB does to
+//           slow its writes down, is a wait like another.
+//   WRITE   a write call of a followed thread that took LONG_US or more, and
+//           of which file.
+//   MARK    a line the harness writes: where the measured blocks begin and
+//           end, where each block begins, and after each commit with the
+//           commit's length. It names the thread that wrote it.
+//   SYNC    an fsync or fdatasync of any thread of the process that took
+//           LONG_US or more, or that waited for a commit of an ext4 journal
+//           however long it took: of which file, the number of the
+//           journal's transaction whose commit it asked to wait for (0 if it
+//           asked for none), and when it asked. A sync that asks after the
+//           commit has ended waits for nothing: JEND says when that was.
+//   JSTART  an ext4 journal begins the commit of a transaction.
+//   JEND    it has ended it.
+//   BLK     a request to a block device that took LONG_US or more.
+//
+// The last line the script itself prints is `trace ended`: a trace without
+// it was cut off. bpftrace prints `Lost N events` where its buffers were
+// full: such a trace has too few lines.
+//
+// bpftrace keeps the stacks in maps of a fixed size (131,072 entries in
+// 0.20, whatever it is given), and a stack that falls where another is kept
+// is not kept: the record then has no frame of it, and bpftrace says
+// `failed to look up stack id -17` to its error output. `traced.sh` keeps
+// that output beside the trace, and `waits.py` counts those lines. So that
+// few stacks fall on one another, a stack is taken only when a wait has
+// ended and was long enough to be written, in the thread that comes back
+// (`finish_task_switch`), and only for a wait with a moment of the measured
+// blocks: not at every time a thread leaves a processor, nearly all of which
+// are short.
+//
+// A file is named by its directory and its own name, and a file system by
+// its device, major and minor.
+//
+// Every time is `nsecs(monotonic)`, the system's monotonic clock, which the
+// harness times a commit by and writes into the commit's line. The plain
+// `nsecs` of bpftrace is the clock that goes on while the machine is
+// suspended, where the kernel has it, and is another clock after a suspend.
+
+BEGIN { printf("tracing pid %d thread %d from %d us, off a processor from %d us\n", $1, $4, $2, $3); }
+
+tracepoint:syscalls:sys_enter_clock_nanosleep,
+tracepoint:syscalls:sys_enter_nanosleep
+/pid == $1/
+{
+  if (tid != $5 || @paused[tid]) {
+    @pausing[tid] = 1;
+    delete(@paused[tid]);
+  }
+}
+
+tracepoint:syscalls:sys_exit_clock_nanosleep,
+tracepoint:syscalls:sys_exit_nanosleep
+/@pausing[tid]/
+{ delete(@pausing[tid]); }
+
+// A followed thread leaves a processor: when, in what state, and whether
+// inside the measured blocks. No stack is taken here: most of these times
+// are short, and bpftrace keeps every stack it takes for as long as it runs.
+tracepoint:sched:sched_switch
+/pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid]/
+{
+  @off[tid] = nsecs(monotonic);
+  @offstate[tid] = args->prev_state;
+  @offin[tid] = @measured;
+}
+
+// The waking thread is noted for every wait, and its stack is taken only
+// for one with a moment of the measured blocks so far: the stacks of the
+// wakings of the load and the warm blocks would take places in the map
+// from those that are written.
+tracepoint:sched:sched_waking
+/@off[args->pid]/
+{
+  @woken[args->pid] = 1;
+  @wcomm[args->pid] = comm;
+  @wtid[args->pid] = tid;
+  if (@measured || @offin[args->pid]) {
+    @woken[args->pid] = 2;
+    @wk[args->pid] = kstack(perf, 30);
+  }
+}
+
+// It is back on a processor. The kernel calls this in the thread that comes
+// back, before it goes on from where it left: its kernel stack is the one
+// it left with, under the two frames of the switch, and its user stack has
+// not moved. The stacks are taken here, and only for a wait that is long
+// enough to be written.
+kprobe:finish_task_switch*
+/@off[tid]/
+{
+  // How often this fired, whether or not the wait is written: printed when
+  // the script ends, for a trace without a wait to say that the probe works.
+  @resumed = count();
+  $t = tid;
+  $d = (nsecs(monotonic) - @off[$t]) / 1000;
+  // A wait is written if it has a moment of the measured blocks: it began
+  // inside them or ends inside them. One of a thread of the background that
+  // began before them and ends in the first of them is such a wait.
+  if ($d >= $3 && (@measured || @offin[$t])) {
+    // The file of the call the thread was in, in a record of its own with
+    // the wait's thread and beginning: one record cannot hold it as well.
+    if (@w[$t]) {
+      printf("INCALL begin=%llu tid=%d call=write file=%s/%s\n", @off[$t], $t, @wdir[$t], @wname[$t]);
+    }
+    if (@adev[$t]) {
+      printf("INCALL begin=%llu tid=%d call=allocate file=%s/%s\n", @off[$t], $t, @adir[$t], @aname[$t]);
+    }
+    // A thread that was taken off its processor while it could run is put
+    // back with no waking, and one that was woken before the measured
+    // blocks began has a waking whose stack was not taken: the record then
+    // has no stack of one, and the tracer is not asked for a stack it never
+    // took.
+    if (@woken[$t] == 2) {
+      printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
+             @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
+             (@wdev[$t] | @adev[$t]) & 0xfffff,
+             comm, $t, @wcomm[$t], @wtid[$t], kstack(perf, 40), ustack(perf, 127), @wk[$t]);
+    } else {
+      printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n\n",
+             @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
+             (@wdev[$t] | @adev[$t]) & 0xfffff,
+             comm, $t, @wcomm[$t], @wtid[$t], kstack(perf, 40), ustack(perf, 127));
+    }
+  }
+  delete(@off[$t]); delete(@offstate[$t]); delete(@offin[$t]);
+  delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]); delete(@woken[$t]);
+}
+
+kprobe:vfs_write
+/pid == $1 && ($4 == 0 || tid == $4)/
+{
+  $f = (struct file *)arg0;
+  @w[tid] = nsecs(monotonic);
+  @wlen[tid] = arg2;
+  @wname[tid] = str($f->f_path.dentry->d_name.name);
+  @wdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+  @wdev[tid] = $f->f_inode->i_sb->s_dev;
+  if (@wname[tid] == "null") {
+    $line = str(uptr(arg1), arg2);
+    printf("MARK at=%llu tid=%d %s", nsecs(monotonic), tid, $line);
+    // A line of the harness is `lignin-mark ` and then `measured begin`,
+    // `measured end`, `block N` or `commit N ...`: what follows the twelve
+    // characters says which, by its first letter, and for the first two
+    // the letter after `measured ` says which of them.
+    $kind = *(uint8 *)uptr(arg1 + 12);
+    // Waits are followed between the two lines around the measured blocks.
+    if ($kind == 109) {
+      if (*(uint8 *)uptr(arg1 + 21) == 98) { @measured = 1; } else { @measured = 0; }
+    }
+    // After the line of a commit the harness pauses, and with the line of
+    // the next block the pause is over, made or not.
+    if ($kind == 99) {
+      @paused[tid] = 1;
+    }
+    if ($kind == 98) {
+      delete(@paused[tid]);
+    }
+  }
+}
+
+kretprobe:vfs_write
+/@w[tid]/
+{
+  $d = (nsecs(monotonic) - @w[tid]) / 1000;
+  if ($d >= $2) {
+    printf("WRITE begin=%llu end=%llu us=%llu len=%llu by=%s/%d dev=%d,%d file=%s/%s\n",
+           @w[tid], nsecs(monotonic), $d, @wlen[tid], comm, tid, @wdev[tid] >> 20, @wdev[tid] & 0xfffff,
+           @wdir[tid], @wname[tid]);
+  }
+  delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]); delete(@wdev[tid]);
+}
+
+// The file of an allocation and its file system, for the waits inside it.
+kprobe:vfs_fallocate
+/pid == $1 && ($4 == 0 || tid == $4)/
+{
+  $f = (struct file *)arg0;
+  @adev[tid] = $f->f_inode->i_sb->s_dev;
+  @aname[tid] = str($f->f_path.dentry->d_name.name);
+  @adir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+}
+
+kretprobe:vfs_fallocate
+/@adev[tid]/
+{ delete(@adev[tid]); delete(@aname[tid]); delete(@adir[tid]); }
+
+kprobe:vfs_fsync_range
+/pid == $1/
+{
+  $f = (struct file *)arg0;
+  @s[tid] = nsecs(monotonic);
+  @sname[tid] = str($f->f_path.dentry->d_name.name);
+  @sdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+  @sdev[tid] = $f->f_inode->i_sb->s_dev;
+  @stx[tid] = 0;
+  @sasked[tid] = 0;
+}
+
+// The transaction of the journal that a sync waits for the commit of.
+kprobe:jbd2_log_wait_commit
+/@s[tid]/
+{ @stx[tid] = arg1; @sasked[tid] = nsecs(monotonic); }
+
+kretprobe:vfs_fsync_range
+/@s[tid]/
+{
+  $d = (nsecs(monotonic) - @s[tid]) / 1000;
+  @syncs[@sdir[tid]] = count();
+  @sync_us[@sdir[tid]] = hist($d);
+  if ($d >= $2 || @stx[tid] != 0) {
+    printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d dev=%d,%d transaction=%d asked=%llu file=%s/%s\n",
+           @s[tid], nsecs(monotonic), $d, comm, tid, @sdev[tid] >> 20, @sdev[tid] & 0xfffff, @stx[tid],
+           @sasked[tid], @sdir[tid], @sname[tid]);
+  }
+  delete(@s[tid]); delete(@sname[tid]); delete(@sdir[tid]); delete(@sdev[tid]); delete(@stx[tid]);
+  delete(@sasked[tid]);
+}
+
+tracepoint:jbd2:jbd2_start_commit
+{
+  printf("JSTART at=%llu dev=%d,%d transaction=%d\n",
+         nsecs(monotonic), args->dev >> 20, args->dev & 0xfffff, args->transaction);
+}
+
+tracepoint:jbd2:jbd2_end_commit
+{
+  printf("JEND at=%llu dev=%d,%d transaction=%d\n",
+         nsecs(monotonic), args->dev >> 20, args->dev & 0xfffff, args->transaction);
+}
+
+tracepoint:block:block_rq_issue { @rq[args->dev, args->sector] = nsecs(monotonic); }
+
+tracepoint:block:block_rq_complete
+/@rq[args->dev, args->sector]/
+{
+  $d = (nsecs(monotonic) - @rq[args->dev, args->sector]) / 1000;
+  if ($d >= $2) {
+    printf("BLK begin=%llu end=%llu us=%llu dev=%d,%d %s sector=%llu sectors=%u\n",
+           @rq[args->dev, args->sector], nsecs(monotonic), $d, args->dev >> 20, args->dev & 0xfffff,
+           args->rwbs, args->sector, args->nr_sector);
+  }
+  delete(@rq[args->dev, args->sector]);
+}
+
+END
+{
+  clear(@pausing); clear(@off); clear(@offstate); clear(@offin); clear(@measured);
+  clear(@wcomm); clear(@wtid); clear(@wk); clear(@woken);
+  clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
+  clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);
+  clear(@aname); clear(@adir);
+  clear(@paused);
+  printf("trace ended\n");
+}

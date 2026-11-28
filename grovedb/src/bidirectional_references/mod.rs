@@ -11,8 +11,10 @@ pub(crate) mod semantics;
 pub(crate) use semantics::check_carried_referrers_fit;
 
 pub use grovedb_element::{BackwardReference, BidirectionalReference};
+use grovedb_merk::store::NodeStore;
 use grovedb_version::version::GroveVersion;
 
+use crate::Engine;
 pub(crate) use handling::*;
 
 /// What a write or removal declares about the stored value it displaces:
@@ -77,31 +79,31 @@ pub(crate) fn batch_maintains_backward_references(grove_version: &GroveVersion) 
 /// its propagation cost exceed any fixed estimate).
 pub const MAX_BACKWARD_REFERENCES_GROVE_DEPTH: usize = 32;
 
-impl crate::GroveDb {
+impl<E: Engine> crate::GroveDb<E> {
     /// Find participants before a recursive subtree removal. Raw non-Merk
     /// namespaces contain no Elements and must never be decoded as such.
-    pub(crate) fn backward_reference_participants(
-        &self,
+    pub(crate) fn backward_reference_participants<'db>(
+        &'db self,
         path: &[Vec<u8>],
-        transaction: &crate::Transaction,
+        transaction: &crate::Transaction<'db, E>,
         grove_version: &GroveVersion,
     ) -> grovedb_costs::CostResult<Vec<(Vec<Vec<u8>>, Vec<u8>, crate::Element)>, crate::Error> {
         use crate::element::elements_iterator::ElementIteratorExtensions;
         use grovedb_costs::{cost_return_on_error, CostsExt};
-        use grovedb_storage::{Storage, StorageContext};
         let mut cost = Default::default();
         let mut queue = vec![path.to_vec()];
         let mut participants = Vec::new();
         while let Some(path) = queue.pop() {
             let storage = self
                 .db
-                .get_transactional_storage_context(
+                .subtree(
                     grovedb_path::SubtreePath::from(path.as_slice()),
                     None,
                     transaction,
                 )
                 .unwrap_add_cost(&mut cost);
-            let mut iter = crate::Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
+            let mut iter =
+                crate::Element::iterator(NodeStore::cursor(&storage)).unwrap_add_cost(&mut cost);
             while let Some((key, element)) =
                 cost_return_on_error!(&mut cost, iter.next_element(grove_version))
             {

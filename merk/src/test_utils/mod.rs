@@ -28,10 +28,21 @@
 
 //! Test utils
 
+mod engine;
+#[cfg(merk_test_engine)]
 mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
+#[cfg(feature = "lignin_storage")]
+pub use engine::{LigninTestEngine, LigninTestTransaction};
+pub use engine::{NodeStoreOnly, TestEngine};
+#[cfg(feature = "rocksdb_storage")]
+pub use engine::{NodeStoreOnlyEngine, RocksDbTestEngine};
+#[cfg(merk_test_engine)]
+pub use engine::{
+    SuiteBatch, SuiteEngine, SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine,
+};
 use grovedb_costs::storage_cost::{
     removal::StorageRemovedBytes::BasicStorageRemoval, transition::ElementFlagsUpdate,
 };
@@ -39,6 +50,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 use rand::prelude::*;
+#[cfg(merk_test_engine)]
 pub use temp_merk::TempMerk;
 
 use crate::{
@@ -343,6 +355,26 @@ where
     Merk::open_base(
         storage
             .get_transactional_storage_context(SubtreePath::empty(), None, transaction)
+            .unwrap(),
+        TreeType::NormalTree,
+        None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap()
+}
+
+/// A Merk of the root subtree on an engine of the suite. It writes to
+/// `batch`, and with none it is read-only.
+pub fn root_merk<'db, E: TestEngine>(
+    engine: &'db E,
+    transaction: &'db E::Transaction<'_>,
+    batch: Option<&'db E::Batch>,
+    grove_version: &GroveVersion,
+) -> Merk<E::Subtree<'db>> {
+    Merk::open_base(
+        engine
+            .subtree(SubtreePath::empty(), batch, transaction)
             .unwrap(),
         TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

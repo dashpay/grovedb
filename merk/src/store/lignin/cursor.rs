@@ -1,0 +1,219 @@
+//! The cursor of a Merk on LigninDB.
+
+use std::cell::{OnceCell, RefCell};
+
+use ed::Encode;
+use grovedb_costs::{CostContext, CostsExt};
+use grovedb_storage::Error as StorageError;
+
+use super::{
+    access::{Access, Failure, Prefix, Seek, StoredNode, Walk},
+    hash,
+    left::Left,
+    node_inner,
+    place::{Marked, Place},
+    MODEL,
+};
+use crate::{cost_model::Keyspace, store::NodeCursor, Error};
+
+/// The cursor of a [`LigninNodeStore`](super::LigninNodeStore): the nodes
+/// of one Merk in key order, each as the record Merk encodes of it
+/// (`node-store.md`, "Cursor").
+///
+/// - **What it shows** is what the handle's reads show: the committed
+///   nodes of the moment the cursor was opened, which it keeps pinned,
+///   with the transaction's own writes as they are at each call
+///   (`transactions.md` RD6). It shows nothing that is staged in a batch.
+/// - **It stands on a key.** A move takes the key it comes to, and the
+///   record under it is built when [`NodeCursor::value`] first asks for
+///   it: from the node's cell, and from the cell of each child for the
+///   child's key, which a cell does not hold (`tree-page.md` TP10). A walk
+///   that reads keys only, as [`Merk::clear`](crate::Merk::clear) does,
+///   reads no value and no child. The record is read once for a place: a
+///   write to the key after `value` was asked shows after the next move.
+/// - **It holds no lock and no page between two calls.** Each move, and
+///   the read of a record, is one operation of the transaction. On a
+///   writer's handle it takes the writer's lock for that long.
+/// - **It is charged as a cursor of a storage context** (`cost-model.md`
+///   C1 to C3), with the sizes Merk's record has.
+/// - **A move that leaves the Merk's keys leaves it where a cursor of
+///   RocksDB stands then**: on a record of another subtree, which it does
+///   not show, or nowhere. A step goes on from there, back onto the last
+///   key or the first if it came from a record beside the Merk
+///   ([`Place`], `node-store.md`, "Cursor").
+/// - **A move the transaction refuses leaves it on no key.** A read of a
+///   record that fails leaves the cursor on its key, with no value, and so
+///   does a node with a hash that is not made yet, which has no record.
+///   Either way [`NodeCursor::status`] gives the error until the cursor is
+///   sought again. A walk that ends is at the end of the nodes only if
+///   `status` says so.
+pub struct LigninCursor<'db> {
+    walk: Option<RefCell<Box<dyn Walk + 'db>>>,
+    /// The key the cursor stands on, or where beside its Merk it stands.
+    place: Place,
+    /// What the cursor knows of the marks of flat drops, if its handle
+    /// was told where they are kept.
+    left: Option<Left>,
+    /// The record under the key, once it was asked for.
+    record: OnceCell<Option<Vec<u8>>>,
+    failure: RefCell<Option<Failure>>,
+}
+
+impl std::fmt::Debug for LigninCursor<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LigninCursor")
+            .field("key", &self.place.key())
+            .field("failure", &self.failure.borrow())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The record Merk encodes of `node`. A node with a stale hash has none:
+/// the bytes its cell stores there are no hash, and a record would give
+/// them out as one (`node-store.md`, "Hashes").
+fn record(mut node: StoredNode) -> Result<Vec<u8>, Error> {
+    // A flat record of a tree that keeps its data so is shown as it is
+    // stored.
+    if let Some(record) = node.record.take() {
+        return Ok(record);
+    }
+    hash::refuse_stale(node.stale)?;
+    // A record does not hold the key of its own node.
+    let inner = node_inner(Vec::new(), node)?;
+    Encode::encode(&inner).map_err(Error::EdError)
+}
+
+impl<'db> LigninCursor<'db> {
+    pub(super) fn open(
+        access: &'db (dyn Access + 'db),
+        subtree: &Prefix,
+        left_behind: Option<Prefix>,
+    ) -> Self {
+        let (walk, failure) = match access.cursor(subtree) {
+            Ok(walk) => (Some(RefCell::new(walk)), None),
+            Err(error) => (None, Some(error.into())),
+        };
+        Self {
+            walk,
+            place: Place::default(),
+            left: Left::of(left_behind, Keyspace::Data, subtree),
+            record: OnceCell::new(),
+            failure: RefCell::new(failure),
+        }
+    }
+
+    /// Points the cursor at the Merk of the subtree `prefix`, in the
+    /// committed state it has read from since it was opened
+    /// (`engine.md`, "One state across subtrees"): the version of its
+    /// snapshot, or for a cursor of a write transaction the version it
+    /// pinned when it was opened, with the transaction's writes to
+    /// `prefix` as they are at each call. It stands on no node then, and
+    /// is sought before it is read or stepped.
+    ///
+    /// A cursor that could not be pointed there stands on no node from
+    /// then on, whatever it is asked, and [`NodeCursor::status`] says why.
+    pub fn retarget(mut self, prefix: &Prefix) -> Self {
+        self.place.leave();
+        self.record = OnceCell::new();
+        self.left = self.left.map(|left| left.of_subtree(prefix));
+        if let Some(walk) = self.walk.as_mut() {
+            match walk.get_mut().retarget(prefix) {
+                Ok(()) => *self.failure.get_mut() = None,
+                Err(error) => {
+                    self.walk = None;
+                    *self.failure.get_mut() = Some(error.into());
+                }
+            }
+        }
+        self
+    }
+
+    /// Moves the cursor. A seek starts again after a failure, and a step
+    /// from nowhere goes nowhere.
+    fn go(&mut self, to: Seek<'_>) -> CostContext<()> {
+        let seeks = !matches!(to, Seek::Next | Seek::Prev);
+        self.record = OnceCell::new();
+        if let Some(walk) = self.walk.as_mut() {
+            let mut line = Marked {
+                walk: &mut **walk.get_mut(),
+                left: self.left,
+            };
+            match self.place.go(&mut line, to) {
+                Ok(()) if seeks => *self.failure.get_mut() = None,
+                Ok(()) => {}
+                Err(error) => *self.failure.get_mut() = Some(error.into()),
+            }
+        }
+        ().wrap_with_cost(MODEL.cursor_move())
+    }
+
+    /// The length of the stored key the cursor stands on.
+    fn stored_key_len(&self) -> Option<usize> {
+        let key = self.place.key();
+        key.map(|key| MODEL.stored_key_len(key.len()))
+    }
+
+    /// Builds the record under the cursor's key.
+    fn read(&self) -> Option<Vec<u8>> {
+        let mut walk = self.walk.as_ref()?.borrow_mut();
+        let read = walk.node().and_then(|node| node.map(record).transpose());
+        read.unwrap_or_else(|error| {
+            *self.failure.borrow_mut() = Some(error.into());
+            None
+        })
+    }
+}
+
+impl NodeCursor for LigninCursor<'_> {
+    fn seek_to_first(&mut self) -> CostContext<()> {
+        self.go(Seek::First)
+    }
+
+    fn seek_to_last(&mut self) -> CostContext<()> {
+        self.go(Seek::Last)
+    }
+
+    fn seek<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
+        self.go(Seek::From(key.as_ref()))
+    }
+
+    fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
+        self.go(Seek::Back(key.as_ref()))
+    }
+
+    fn next(&mut self) -> CostContext<()> {
+        self.go(Seek::Next)
+    }
+
+    fn prev(&mut self) -> CostContext<()> {
+        self.go(Seek::Prev)
+    }
+
+    fn value(&self) -> CostContext<Option<&[u8]>> {
+        let Some(key_len) = self.stored_key_len() else {
+            return None.wrap_with_cost(MODEL.cursor_key(None));
+        };
+        match self.record.get_or_init(|| self.read()) {
+            Some(record) => Some(record.as_slice())
+                .wrap_with_cost(MODEL.cursor_value(Some((key_len, record.len())))),
+            None => None.wrap_with_cost(MODEL.cursor_key(Some(key_len))),
+        }
+    }
+
+    fn key(&self) -> CostContext<Option<&[u8]>> {
+        let key = self.place.key();
+        key.wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
+    }
+
+    fn valid(&self) -> CostContext<bool> {
+        let valid = self.place.key().is_some();
+        valid.wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
+    }
+
+    fn status(&self) -> Result<(), StorageError> {
+        match &*self.failure.borrow() {
+            None => Ok(()),
+            Some(failure) => Err(failure.error()),
+        }
+    }
+}

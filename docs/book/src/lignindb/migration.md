@@ -1,0 +1,1115 @@
+<!-- This chapter is docs/lignindb/operator/migration.md, written here by lignin-tools/tests/operator_docs.rs: edit that file, then run `LIGNIN_OPERATOR_DOCS=write cargo test -p lignin-tools --test operator_docs`. -->
+
+# Migrating a node from RocksDB to LigninDB
+
+This runbook is for the person who runs a node that embeds GroveDB and
+moves its database from the RocksDB engine to LigninDB. It is part of
+task OPS-05 of the LigninDB plan
+([dashpay/grovedb#1052](https://github.com/dashpay/grovedb/issues/1052)).
+Everything here is done with GroveDB's own tool, `lignin`, whose
+subcommand `migrate` reads a RocksDB GroveDB and writes the same grove
+as a new LigninDB database. How a node is stopped, started and pointed
+at a database is the application's to say; this runbook says where those
+steps come.
+
+The migration is offline: the node is stopped for the whole run. The
+RocksDB database is read and never written, so it stays the way back
+until you remove it.
+
+| You will | Step |
+| --- | --- |
+| install what the build needs, and build `lignin` | [1](#1-build-the-tool), [2](#2-set-the-variables) |
+| practise on a database the repository makes (optional, recommended) | [3](#3-rehearse-on-a-database-of-the-repository) |
+| stop the node and survey its database | [4](#4-stop-the-node-and-name-the-directories), [5](#5-survey-the-source) |
+| migrate, and check the result | [6](#6-migrate), [7](#7-verify) |
+| back up the new database and restore the backup once | [8](#8-back-up-the-new-database), [9](#9-restore-the-backup-once-and-open-it) |
+| start the node on LigninDB, or go back | [10](#10-start-the-node-on-lignindb), [11](#11-the-way-back) |
+
+Every command below is in a block marked `sh`. They are written for
+`bash` on Linux or macOS (the platforms of the plan's DEC-06: Linux on
+x86_64 and aarch64, macOS on aarch64; there is no Windows build), and
+`docs/lignindb/operator/runbook.sh` runs them all, in this order, on a
+database that step 3 makes: the commands here are the ones that were run.
+
+## What it takes
+
+**Time.** A run counts as its elements the records of the data
+keyspaces it carries: Merk nodes, records that no tree links and flat
+records alike (`elements=…` in its line `migrate: done target=…`). The survey of step 5
+counts every record of the data keyspaces under the prefixes it reaches
+in `data records:`, the flat records among them (`flat records:` gives
+those apart), and the records under prefixes that nothing leads to in
+`prefixes that nothing leads to: …, with … records`, which a run
+carries only with `--unreachable carry`. A source of many flat records
+takes longer than its `Merk nodes:` alone says. The plan's acceptance for the migrator (OPS-02 in
+[task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786))
+is at least 40,000 elements a second on the reference shape, measured on
+a rented machine with dedicated processors (the least of 20 runs was
+40,357); the plan records that a database of many small Merks loads
+about 5% slower at the default setting. Before its last line, a run that ends with status 0
+writes a line that says what it took (where its report can still be
+written), `migrate: done target=… seconds=…`, with
+`elements_per_second=…` for a run that made the whole target, so the rehearsal of step 3 on your own
+machine gives you a rate to plan with.
+The node is stopped from step 4 to step 10: add the survey of step 5,
+which reads the whole source, `lignin verify` in steps 7 and 9, each of
+which reads the whole store again, and the copies of steps 8 and 9,
+which are as long as copying the database's bytes.
+
+**Disk.** While it runs, the migration needs about twice the bytes of
+the source's records plus 256 MiB on the device of the target, and says
+so before the load begins:
+`the load needs about … MiB on the device of … while it runs; …`, with
+how much is free there. That figure is the tool's estimate from the
+records the survey counts under the prefixes it reaches and from the
+root keys. With `--unreachable carry`, add twice the bytes the survey
+gives for the records under prefixes that nothing leads to, which a run
+then carries too. The records of pending drops and the marks a run
+writes for them (the survey's line
+`pending drops: …, which leave … records behind and … marks`) are not
+in it either. The RocksDB database stays where it is, beside
+the new one. Step 8 needs room for one copy of the new database, best on
+another device, and step 9 for one more where `RESTORE` is, until it is
+removed.
+
+**Memory.** A Merk is handed over whole, so the largest Merk of the
+source is the part of the peak that grows with one Merk. The survey
+keeps, besides, the prefixes of every subtree and of the aux and meta
+records, which grow with the number of subtrees, and a run writes the
+records of pending drops and their marks in its last commit, all held
+at once, and while it walks a Merk it keeps the order of the nodes of
+each Merk above it on the path; none of these is in the projection, so
+a source of very many subtrees or pending drops, or of large Merks
+nested along one path, needs more than it says. The
+survey says what peak the run projects
+(`the migration projects a peak of about … MiB of memory`): 256 MiB, the
+commit size (`--batch`, 160 MiB unless given), the buffer pool
+(`--cache`, 64 MiB unless given), and about 1.5 KB with its key and value
+for each node of the largest of what it hands over whole: the largest
+Merk, or, with `--unreachable carry`, a prefix that nothing leads to,
+whose aux and meta records count as nodes with three times their bytes. A run whose projection is above the
+limit is refused before it writes anything. The limit is held after the
+survey, which itself holds the records of a prefix that nothing leads to
+while it reads them, whatever `--unreachable` says: a survey of a source
+with a large such prefix can take more than the limit. On Linux the limit is half of
+the machine's memory as `/proc/meminfo` states it, unless
+`--memory-limit` says another; where that file is not there, as on
+macOS, no limit is held unless `--memory-limit` is given. In a container
+the file can state the host's memory: give `--memory-limit` there.
+
+## 1. Build the tool
+
+You need `git`, `curl`, a C and C++ compiler and `clang` with its
+library (`libclang`): `migrate` builds RocksDB from source, and its
+bindings are made with `libclang`. On Debian or Ubuntu those are the
+packages `git`, `curl`, `build-essential`, `clang` and `libclang-dev`; on
+macOS, the Xcode command line tools. You also need Rust. If `cargo` is
+not on your path, the first block installs it with `rustup`, the
+installer the Rust project publishes, for your user alone; the installer
+also adds Cargo to your shell's profile files. A `cargo` that is on the
+path is used as it is, and is to be a recent stable one: the tool's
+crates are of Rust's edition 2024, which an older Cargo, as some
+distributions package, does not read; update it (`rustup update stable`)
+or put a newer one first on the path.
+
+Run the blocks in a shell of their own, in a terminal of their own:
+start it with `exec bash`, which puts it in place of the terminal's
+shell, and give it the first line of the block below,
+`set -euo pipefail`, before anything else. From then on a command that
+fails, a variable that is not set and a pipeline whose first command
+fails (before its report reaches `tee`) end that shell, and with it the
+terminal, so that no later command runs on what a failed one left: a
+block pasted a line at a time has no other shell left to run its lines
+after the one that failed, which a plain `bash` started from another
+shell would leave them to. To go on after a failure, open a terminal
+and start `exec bash` again, run this block and the
+block of step 2 again (it clones nothing that is there and builds only
+what changed, and puts `lignin` on the path), `export` the four paths as
+step 4 printed them, and go on with the step that failed. Steps 3, 8 and 9 claim a directory
+first, and run again they refuse the one that the failed run claimed:
+where that run's claim succeeded (it failed after `claim_dir`, which
+printed nothing), remove that directory, which the step made and which
+holds nothing but what it built or copied (`$WORK/rehearsal` for step
+3, `BACKUP` or `RESTORE` for steps 8 and 9), and run the step again.
+Where the claim itself failed, it said why: something is at that path,
+or the directory above refused the new one. Remove nothing; give the
+step a new path, or, where the directory above refused, fix that and
+run the step again with the same one. Do not run step 4
+again once `TARGET` is there: its first check refuses it.
+
+```sh
+set -euo pipefail
+if ! command -v cargo >/dev/null; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  . "${CARGO_HOME:-$HOME/.cargo}/env"
+fi
+cargo --version
+plain_path() {
+  case "$1" in *$'\n'*) echo "a path with a line break in it is not taken: $1" >&2; return 1 ;; esac
+}
+real_dir() {
+  local d
+  plain_path "$1" || return 1
+  d=$(cd -P -- "$1" && pwd -P && echo .) || return 1
+  d=${d%$'\n.'}
+  plain_path "$d" || return 1
+  printf '%s\n' "$d"
+}
+outside_databases() {
+  local d
+  case "$1" in
+    /*) d=$(dirname -- "$1") ;;
+    *) d=$(dirname -- "$(pwd -P)/$1") ;;
+  esac
+  while [ ! -d "$d" ]; do
+    case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
+      *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
+    esac
+    d=$(dirname -- "$d")
+  done
+  d=$(real_dir "$d") || return 1
+  while :; do
+    case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
+      *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
+    esac
+    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ -e "$d/CURRENT" ]; then echo "$1 lies inside $d, a RocksDB database directory: choose a path outside it" >&2; return 1; fi
+    if [ "$d" = / ]; then return 0; fi
+    d=$(dirname -- "$d")
+  done
+}
+claim_dir() {
+  plain_path "$1" || return 1
+  case "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" in
+    *.creating) echo "$1 ends in .creating, under which LigninDB builds a checkpoint: choose another path" >&2; return 1 ;;
+  esac
+  outside_databases "$1" || return 1
+  mkdir -- "$1" || { echo "$1 is there already, or cannot be made: choose another path" >&2; return 1; }
+}
+real_new() {
+  local d
+  plain_path "$1" || return 1
+  d=$(real_dir "$(dirname -- "$1")") || return 1
+  printf '%s/%s\n' "${d%/}" "$(basename -- "$1")"
+}
+same_place() {
+  if [ -e "$1" ] && [ "$1" -ef "$2" ]; then return 0; fi
+  [ "$(dirname -- "$1")" -ef "$(dirname -- "$2")" ] && [ "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" = "$(basename -- "$2" | tr '[:upper:]' '[:lower:]')" ]
+}
+within() {
+  local d=$1
+  while :; do
+    if same_place "$d" "$2"; then return 0; fi
+    if [ "$d" = / ] || [ "$d" = . ] || [ -z "$d" ]; then return 1; fi
+    d=$(dirname -- "$d")
+  done
+}
+apart() {
+  local i j
+  local -a p=("$@")
+  for ((i = 0; i < ${#p[@]}; i++)); do
+    for ((j = 0; j < ${#p[@]}; j++)); do
+      if [ "$i" -ne "$j" ] && within "${p[i]}" "${p[j]}"; then echo "${p[i]} is ${p[j]}, or lies inside it: give paths apart"; return 1; fi
+    done
+  done
+}
+```
+
+The functions at the end of the block are what the later steps use to
+write a path again with every link followed (`cd -P`, so that a `..` is
+taken after the links), to refuse a path with a line break in it, to
+refuse two paths of which one is the other or lies inside it (compared
+by the directories they are, `-ef`, and by names that differ in case
+alone), and to claim a new directory with `mkdir`, which fails where
+anything is there already. The claim also refuses a name that ends in
+`.creating`, under which LigninDB builds a checkpoint, and a path inside
+a directory of such a name or one that holds a `MANIFEST` or a
+`MANIFEST.deleting` (LigninDB's) or a `CURRENT` (RocksDB's): a
+database or checkpoint, whose deletion would remove what is inside it.
+
+## 2. Set the variables
+
+Set two variables before the next block:
+
+- `GROVEDB_REF`: the tag of the GroveDB release that the node is to run
+  on LigninDB, in `https://github.com/dashpay/grovedb`: a release with
+  the package `lignin-tools`, which the build of this block needs, and
+  that reads the node's RocksDB database. A release without it fails the
+  build (cargo finds no package `lignin-tools`). The tool is built from
+  that release, so that it writes what the node will read. A branch is
+  taken as it stands when the block runs, and can move between two runs
+  of it: a migration that is gone on with after a failure is then gone
+  on with by another build. The block prints the commit it builds, on
+  the line that begins with the words building GroveDB at; on a run of
+  it after a failure it is to print the same one. These steps are for a
+  release whose `lignin migrate` refuses a source that holds an entry of
+  a LigninDB database (step 4), and keep no check of their own for it:
+  for a release whose `lignin migrate` does not, follow the runbook of
+  that release.
+- `WORK`: a directory for the source code, the build and the reports of
+  each step. The build takes a few GiB. One `WORK` holds the reports of
+  one migration: keep it until the way back is closed, since step 11
+  reads step 5's survey, and give another migration a `WORK` of its own.
+
+The block makes `WORK` absolute, since it changes into the source
+directory to build. It clones the repository where no clone is there
+yet, and refuses a `grovedb` that is a link, one that is no clone of
+its own (a directory inside another repository, as `WORK` being a
+GroveDB checkout makes it), one without the mark the block sets in the
+clone's configuration when it makes it (`grovedb.runbook`), one whose
+`origin` is not the repository's address, and one with changes of its
+own: a checkout that is not the one this block made is not moved. It
+also refuses a `WORK` with a colon in it, which `PATH` would split, and
+a `WORK` or `reports` that holds a link or a file with a second name, or
+a `reports` that is a link, since the reports are written through `tee`
+and the rehearsal's through `lignin-bench`, which write where the name
+leads; nothing but these steps is to write into `WORK`. It then fetches `GROVEDB_REF` from the
+repository's address and checks it out, so that a clone that a run
+before left behind is moved to the release as well. It names
+where Cargo builds (`CARGO_TARGET_DIR`), removes the `lignin` a build
+before left there, and refuses to go on where the `lignin` first on the
+path is not the one this build made. Give the paths of step 4 as
+absolute paths too.
+
+```sh
+: "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
+: "${WORK:?set WORK to a directory for the build and the reports}"
+case "/$WORK/" in */../*) echo "$WORK has a .. in it, which mkdir -p could make lead elsewhere: give WORK without one"; false ;; esac
+outside_databases "$WORK/reports/survey.txt"
+mkdir -p "$WORK/reports"
+WORK=$(real_dir "$WORK")
+case "$WORK" in *:*) echo "$WORK has a colon in it, which PATH takes for a separator: give a WORK without one"; false ;; esac
+if [ -L "$WORK/reports" ] || [ -n "$(find "$WORK" -maxdepth 1 \( -type l -o -type f -links +1 \); find "$WORK/reports" \( -type l -o -type f -links +1 \))" ]; then echo "$WORK or $WORK/reports holds a link or a file with a second name: give a WORK of your own"; false; fi
+if [ -L "$WORK/grovedb" ]; then echo "$WORK/grovedb is a link: give a WORK with no grovedb in it"; false; fi
+if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb" && git -C "$WORK/grovedb" config grovedb.runbook clone; fi
+if [ "$(git -C "$WORK/grovedb" rev-parse --show-toplevel)" != "$(real_dir "$WORK/grovedb")" ]; then echo "$WORK/grovedb is no clone of its own (it lies inside another repository): give a WORK with no grovedb in it"; false; fi
+if [ "$(git -C "$WORK/grovedb" config --get grovedb.runbook)" != clone ]; then echo "$WORK/grovedb is not the clone this block makes: give a WORK with no grovedb in it"; false; fi
+if [ "$(git -C "$WORK/grovedb" remote get-url origin)" != https://github.com/dashpay/grovedb.git ]; then echo "$WORK/grovedb is no clone of https://github.com/dashpay/grovedb.git: give a WORK with no grovedb in it"; false; fi
+cd "$WORK/grovedb"
+if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
+git fetch --depth 1 https://github.com/dashpay/grovedb.git "$GROVEDB_REF"
+git checkout --detach FETCH_HEAD
+git log -1 --format='building GroveDB at %H'
+export CARGO_TARGET_DIR="$WORK/grovedb/target"
+rm -f "$CARGO_TARGET_DIR/release/lignin"
+cargo build --release -p lignin-tools --features migrate
+export PATH="$CARGO_TARGET_DIR/release:$PATH"
+if [ "$(command -v lignin)" != "$CARGO_TARGET_DIR/release/lignin" ]; then echo "the lignin on the path is not the one this block built: a build target set in the configuration of cargo puts it elsewhere; run this block where that configuration sets none"; false; fi
+lignin help
+```
+
+`lignin help` prints every subcommand. A build without the feature
+`migrate` has every subcommand but `migrate`, and says so when it is
+asked for it.
+
+## 3. Rehearse on a database of the repository
+
+This step is optional, and worth the few minutes: it runs every later
+step on a small RocksDB GroveDB that the repository's benchmark tool
+makes, so that you see each report before you meet it on your node's
+database. The tool is `lignin-bench` (`docs/lignindb/benchmarks.md`),
+which writes the plan's reference workload: a tree of documents and an
+index of a reference to each by its owner, here 20,000 documents over
+200 owners, with creates, updates and deletes after them. With
+`lignin-bench run --keep` its database stays in
+`$WORK/rehearsal/rocksdb`. **The benchmark removes what it finds at
+`rocksdb` and `rocksdb-checkpoint` in its scratch directory**, so the
+block claims `$WORK/rehearsal` with `mkdir` first, which fails where it
+is there already. Its report goes
+to a file; nothing in it is needed below.
+
+```sh
+claim_dir "$WORK/rehearsal"
+cargo build --release -p lignin-testkit --bin lignin-bench
+lignin-bench run --engine rocksdb --keep --scratch "$WORK/rehearsal" --out "$WORK/rehearsal.json" --documents 20000 --owners 200 --creates 200 --updates 200 --deletes 200 --point-reads 20 --reference-reads 5 --warmup-reads 20 --cold-reads 1 --checkpoints 1 --reopens 1 > "$WORK/reports/rehearsal.txt"
+SOURCE="$WORK/rehearsal/rocksdb"
+TARGET="$WORK/rehearsal-lignindb/database"
+BACKUP="$WORK/rehearsal-backup/database"
+RESTORE="$WORK/rehearsal-restore/database"
+mkdir -p "$WORK/rehearsal-lignindb" "$WORK/rehearsal-backup" "$WORK/rehearsal-restore"
+```
+
+For your node's own migration, skip this block and set the four
+variables of step 4 yourself.
+
+## 4. Stop the node and name the directories
+
+Stop the node, as its own documentation says, and make sure that no
+other process uses its database: not the node, not a second instance of
+it, not a backup job. Where the source has a `LOCK` file, `migrate`
+holds a shared lock on it for as long as it runs: a process that has
+the source open for writing is refused (`a process has it open`), and a
+node that is started meanwhile cannot open it to write. Other readers
+are not refused, which is why nothing else is to use the database. A writer whose `LOCK` file was replaced while
+it ran is not seen that way, since the new file says nothing of it.
+
+Then name four paths. `SOURCE` is there; `TARGET`, `BACKUP` and
+`RESTORE` are not there yet, and the directory each of them is to be in
+has to be there: make it first.
+
+- `SOURCE`: the directory of the node's RocksDB GroveDB, the one that
+  holds `CURRENT` and `MANIFEST-…`, and `.sst` files where it has any
+  (a database whose records are all still in its log has none). A RocksDB
+  checkpoint of it can be the source as well: the migration then holds
+  the state of that checkpoint, and a node started on it goes on from
+  there. A checkpoint that RocksDB made of a directory that held a
+  LigninDB database holds RocksDB's database alone, empty or with what
+  was written through RocksDB there, and not the LigninDB one's state:
+  step 5's root hash can tell them apart where the application knows its
+  own, and the application's own check of its state decides.
+- `TARGET`: where the LigninDB database is to be.
+- `BACKUP`: where the backup of step 8 is to be, best on another device.
+- `RESTORE`: where step 9 restores that backup to check it.
+
+```sh
+: "${SOURCE:?set SOURCE to the RocksDB directory of the stopped node}"
+: "${TARGET:?set TARGET to where the LigninDB database is to be}"
+: "${BACKUP:?set BACKUP to where the backup of the new database is to be}"
+: "${RESTORE:?set RESTORE to where the backup is to be restored once}"
+for path in "$TARGET" "$BACKUP" "$RESTORE"; do
+  if [ -e "$path" ] || [ -L "$path" ]; then echo "$path is there already: choose another path"; false; fi
+  if [ ! -d "$(dirname -- "$path")" ]; then echo "$(dirname -- "$path") is not there: make it first"; false; fi
+done
+SOURCE=$(real_dir "$SOURCE")
+TARGET=$(real_new "$TARGET")
+BACKUP=$(real_new "$BACKUP")
+RESTORE=$(real_new "$RESTORE")
+apart "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
+outside_databases "$TARGET"
+if within "$WORK" "$SOURCE"; then echo "$WORK lies inside $SOURCE: give a WORK outside the source"; false; fi
+printf 'SOURCE  %s\nTARGET  %s\nBACKUP  %s\nRESTORE %s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
+```
+
+The block writes each path again with every link followed (`cd -P` and
+`pwd -P`, so that a `..` is taken after the links), and then refuses
+four paths of which one is another or lies inside another. It compares
+them by the directories they are (`-ef`), and takes two names that
+differ in case alone for one, as a file system that ignores case does.
+It refuses a `WORK` inside `SOURCE`, which the reports would be
+written into; step 2 has already refused one inside any directory that
+holds a database, before it writes anything. It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
+or a `MANIFEST.deleting`, or a `CURRENT`, a LigninDB or RocksDB
+database or checkpoint whose deletion would remove it, or inside one
+whose name ends in `.creating`.
+
+A `SOURCE` that holds an entry of a LigninDB database is refused by
+`lignin migrate` itself, by the survey of step 5 and the migration of
+step 6 alike, before it opens or locks anything
+([messages](messages.md#lignin-migrate)): with
+``it holds `…`, an entry that only a LigninDB database makes, and this command reads a RocksDB database alone: nothing was opened or locked. Find out which database there holds the node's state``
+where its entries are LigninDB's alone, and with
+``the directory … holds entries of both engines (`…` is …'s and `…` is …'s): it is opened as neither``
+where RocksDB's are beside them. RocksDB opened on a LigninDB
+directory, as an open with RocksDB as the build's default engine does,
+makes a RocksDB database beside the LigninDB one, empty at first and
+then holding what is written through it, which a migration would
+otherwise carry in place of the LigninDB one's state. The command tells
+the entries apart by their names, as the open that chooses the engine
+(`EitherEngine`) does, with GroveDB's own rule. Find out which of the
+two holds the node's state; where it is the LigninDB one, the messages
+chapter says what to do (`… was written by another storage engine (…: …)`).
+Use the paths it prints from here on. A second mount of one directory
+is not seen. The migrator
+also refuses a `TARGET` inside `SOURCE`, or around it, before it opens
+anything.
+
+## 5. Survey the source
+
+The survey reads the records of the source, says what it holds and
+whether it can be migrated, and writes nothing. Where its walk of the
+grove stops at what a migration does not carry, it skips the look for
+records outside the grove and says so
+(`the walk of the grove stopped at what is not carried: what is beside the grove was not looked for`):
+its counts of those are then not to be taken for none.
+
+```sh
+lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey.txt"
+```
+
+Read its report before you go on:
+
+- The first line names the source and its RocksDB identity, and says
+  whether its lock is held:
+  `no process has it open for writing, and none can open it while this runs`.
+  A source with no `LOCK` file is migrated as well, and the line says
+  that nothing keeps a writer away.
+- `root hash:` is the root hash of the grove, as GroveDB gives it from
+  the source. The migration compares the target's with it (step 7).
+  Check that the grove is the node's: where the application knows the
+  root hash of its state at the stop, or at the checkpoint where
+  `SOURCE` is one, it is that one. The counts alone do not tell it: a
+  RocksDB database that RocksDB made beside a LigninDB one, by an open
+  of that directory with RocksDB, is refused there (step 4), but a
+  checkpoint of that directory holds it alone, with what was written
+  through it, which can be nothing (an empty grove) or a grove of its
+  own; and a node's state
+  can be in a grove with no Merk node, in records of the aux keyspace.
+  Nor does the root hash tell all of it: it does not cover the aux,
+  roots or meta records, so two databases with the same grove and
+  other aux records have the same root hash (an empty grove's among
+  them). Where the node's state is in those records too, the
+  application's own check of its state, on the target after step 7,
+  decides whether the target holds it. Where it does not, either the
+  source was another database, or the records were ones the migration
+  does not carry, of the data, aux or meta keyspaces (it carries the
+  root-key records under every prefix): under prefixes that nothing
+  leads to, which
+  `--unreachable leave`, the default, leaves behind
+  (`prefixes that nothing leads to: …`), or under the prefixes of
+  pending drops, which no `--unreachable` carries but where a tree
+  stands at the path again (`pending drops: …, which leave … records behind and … marks`).
+- The counts after it say what is in the source. A line that begins
+  `NOT CARRIED` names something the migrator does not carry, and the
+  run is then refused with exit status 1 and
+  `the source … holds what a migration does not carry`. The survey
+  refuses a keyed child under a tree of flat records (grove versions 1
+  to 3 let a caller write one; a dense tree's value whose bytes read as
+  a node of its own slot, with a value that reads as an element, is
+  taken for one too, on any version), the mark of a state-sync restore that
+  did not finish (such a database is to be discarded, not migrated),
+  and records in places where GroveDB writes none; with
+  `--unreachable refuse` or `carry`, also the prefixes that nothing leads
+  to which that choice does not take.
+- `prefixes that nothing leads to:` counts the prefixes that no element
+  leads to, and then the records and bytes under them (a tree that a batch's plain delete removed while it
+  held an element leaves them). A prefix that a pending drop names is
+  not among them: its records are counted with the pending drops
+  (`pending drops: …, which leave … records behind and … marks`), which
+  `--unreachable refuse` does not refuse and `carry` does not carry,
+  but where a tree stands at that path again, its records are carried as
+  that tree's, whatever `--unreachable` says, and the report's line of
+  that drop says `A TREE STANDS AT THE PATH AGAIN`. Unless `--unreachable` says otherwise
+  they are left behind (`leave`), and the target is what a database
+  written on LigninDB holds, with the same root hash. What can then
+  answer otherwise than on RocksDB is set out in the engine's design
+  ([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#a-subtree-leaves-with-its-element), the
+  item that begins "A plain delete of a batch removes a tree with what
+  it holds"): read it before you choose. Among it: reads by the path of
+  such a tree; a cursor that steps from no key; a range query of the
+  tree above that goes down into a tree made again at that path, and
+  whether that tree is empty; the grove's own check
+  (`verify_grovedb`), which, while a tree made again at that path holds
+  nothing, fails on RocksDB over the kept records and finds nothing
+  here (before a tree is made again there, it finds nothing on either); writes below such a tree, which both engines
+  refuse at different costs and on some grove versions with different
+  errors; once a tree is made again there, a write into a subtree of
+  the old one, which RocksDB takes and LigninDB refuses; and the costs
+  of some writes that both take.
+  `--unreachable refuse` refuses such a source where those prefixes hold
+  records of the data, aux or meta keyspaces (a prefix with a root-key
+  record alone counts none, and that record is carried all the same);
+  `--unreachable carry`
+  carries them as records that no tree links, and the engine then refuses
+  a write below a tree that is made again at such a path. The module
+  documentation of `lignin_tools::migrate` ("Records that nothing leads
+  to") says each in full. Choose before step 6 whether your node can meet
+  any of these.
+- `root-key records that do not name the root of their Merk (GroveDB #1065):`
+  counts the Merks that are opened by their record of the root key (a
+  Merk that holds nodes and is no child taking its root key from the
+  element that hosts it) and whose nodes form one tree, where the record
+  is missing, names a node inside the tree that is not its root, or names
+  a key with no node. Where the record names no usable root, nodes that
+  do not form one tree are a refusal (`NOT CARRIED`), which the count
+  does not take in; where it names a root, nodes outside its tree are
+  records that no tree links. Each Merk is named on a line
+  `AT …: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT`.
+  Such a source migrates, compares and verifies, and the target reads
+  that Merk as RocksDB does; **but LigninDB refuses every later write of
+  a node of that Merk, which RocksDB takes**. With a count above 0, do
+  not start the node on the target unless you know that it writes
+  nothing more into those Merks: keep it on RocksDB, and report the
+  survey.
+- `node values that are no element: …` counts the values of nodes of the
+  grove that do not decode as an element of this version of GroveDB.
+  They do not refuse the source: the migration carries their bytes as
+  they are and compares bytes. The count takes in nodes that a tree
+  links and nodes that none links (`records that no tree links: …`).
+  For a node that a tree links, the check tells from the value's type
+  alone how its hash is made: where the type is one whose hash is made
+  from the bytes as they are, it takes the value as stored; where the
+  type is none it knows, it finds a rule that does not hold
+  (`the value is no element with a known value hash: …`); and where the
+  hash is made from the element decoded (an item with backward
+  references, whose hash leaves them out, or an indexed tree whose hash
+  takes in its axes), a value that does not decode
+  fails the rule as well, with the same words and the decoder's after
+  them. Either of
+  the last two ends the run with status 3 and nothing at `TARGET`. A node that no tree links
+  is carried as a record, whose hash the check does not make, and the
+  run can end with status 0. Whichever way the run ends, with a count
+  above 0, check the source by the application's own means, and report
+  the survey, before the node starts on a target.
+- `the migration projects a peak of about … MiB of memory`, and the
+  limit it holds ("What it takes"). The survey projects with the default
+  `--batch` and `--cache`, and takes neither. Where it refuses the
+  source for memory, and the words after the refusal say that a smaller
+  `--batch` or `--cache` can take it, survey again with a
+  `--memory-limit` that lets it through, and give step 6 the smaller
+  `--batch` and `--cache` with the limit you mean: the migration checks
+  its own projection against that limit before it writes anything.
+- The last line is `the source can be migrated` and the exit status is 0.
+
+## 6. Migrate
+
+```sh
+lignin migrate "$SOURCE" "$TARGET" 2>&1 | tee "$WORK/reports/migrate.txt"
+```
+
+The run surveys the source again, loads the target a commit at a time,
+compares every record of the source that it carries with what the target
+answers through GroveDB, checks the target with the physical invariant
+checker, and only then gives the database the name `TARGET`. Until that last step it works
+in the directory `TARGET.migrating`, so nothing is at `TARGET` that is
+not whole, compared and verified. Lines that begin `migrate:` hold
+words of the form name=value for a script; the others are for you. After a
+commit of the load, once five seconds (or what `--progress` says) have
+gone by since the last such line, a line says where the load stands, so
+a long commit can keep it longer, and the last commit of the load says
+it whatever the interval:
+`migrate: phase=… subtrees=… merks=… nodes=… records=… bytes=… commits=… seconds=…`.
+
+| Exit status | What it means | What to do |
+| --- | --- | --- |
+| 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
+| 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there: that database is whole, but no report of a run that finished is held to it (step 7), so migrate again into a new `TARGET`, and leave that one where it is until you know what it holds. Where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it: where it ends with status 0 and a whole report, go on with step 7 |
+| 2 | the command line was refused (an option's value, as `--batch 0`, or an operand); nothing was opened | correct the command line, as the error says |
+| 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | where the report names a read that the system refused (a page that could not be read, with the system's words), deal with what the system said and run the same command again, which compares and verifies again. Otherwise keep the report and report it as a defect of GroveDB; go back to RocksDB as step 11 says, which says what such a finding tells of the source |
+| 4 | the device of the target is full (`THE DEVICE OF … IS FULL`), or a quota there is used up | make room on that device, or inside that quota, and run the same command again: it goes on from where it stood |
+
+The status is the pipeline's: a `tee` that cannot write the report (a
+device of `WORK` that is full or read-only) fails it too, whatever the
+migration did. Where the terminal then shows the last line
+`migrated … into …: loaded, compared and verified`, the migration was
+made, but no report holds it and step 7 cannot be held to it: make room
+for the reports, and migrate again into a new `TARGET`.
+
+**A run that stops** (a kill, a power cut, a full device, an error) is
+gone on with by the same command, with the same `--unreachable`. What
+`TARGET.migrating` holds says where the run stood, and a load goes on
+from its last commit. To start again from nothing instead, remove
+`TARGET.migrating`, but only where a run of the command made it: the
+command goes on with its own work directory, which it tells by what its
+file `MIGRATION` holds to the byte. It also takes over an empty
+directory of that name, and one that holds nothing but a `MIGRATION.new`
+of the kind a stop of it can leave, and refuses any other with
+`… is there and is not the work of a migration: …`, which it leaves as
+it is. So keep nothing of your own under that name, and do not remove a
+directory of that name that a run refused, or that you cannot tell was
+made by a run for this `TARGET`. Nothing else is to open
+`TARGET.migrating` while the command runs.
+
+**The options**, for when the defaults do not fit:
+
+| Option | Default | When to give it |
+| --- | --- | --- |
+| `--memory-limit MIB` | half the machine's memory as `/proc/meminfo` states it; none where that file does not state it | on a machine shared with other work, in a container, or on macOS where no limit is read |
+| `--batch MIB` | 160 | about how much one commit of the load holds; a smaller one lowers the projected peak when the memory limit refuses the run and says that a smaller `--batch` or `--cache` can take it |
+| `--cache MIB` | 64 | the buffer pool of the target during the run; the same remark |
+| `--progress SECS` | 5 | how often the progress line is printed; 0 prints it after every commit |
+| `--unreachable refuse\|leave\|carry` | `leave` | see step 5 |
+
+A run that goes on with a work directory is to be given the
+`--unreachable` choice the run that began it had. Where the source has
+prefixes that nothing leads to and the first commit of the load was
+made, it refuses another and says so; a run stopped before that commit
+holds no choice yet, and where the source has no such prefix, the choice
+changes nothing and is not held.
+
+## 7. Verify
+
+The migration has checked its own work. Three things in its report say
+so, and the next commands check each of them:
+
+1. The line `migrate: compared subtrees=…` with `differing=0`: every
+   record of the source that the migration carries reads the same from
+   the target, and the root hash that GroveDB gives the target is the
+   source's. The comparison reads the target's root hash through
+   GroveDB and counts it among `differing` where it is another; the
+   `root_hash=…` that the line prints is the source's, from the survey.
+   It also says so in words:
+   `every record of the source that this migration carries reads the same from the target`.
+2. The line `migrate: verify sound=… left_hashes=…` with `sound=true`:
+   the physical invariant checker found every rule of the store to
+   hold, with every stored hash of the Merks in use made again by Merk's
+   rules but those the rules take as they are stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); records that no tree links are carried and compared,
+   and no hash of them is made. A `left_hashes=…` above 0 counts value
+   hashes of the kind grove versions 1 to 3 left after a delete below a
+   tree (GroveDB #686), which the check takes as no damage: where later
+   versions alone wrote the database, report it before the node starts
+   on the target ([the messages](messages.md#lignin)).
+3. The last line, `migrated … into …: loaded, compared and verified`.
+
+```sh
+grep -E '^migrate: compared .* differing=0 ' "$WORK/reports/migrate.txt"
+grep '^migrate: verify sound=true ' "$WORK/reports/migrate.txt"
+survey_hash=$(sed -n 's/^  root hash: //p' "$WORK/reports/survey.txt")
+target_hash=$(sed -n 's/^migrate: compared .* root_hash=\([0-9a-f]*\) seconds=.*/\1/p' "$WORK/reports/migrate.txt")
+if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the same root hash: $target_hash"; else echo "THE ROOT HASHES DIFFER: survey $survey_hash, target $target_hash"; false; fi
+survey_source=$(sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$WORK/reports/survey.txt")
+migrate_source=$(sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$WORK/reports/migrate.txt")
+case "$survey_source" in "the source $SOURCE: RocksDB identity "*) ;; *) survey_source= ;; esac
+if [ -n "$survey_source" ] && [ "$survey_source" = "$migrate_source" ]; then echo "the same RocksDB identity and last write in both runs: $survey_source"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS, or a report does not begin with this SOURCE"; false; fi
+holds() { sed -n '/^the source holds:$/,/^migrate: survey /{/^    /d;/^  largest Merk that is handed over: /d;p;}' "$1"; }
+survey_counts=$(holds "$WORK/reports/survey.txt")
+migrate_counts=$(holds "$WORK/reports/migrate.txt")
+if [ -n "$survey_counts" ] && [ "$survey_counts" = "$migrate_counts" ]; then echo "the same counts and bytes in both runs"; else echo "THE COUNTS OF THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
+last_line="migrated $SOURCE into $TARGET: loaded, compared and verified"
+if [ "$(tail -n 1 "$WORK/reports/migrate.txt")" = "$last_line" ]; then echo "the report ends with: $last_line"; else echo "THE REPORT DOES NOT END WITH: $last_line"; false; fi
+```
+
+Each of these prints the line it found, or fails: `grep` with no line
+found, the four comparisons with the words THE ROOT HASHES DIFFER,
+THE SOURCE CHANGED BETWEEN THE TWO RUNS, THE COUNTS OF THE SOURCE
+CHANGED BETWEEN THE TWO RUNS or THE REPORT DOES NOT END WITH. Step 7 reads the report of the
+run that ended with status 0 (where a run before it failed, that is the
+report the retry of step 6 wrote: name it in place of `migrate.txt`).
+The last comparison requires the report to end with the run's last
+line, which names this `SOURCE` and this `TARGET`, so that the report is
+held to the database you are about to start the node on. A run that was stopped after it gave
+the database its name and before that line leaves a report that cannot
+be held to what is at `TARGET`: then migrate again into a new `TARGET`,
+and leave the old one where it is until you know what it holds. The
+first comparison reads the root hash from the line
+`migrate: compared subtrees=…` alone and holds the root hash that the
+survey of step 5 read from the source to the one the migration read
+from it. The second holds the first line of each report, up to the `;` after
+its last write, to the other: the source's path, which has to be this
+`SOURCE`, its RocksDB identity and the sequence number of its last
+write. Where they are the same, no record was written to the source
+between the two runs: RocksDB's last sequence number did not move. The
+third holds what each report says the source holds to the other: the
+lines after `the source holds:` (but the largest Merk that is handed
+over, which `--unreachable` decides, and the lines set in under them)
+and the line `migrate: survey …`. These are totals: the records and the
+bytes of each keyspace of the grove and of the records that no tree
+links, those under the prefixes that nothing leads to taken together,
+and the pending drops by their number, the records they leave behind
+and their marks. A record lost or changed between the runs changes one
+of them even where the last write and the root hash stay (a record of
+the aux, roots or meta keyspaces, which the root hash does not cover),
+unless every total stays: records of as many bytes as before, bytes
+that moved between the keyspaces of a prefix that nothing leads to, or
+a pending-drop record that changed and leaves as many records behind.
+A
+process that opened it can have rewritten RocksDB's own files all the
+same (its `CURRENT` and manifest), and a file that something else put
+in the directory is not seen; which is why nothing is to open the
+source between step 4 and step 10. That the target has the
+source's root hash is what `differing=0` says; the migration also
+refuses a source that changes while it reads it. Do not start the node
+on a target for which one of them fails. These checks hold the report to
+the path `TARGET`, not to the bytes there: no command of `lignin` reads
+the root hash of a LigninDB database, and `lignin verify` below finds
+whether what is at `TARGET` is sound, not whether it is the source's.
+So put nothing at `TARGET`, and let nothing write there, between step 6
+and the start of the node.
+
+Then check the target once more on its own, with the checker of
+`lignin verify`. It opens the database, closes it, and checks the store
+as the close left it: every page, every value, and every stored hash
+made again by Merk's rules, but those the rules take as stored. Exit
+status 0 is a sound store, 3 a store in
+which a rule does not hold, and 4 a database that holds the mark of a
+state-sync restore that did not finish (the survey refuses a source with
+that mark, so a migration leaves none). The block then records, before
+the backup, the commit the target opens at (the first line of
+`lignin stats`, `version …`), which step 9 holds the restore to, and
+the target's directory by its device number and inode (`target-id.txt`),
+which step 10 holds the path the node opens to. Both are kept in the
+reports, so a shell that is started again, or one of another account,
+reads them there.
+
+```sh
+lignin verify "$TARGET" | tee "$WORK/reports/verify.txt"
+lignin stats "$TARGET" | tee "$WORK/reports/stats-target.txt"
+id_of() { stat -c '%d %i' -- "$1" 2>/dev/null || stat -f '%d %i' -- "$1"; }
+id_of "$TARGET" > "$WORK/reports/target-id.txt"
+echo "the target's device and inode: $(cat "$WORK/reports/target-id.txt")"
+```
+
+A grove written on grove versions 1 to 3 can hold value hashes that a
+delete below a tree left (GroveDB #686). RocksDB holds them too, they are
+no damage, and `verify` counts them after its report without calling the
+store unsound.
+
+## 8. Back up the new database
+
+Before the node opens the new database for the first time, copy it. The
+database is closed and no process has it open, so a copy of its
+directory is a consistent backup ([backup and full disk](backup-and-full-disk.md)).
+It holds GroveDB's records alone: the application's files go into
+`TARGET` at step 10, after this copy, and a node started on a restore of
+it needs the application's files of the same state, as the
+application's documentation says: `SOURCE` keeps them where it is the
+node's own directory, and where `SOURCE` was a RocksDB checkpoint, which
+holds RocksDB's files alone, they are those the application keeps for
+that checkpoint's state (step 10).
+The block claims `BACKUP` with `mkdir`, which fails where anything is
+there already, and copies the database's files into it; `cp -a` copies
+every file with the `LOCK` file, which an open needs. `cp`
+returns before its bytes are on the device. On Linux the block syncs
+the copy's files and directories, and the directories above it, by
+name: `sync` returns once the system has written them, and tells of no
+write that failed. It does not run `sync` with no file, which syncs
+every file of the system, the logs of other databases on the machine
+among them, and a sync of a log through another name that fails is not
+seen by the database that writes it
+([BK7](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md#62-the-procedure)). On macOS `sync`
+takes no file, so the block makes none: a copy made there is written
+once its device has been ejected or the system shut down. Neither shows
+that the copy reached its device, and a restore made beside it can be
+answered from the system's cache: the backup is relied on once its
+device has been unmounted, or ejected, without an error and mounted
+again, and a restore made from it then has passed step 9's checks and
+the application's own check, as [the backup chapter](backup-and-full-disk.md#check-a-backup-and-restore-one)
+says. Step 9 as written restores the copy just made, which shows it
+sound, and no more.
+
+```sh
+claim_dir "$BACKUP"
+cp -a "$TARGET/." "$BACKUP/"
+if [ "$(uname -s)" = Linux ]; then
+  find "$BACKUP" \( -type f -o -type d \) -exec sync {} +
+  d=$(dirname -- "$BACKUP")
+  while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
+else
+  echo "no sync here: the copy is written once its device has been ejected or the system shut down"
+fi
+lignin manifest "$BACKUP"
+```
+
+`lignin manifest` reads the backup's manifest without opening the
+database, and lists the files it names with the length the manifest
+gives each; a file that is not there is marked `, MISSING`, and one
+that is shorter `, SHORT: … bytes on disk`. It exits 0 either way, and reads no page: step 9 is
+the check of the backup.
+
+## 9. Restore the backup once, and open it
+
+A backup that is to be relied on is checked once. Restore it into a new
+directory, open it with `lignin verify`, which checks every page and
+the hashes of the Merks in use (step 7 says which it takes as stored), and read its counts with `lignin stats`, which opens it again.
+
+```sh
+claim_dir "$RESTORE"
+cp -a "$BACKUP/." "$RESTORE/"
+if [ "$(uname -s)" = Linux ]; then
+  find "$RESTORE" \( -type f -o -type d \) -exec sync {} +
+  d=$(dirname -- "$RESTORE")
+  while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
+else
+  echo "no sync here: the copy is written once its device has been ejected or the system shut down"
+fi
+lignin verify "$RESTORE" | tee "$WORK/reports/verify-restore.txt"
+lignin stats "$RESTORE" | tee "$WORK/reports/stats-restore.txt"
+restored=$(sed -n 1p "$WORK/reports/stats-restore.txt")
+migrated=$(sed -n 1p "$WORK/reports/stats-target.txt")
+if [ -n "$migrated" ] && [ "$restored" = "$migrated" ]; then echo "the restore opens at the target's $migrated"; else echo "THE RESTORE DOES NOT OPEN AT THE TARGET'S VERSION: $restored, the target $migrated"; false; fi
+```
+
+Every open writes to the directory it opens (the recovery starts a log
+file of its own, and the close writes back), so the check is made on the
+restore and not on the backup. The last command holds the restore to
+the version step 7 recorded for the target before the backup, by the
+first line of `lignin stats`, `version …`, the commit each opens at: a restore that lost a commit of the target opens at an
+earlier one. The restore is a copy of the database that nothing needs:
+remove it once its checks have passed, by the path that step 4 printed
+for `RESTORE`.
+
+## 10. Start the node on LigninDB
+
+**First**, put into `TARGET` what the application keeps in its RocksDB
+directory beside RocksDB's own files, as the application's
+documentation says: the migration carries GroveDB's records and nothing
+else, and `SOURCE` keeps its own copy for the way back. Where `SOURCE`
+was a RocksDB checkpoint, those files are to be the ones of the state
+of that checkpoint, as the application keeps them for it: the files in
+the node's own directory can be of commits after it, and step 7 does
+not see a mismatch between them and the grove. Copy nothing over
+a file that `TARGET` has, and put no file there under a name of the
+engine's: `LOCK`, `MANIFEST`, `MANIFEST.tmp`, `MANIFEST.deleting`,
+`RESERVE`, `RESERVE.new`, `wal`, `seg`, `val` and `table`. On a file system that ignores case, a name that differs from one
+of these in case alone is the same name. The engine
+takes a file of such a name for its own (an open removes
+`MANIFEST.tmp`, and refuses a directory where `wal`, `seg`, `val` or
+`table` is not a directory), and an open refuses a directory that holds
+`CURRENT`, `IDENTITY`, or a name that begins `MANIFEST-` or `OPTIONS-`
+or ends in `.sst`, which it takes for RocksDB's. A file of the
+application's under one of these names goes where the application's
+documentation says, outside `TARGET`. The node's account has to be able
+to search every directory above `TARGET`, to list and search its
+directories and read its files, and to write its directories, where a
+session makes new files, and its `LOCK`,
+which an open locks for writing: where the migration ran under another
+account, give `TARGET` and what it holds to the node's account first,
+with the system's tool for that, recursively, and check the directories
+above it. Then point the
+node at `TARGET` and select the LigninDB engine, as the application's
+configuration says. On GroveDB's side, an application
+opens a database on LigninDB with
+`GroveDb::from_engine(EitherEngine::open_with(path, &EngineChoice::Lignin(options))?)`,
+or with `LigninEngine::open_with(path, &options)`
+([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#an-engine-chosen-at-the-open)); the options are
+those of [tuning](tuning.md).
+
+**Set the limit of open files first.** A LigninDB database holds a file
+open for each of its segments, value-log files and log files for as long
+as it is open, and so does each checkpoint the node opens. A node that
+keeps `k` checkpoints open needs about (k + 2) × (F + 30) descriptors
+beside its own, where `F` is the count on the line `live files: …` that
+the block below prints, and 30 is an estimate for an ordinary load: a
+database of 1 GB with three checkpoints kept open needs about 1,100,
+more than the soft limit a process starts with on many systems (1,024
+on most Linux systems, 256 on macOS), and the count grows with the
+database. Set the limit of the node's process, its service or its
+container, as [tuning](tuning.md#the-limit-to-set) says, before the
+first start. An open that meets the limit fails with an error that names
+the file or directory it could not open and the system's reason
+([messages](messages.md#at-the-limit-of-open-files)).
+
+**Before the start**, check, as the node's account, that the path the
+application's configuration names is the directory that step 7
+verified: set `NODE_DB` to that path (the block takes `TARGET` where it
+is not set). The block holds it, with every link followed, to the device
+number and inode that step 7 kept in `target-id.txt`, so that a
+directory under a mount point whose volume is not mounted, which can
+hold an older database, is refused, and so is a snapshot of the target
+that is a file system or subvolume of its own (a Btrfs snapshot has the
+same inodes and a device number of its own). It then reads the manifest
+there with `lignin manifest`, which opens nothing and fails with
+`… has no MANIFEST` where the path holds no LigninDB database, and
+refuses a file the manifest names that is not there (`, MISSING`) or
+shorter (`, SHORT: … bytes on disk`). It checks the manifest and the
+length of each file, and no more: neither that the database opens nor
+which state it holds. The block stands on its own, so the node's
+account runs it in a shell of its own: it needs `WORK` and `TARGET` set
+as step 4 printed them, `lignin` on its path, and leave to read
+`WORK/reports`, and it writes nothing there. An open of a path that holds
+none makes a new, empty database there (`Options::create_if_missing`,
+on by default, [tuning](tuning.md)): an application that can opens on
+LigninDB with it off. And the state the node goes on from is the
+application's to approve: the state that step 5 surveyed, which, where
+`SOURCE` was a checkpoint, is that checkpoint's and not the node's
+last, so the application confirms that it means to go on from it.
+
+```sh
+set -euo pipefail
+: "${WORK:?set WORK as step 2 did}" "${TARGET:?set TARGET as step 4 printed it}"
+id_of() { stat -c '%d %i' -- "$1" 2>/dev/null || stat -f '%d %i' -- "$1"; }
+TARGET_ID=$(cat "$WORK/reports/target-id.txt") || { echo "$WORK/reports/target-id.txt cannot be read: run step 7's block again, or give this account leave to read it"; false; }
+NODE_DB=$(cd -P -- "${NODE_DB:-$TARGET}" && pwd -P)
+if [ "$(id_of "$NODE_DB")" = "$TARGET_ID" ]; then echo "$NODE_DB is the directory step 7 verified"; else echo "$NODE_DB IS NOT THE DIRECTORY STEP 7 VERIFIED"; false; fi
+manifest=$(lignin manifest "$NODE_DB")
+printf '%s\n' "$manifest"
+case "$manifest" in *', MISSING'* | *', SHORT: '*) echo "A FILE THAT THE MANIFEST NAMES IS MISSING OR SHORT IN $NODE_DB"; false ;; esac
+```
+
+Then start the node.
+
+From its first commit on, the node's state is in `TARGET` alone. Keep
+`SOURCE` until you have decided not to go back.
+
+## 11. The way back
+
+The source was never written, so it is what it was when the migration
+read it: the node's database as it was when the node was stopped in
+step 4, or, where `SOURCE` was a RocksDB checkpoint, the state of that
+checkpoint. In the second case the node's own RocksDB directory can hold
+commits after the checkpoint, and it is that directory, and not the
+checkpoint, that the node goes back to.
+
+**Before the node goes back to a RocksDB directory, survey it**: the
+survey refuses a directory that holds an entry that only a LigninDB
+database makes, as it refuses such a `SOURCE` (step 4), and RocksDB
+opened on a LigninDB directory reads its own database there, and not
+the LigninDB one. Set `BACK` to that directory where it
+is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
+directory); the block takes `SOURCE` where `BACK` is not set. It also
+refuses a `BACK` whose name ends in `.creating` (in any case). LigninDB
+builds a checkpoint in a directory of such a name, beside the path of
+the checkpoint, and takes one that is there for what a creation of that
+checkpoint left where it holds nothing but what a creation puts there,
+an empty `LOCK` and a directory `checkpoint.creating`: a creation there
+removes what was built in it, and a deletion removes it
+([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)).
+If the literal sibling `p.creating` of a checkpoint's path `p` holds any
+other entry, LigninDB leaves it alone and refuses creation at `p`.
+The open that chooses the engine (`EitherEngine`) hands a directory of
+such a name to RocksDB only where it already holds an entry of a name
+that RocksDB gives its files, and refuses the path where the directory
+holds none or is not there. What becomes of a directory it hands over
+is RocksDB's to answer, as under any other name: its open of a database
+makes one where it finds none to be there, and fails where it refuses
+what it finds, and its open of a checkpoint makes none. The block is
+stricter: it refuses the name whatever the directory holds, so that the
+node's database is not kept under a name that LigninDB builds
+checkpoints under. Its rule is wider than LigninDB's on purpose. LigninDB takes a directory
+only where it is listed under the path's name with `.creating` added,
+letter for letter: the cleanup of a checkpoint at `backup` leaves a
+`backup.CREATING` that is there alone. The block refuses every case of
+the letters all the same. It takes the name after it has written the path again
+with every link followed, so a path that ends in `/.` is judged by the
+directory's name.
+
+```sh
+BACK=$(real_dir "${BACK:-$SOURCE}")
+case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, in some spelling of its ASCII letters: this check reserves every such spelling, since LigninDB builds checkpoints under that name: move the database to a name of its own before the node goes back to it"; false ;; esac
+if [ "$BACK" != "$SOURCE" ]; then lignin migrate "$BACK" --survey 2>&1 | tee "$WORK/reports/survey-back.txt"; fi
+```
+
+**It is surveyed** into a report of its own (step 5's block would
+write over the survey of step 5, which the block below compares with):
+RocksDB's open makes a new, empty database where it finds none, and the
+survey only reads. The block above surveys `BACK` where it is not
+`SOURCE`, into `survey-back.txt`, and a survey that refuses it ends the
+shell there with its report; where it is `SOURCE`, the block below
+surveys it. Where `SOURCE` was a checkpoint, the node's own directory
+can differ from the checkpoint either way, so it is that survey that
+decides. Where the survey refuses for the
+projected memory of a load alone, survey again with a larger
+`--memory-limit`: that refusal says nothing of the database.
+
+The survey shows that the directory is there and holds a GroveDB that
+it reads through. It does not make the hashes of the trees again from
+their records, so it is no check that the database is sound, and it
+stops at limits of its own (a grove deeper than it walks, lists it caps)
+before it has said all it found. So it decides in one case alone, and
+the others are not decided on its word:
+
+- `the source can be migrated` is its last line and it counts no node
+  value that is no element (its line `node values that are no element: …`
+  says 0), and it finds no prefix that nothing leads to (its line
+  `prefixes that nothing leads to: …, with … records (… bytes)` begins
+  with 0): the node goes back to the database as it was before the
+  migration. Of the records under such prefixes it describes a few of
+  each and of no more than 1,000 prefixes, so where it finds any, their
+  records are checked by the application's own means first. A count
+  of node values that are no element above 0 is a value of the source
+  that is no element, linked by a tree or not: check the source by the
+  application's own means first.
+- It refuses for the mark of a state-sync restore that did not finish:
+  the directory that holds the mark is to be discarded, on RocksDB as
+  here, and the node's state got again as the application's
+  documentation says.
+- It refuses for damage (a tree whose links do not hold, an element or
+  a record that does not decode, records where GroveDB writes none), or
+  the directory is missing: the node is not started on it; restore it
+  as the application's documentation says.
+- Any other ending, a refusal for what a migration alone does not take
+  or a survey that stops at its depth among them: the database is not
+  shown damaged, nor shown whole; check it by the application's own
+  means before the node goes back to it.
+
+A migration of the directory that ended with status 3 though it reported
+`differing=0` found something in the target. Where the finding is of the
+grove's data (a hash or a rule of the elements), the RocksDB database
+can hold it too, since the target is its copy, or the target alone,
+since the check follows the target's own addresses of its cells: report
+it, and check the source by the application's own means before taking
+the RocksDB database for damaged or for whole. The finding names a cell
+of the target (a page and a slot), which is no place in RocksDB: where
+the application cannot tell which of its data that is, it checks the
+source as a whole. Where it is of the target's own store (a read its
+device refused, a rule of its pages, its page table or its value log),
+it says nothing of the source.
+
+**Where the node goes back to `SOURCE` itself**, the database is to be
+the one the node stopped on, which step 5 surveyed and to which step 7
+held what the migration read, and not an older state of it: a RocksDB
+database whose log lost its tail since reads as sound and can be
+migrated, at an earlier last write and another root hash. The block
+surveys it again and holds its first line (its RocksDB identity and its
+last write), its root hash and its counts (what it says the source
+holds, as step 7 compares it, with the line `migrate: survey …`) to the
+survey of step 5, and has three answers:
+
+- Both surveys print all three and one differs: it is another state of
+  the database, and the block fails with the words that `SOURCE` is not
+  as step 5 surveyed it. Where step 7 failed because the source changed
+  between steps 5 and 6, this is what the block finds too. It shows that
+  the database differs from what step 5 saw, not how: records can have
+  been lost, or written since. The application identifies the state the
+  database holds before it decides how the node goes on from it.
+- They are the same, and both surveys end with `the source can be migrated`:
+  it says that `SOURCE` is as step 5 surveyed it.
+- Anything else leaves it untold, and the block fails with the words
+  that the surveys do not tell: a survey that refuses the source, even
+  where both refuse it alike, since what a refusal names can differ under
+  the same last line; or one that stops before its root hash or its
+  counts, as at a grove deeper than the survey walks. Options of the
+  survey do not change its first line, its root hash or its counts, but
+  they can make it refuse: where step 5's survey needed a
+  `--memory-limit`, give this one the same. Otherwise the application's
+  own check decides.
+
+Its survey refuses a `SOURCE` that holds an entry that only a LigninDB
+database makes, as step 5's does (step 4), and the block then answers
+that the surveys do not tell: RocksDB opened there beside a LigninDB
+database reads its own database, empty or with what was written
+through it, and not the LigninDB one. A refusal of the survey
+does not stop the block, so the answer is given all the same; a report that cannot be written ends the shell, as any
+failure does, before an answer, and the block removes the report of an
+earlier way back first, so it never reads one. A match shows that the
+identity, the last write, the grove's root hash and the number and bytes
+of the records are those step 5 saw, as far as the totals that step 7
+compares show them, not that every record is: a change that keeps
+every total, with the same last write and root hash, is not seen. So it
+is a check the way back needs, and no proof: the
+application's own check of its state decides too. Where `SOURCE`
+was a checkpoint, the node's own directory has a state of its own,
+which the application identifies; this block is not for it.
+
+```sh
+rm -f "$WORK/reports/survey-again.txt"
+{ lignin migrate "$SOURCE" --survey 2>&1 || true; } | tee "$WORK/reports/survey-again.txt"
+first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }
+root_hash() { sed -n 's/^  root hash: //p' "$1"; }
+counts() { sed -n 's/^migrate: survey //p' "$1"; }
+holds() { sed -n '/^the source holds:$/,/^migrate: survey /{/^    /d;/^  largest Merk that is handed over: /d;p;}' "$1"; }
+before="$WORK/reports/survey.txt"
+again="$WORK/reports/survey-again.txt"
+read_whole() { [ -n "$(first_line "$1")" ] && [ -n "$(root_hash "$1")" ] && [ -n "$(counts "$1")" ]; }
+same_state() { [ "$(first_line "$before")" = "$(first_line "$again")" ] && [ "$(holds "$before")" = "$(holds "$again")" ]; }
+both_taken() { [ "$(tail -n 1 "$before")" = "the source can be migrated" ] && [ "$(tail -n 1 "$again")" = "the source can be migrated" ]; }
+if read_whole "$before" && read_whole "$again" && ! same_state; then
+  echo "SOURCE IS NOT AS STEP 5 SURVEYED IT"; false
+elif read_whole "$before" && same_state && both_taken; then
+  echo "SOURCE is as step 5 surveyed it"
+else
+  echo "THE SURVEYS DO NOT TELL WHETHER SOURCE IS AS STEP 5 SURVEYED IT"; false
+fi
+```
+
+- **Before the node has committed anything on LigninDB**, going back is
+  pointing the node at its RocksDB database again and selecting RocksDB.
+- **After it has committed on LigninDB**, its RocksDB database is still
+  the state at the migration, and what the node committed since is in
+  `TARGET` alone. GroveDB has no tool that migrates a LigninDB database
+  back to RocksDB. A node that goes back starts from what its RocksDB
+  database holds, and is brought forward from that state, which is the
+  application's to do: where the migration read a checkpoint, that
+  database can already hold commits after the checkpoint's.
+- **In either case**, stop the node on LigninDB first. Remove `TARGET`
+  only once you have decided not to go back to LigninDB and the commits
+  the node made on it are no longer needed: brought forward into the
+  RocksDB database by the application, kept in a copy of `TARGET`, or
+  given up on purpose. The backup of step 8 is older than they are, and
+  GroveDB has no tool that carries them back.
+- **A migration that failed** made nothing at `TARGET` (exit status 1
+  and 4, but for the cases the table of step 6 names) or left its
+  database in `TARGET.migrating` (exit status 3): start the node on its
+  RocksDB database as before, as its survey above allows. Remove
+  `TARGET.migrating` when it is
+  no longer needed for a report, after looking into it as step 6 says.
+
+Remove `SOURCE` only when the node has run on LigninDB for as long as you
+want a way back, and after a backup of the LigninDB database
+([backup and full disk](backup-and-full-disk.md)). **The migration
+carries GroveDB's records and nothing else**: a file that the
+application keeps in the RocksDB directory beside RocksDB's own was put
+into `TARGET` at step 10, or where step 10 sends a file of one of the
+engine's names, and the node has kept it there since. The
+copies in `SOURCE` are those of the migration: do not copy them over
+`TARGET`'s, and keep or remove them with `SOURCE`, as the application's
+documentation says.

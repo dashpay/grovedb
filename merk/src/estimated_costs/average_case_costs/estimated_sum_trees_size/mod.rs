@@ -8,6 +8,7 @@
 mod v0;
 mod v1;
 mod v2;
+mod v3;
 
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
@@ -22,6 +23,8 @@ impl EstimatedSumTrees {
     /// - v1: weighted by per-tree-type `inner_node_type().cost()` across
     ///   the four legacy aggregate weights (grove v2)
     /// - v2: extends v1 with the four `provable_*` weights (grove v3)
+    /// - v3: sizes the aggregates as the cost of the tree's element does
+    ///   (grove v6)
     pub(in crate::estimated_costs) fn estimated_size(
         &self,
         grove_version: &GroveVersion,
@@ -34,10 +37,11 @@ impl EstimatedSumTrees {
             0 => self.estimated_size_v0(),
             1 => self.estimated_size_v1(),
             2 => self.estimated_size_v2(),
+            3 => self.estimated_size_v3(),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
                     method: "EstimatedSumTrees::estimated_size".to_string(),
-                    known_versions: vec![0, 1, 2],
+                    known_versions: vec![0, 1, 2, 3],
                     received: version,
                 },
             )),

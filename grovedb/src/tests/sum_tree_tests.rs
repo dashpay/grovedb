@@ -2,13 +2,13 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::SuiteBatch;
     use grovedb_merk::{
         element::costs::ElementCostExtensions,
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
-    use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -369,7 +369,7 @@ mod tests {
         .unwrap()
         .expect("should insert item");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Open merk and check all elements in it
@@ -520,7 +520,7 @@ mod tests {
         .unwrap()
         .expect("should insert tree");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
 
         let transaction = db.start_transaction();
         // Sum should be non for non sum tree
@@ -731,7 +731,7 @@ mod tests {
         .unwrap()
         .expect("should insert tree");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
 
         let transaction = db.start_transaction();
         // Sum should be non for non sum tree
@@ -1061,7 +1061,7 @@ mod tests {
             .expect("should fetch tree");
         assert_eq!(sum_tree.sum_value_or_default(), 35);
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Assert node feature types
@@ -1302,7 +1302,7 @@ mod tests {
                 + (SumValue::MAX - 70) as i128
         );
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Assert node feature types
@@ -1476,7 +1476,7 @@ mod tests {
             .expect("should apply batch");
         let transaction = db.start_transaction();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let sum_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1523,7 +1523,7 @@ mod tests {
             .expect("should apply batch");
         let transaction = db.start_transaction();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let sum_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1615,7 +1615,7 @@ mod tests {
             .expect("should apply batch");
         let transaction = db.start_transaction();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let sum_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1657,7 +1657,7 @@ mod tests {
             .expect("should apply batch");
         let transaction = db.start_transaction();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let sum_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1704,7 +1704,7 @@ mod tests {
             .expect("should apply batch");
         let transaction = db.start_transaction();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let sum_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1796,7 +1796,7 @@ mod tests {
             .expect("should apply batch");
         let transaction = db.start_transaction();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let sum_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1964,7 +1964,7 @@ mod tests {
         .expect("should insert direct_sum_item");
 
         // Verify CountSumTree child has correct count and sum
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let child_merk = db
@@ -2100,7 +2100,7 @@ mod tests {
         .expect("should insert direct_sum_item");
 
         // Verify first CountSumTree child
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let child1_merk = db

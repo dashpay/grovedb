@@ -57,10 +57,11 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
+        self.keep_old_value();
         self.inner.kv = Self::install_ordinary_value_v0(self.inner.kv, value);
         self.inner.kv.feature_type = feature_type;
 
-        if self.old_value.is_some() {
+        if self.has_old_value() {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
@@ -112,10 +113,11 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
+        self.keep_old_value();
         self.inner.kv = Self::install_ordinary_value_v0(self.inner.kv, value);
         self.inner.kv.feature_type = feature_type;
 
-        if self.old_value.is_some() {
+        if self.has_old_value() {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values

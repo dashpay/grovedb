@@ -1,0 +1,144 @@
+diff --git a/lignin-io/src/std_fs.rs b/lignin-io/src/std_fs.rs
+index 2f412b77..3f265e1f 100644
+--- a/lignin-io/src/std_fs.rs
++++ b/lignin-io/src/std_fs.rs
+@@ -271,6 +271,9 @@ enum Access {
+ struct AppendEnd {
+     len: u64,
+     broken: Option<String>,
++    /// EXPERIMENT: the file is longer than `len`, and appends are written
++    /// at `len`.
++    ahead: bool,
+ }
+ 
+ impl StdFile {
+@@ -315,6 +318,7 @@ impl StdFile {
+             OpenMode::Append(_) => Access::Append(Mutex::new(AppendEnd {
+                 len: metadata.len(),
+                 broken: None,
++                ahead: false,
+             })),
+         };
+         Ok(Self {
+@@ -354,7 +358,11 @@ impl StdFile {
+         let start = end.len;
+         let mut written = 0;
+         while written < buf.len() {
+-            let error = match write(&self.file, &buf[written..]) {
++            let wrote = match end.ahead {
++                true => self.file.write_at(&buf[written..], start + written as u64),
++                false => write(&self.file, &buf[written..]),
++            };
++            let error = match wrote {
+                 Ok(0) => ErrorKind::WriteZero.into(),
+                 Ok(count) => {
+                     written += count;
+@@ -363,7 +371,11 @@ impl StdFile {
+                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                 Err(error) => error,
+             };
+-            if let Err(undo) = self.undo_append(start, written) {
++            let undone = match end.ahead {
++                true => self.file.write_all_at(&vec![0; written], start),
++                false => self.undo_append(start, written),
++            };
++            if let Err(undo) = undone {
+                 end.broken = Some(format!(
+                     "an earlier append to this file failed ({error}) and could not be undone \
+                      ({undo}), so this handle no longer knows where the file ends"
+@@ -435,9 +447,44 @@ impl VfsFile for StdFile {
+     }
+ 
+     fn len(&self) -> io::Result<u64> {
++        if let Access::Append(end) = &self.access {
++            let end = guard(end)?;
++            if end.ahead {
++                return Ok(end.len);
++            }
++        }
+         Ok(self.file.metadata()?.len())
+     }
+ 
++    fn allocate(&self, len: u64) -> io::Result<()> {
++        let Access::Append(end) = &self.access else {
++            return Err(wrong_mode(
++                "allocate needs a file opened with OpenMode::Append",
++            ));
++        };
++        let mut end = guard(end)?;
++        #[cfg(target_os = "linux")]
++        {
++            use rustix::fs::{fallocate, fcntl_getfl, fcntl_setfl, FallocateFlags, OFlags};
++            let mode = std::env::var("LIGNIN_LOG_ALLOCATE").unwrap_or_default();
++            match mode.as_str() {
++                "keep" => fallocate(&self.file, FallocateFlags::KEEP_SIZE, 0, len)?,
++                "fallocate" | "truncate" if len > end.len => {
++                    match mode.as_str() {
++                        "fallocate" => fallocate(&self.file, FallocateFlags::empty(), 0, len)?,
++                        _ => self.file.set_len(len)?,
++                    }
++                    let flags = fcntl_getfl(&self.file)?;
++                    fcntl_setfl(&self.file, flags.difference(OFlags::APPEND))?;
++                    end.ahead = true;
++                }
++                _ => {}
++            }
++        }
++        let _ = (len, &mut end);
++        Ok(())
++    }
++
+     fn set_len(&self, len: u64) -> io::Result<()> {
+         match &self.access {
+             Access::Read => Err(wrong_mode(
+diff --git a/lignin-io/src/vfs.rs b/lignin-io/src/vfs.rs
+index c386d80f..e535377a 100644
+--- a/lignin-io/src/vfs.rs
++++ b/lignin-io/src/vfs.rs
+@@ -501,6 +501,16 @@ pub trait VfsFile: Any + fmt::Debug + Send + Sync {
+     ///
+     /// Needs [`OpenMode::Write`] or [`OpenMode::Append`].
+     fn set_len(&self, len: u64) -> io::Result<()>;
++
++    /// EXPERIMENT (PERF-07-F1): has storage set aside for the file up to
++    /// `len` bytes, so that an append below that length extends nothing.
++    /// What [`Self::len`] of this handle answers and where its next
++    /// append lands are unchanged. Another handle of the file can find it
++    /// `len` bytes long, with zeros behind what was appended.
++    fn allocate(&self, len: u64) -> io::Result<()> {
++        let _ = len;
++        Ok(())
++    }
+ }
+ 
+ /// A held lock from [`Vfs::lock`]. Dropping it releases the lock.
+diff --git a/lignin-store/src/wal/store.rs b/lignin-store/src/wal/store.rs
+index 685e16fe..f27d1aec 100644
+--- a/lignin-store/src/wal/store.rs
++++ b/lignin-store/src/wal/store.rs
+@@ -891,6 +891,10 @@ impl LogStore {
+             let path = FileNames::WAL.path(&self.dir, id);
+             match create_unsynced_file(&*self.vfs, &self.dir, &FileNames::WAL, id) {
+                 Ok(handle) => {
++                    // EXPERIMENT (PERF-07-F1): the file allocated ahead.
++                    handle
++                        .allocate(self.options.target_file_len)
++                        .map_err(LogError::io("allocate", &path))?;
+                     *taken = Some(id);
+                     let file = Arc::new(LogFile::created(id, path, handle));
+                     self.tail().spare = Some((file, false));
+diff --git a/lignin-testkit/src/bench/latency.rs b/lignin-testkit/src/bench/latency.rs
+index 70ecebd0..db2d8a71 100644
+--- a/lignin-testkit/src/bench/latency.rs
++++ b/lignin-testkit/src/bench/latency.rs
+@@ -759,6 +759,10 @@ mod watching {
+         fn set_len(&self, len: u64) -> io::Result<()> {
+             self.file.set_len(len)
+         }
++
++        fn allocate(&self, len: u64) -> io::Result<()> {
++            self.file.allocate(len)
++        }
+     }
+ 
+     impl Vfs for Watching {

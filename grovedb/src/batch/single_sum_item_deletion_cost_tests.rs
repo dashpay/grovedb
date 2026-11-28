@@ -1,6 +1,6 @@
 //! Tests
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
@@ -43,7 +43,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
@@ -106,7 +106,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_op(
             vec![b"sum_tree".to_vec()],
             b"key1".to_vec(),
@@ -151,7 +151,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),

@@ -5,8 +5,7 @@
 use std::collections::hash_map::Entry as HashMapEntry;
 
 use grovedb_costs::{cost_return_on_error, CostResult, OperationCost};
-use grovedb_merk::{element::exists::ElementExistsInStorageExtensions, Merk};
-use grovedb_storage::StorageContext;
+use grovedb_merk::{element::exists::ElementExistsInStorageExtensions, store::NodeStore, Merk};
 use grovedb_version::version::GroveVersion;
 
 use super::super::TreeCacheMerkByPath;
@@ -19,7 +18,7 @@ where
         &[Vec<u8>],
         Option<&Element>,
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     pub(super) fn conditional_insert_keeps_stored_element_v1(
         &mut self,

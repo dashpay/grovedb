@@ -570,8 +570,8 @@ impl Decode for KV {
     #[inline]
     fn decode<R: Read>(input: R) -> Result<Self> {
         let mut kv = Self {
-            key: Vec::with_capacity(0),
-            value: Vec::with_capacity(128),
+            key: Vec::new(),
+            value: Vec::new(),
             feature_type: BasicMerkNode,
             value_defined_cost: None,
             hash: NULL_HASH,

@@ -1,4 +1,4 @@
-//! Storage adapter bridging GroveDB's `StorageContext` to the private
+//! Storage adapter bridging GroveDB's `FlatStore` to the private
 //! document store.
 //!
 //! Provides [`PrivateDocumentStore`], a thin wrapper owning a
@@ -10,7 +10,7 @@
 
 use grovedb_bulk_append_tree::{BulkAppendTree, RangePage};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -80,7 +80,7 @@ impl<S> std::fmt::Debug for PrivateDocumentStore<S> {
     }
 }
 
-impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
+impl<S: FlatStore> PrivateDocumentStore<S> {
     /// Create a new empty private document store.
     ///
     /// `entry_size` is the committed byte length of every entry (must be

@@ -3,32 +3,28 @@
 use std::collections::hash_map::Entry;
 
 use grovedb_costs::{CostResult, CostsExt};
-use grovedb_storage::StorageContext;
 
 use super::Merk;
+use crate::store::NodeStore;
 use crate::Error;
 
-impl<'db, S: StorageContext<'db>> Merk<S> {
+impl<'db, S: NodeStore<'db>> Merk<S> {
     /// Get metadata for the Merk under `key`.
     pub fn get_meta(&mut self, key: Vec<u8>) -> CostResult<Option<&[u8]>, Error> {
         match self.meta_cache.entry(key) {
             Entry::Occupied(e) => Ok(e.into_mut().as_deref()).wrap_with_cost(Default::default()),
             Entry::Vacant(e) => self
                 .storage
-                .get_meta(e.key())
-                .map_ok(|b| e.insert(b).as_deref())
-                .map_err(Error::StorageError),
+                .get_meta_record(e.key())
+                .map_ok(|b| e.insert(b).as_deref()),
         }
     }
 
     /// Set metadata under `key`. This doesn't affect the state (root hash).
     pub fn put_meta(&mut self, key: Vec<u8>, value: Vec<u8>) -> CostResult<(), Error> {
-        self.storage
-            .put_meta(&key, &value, None)
-            .map_ok(|_| {
-                self.meta_cache.insert(key, Some(value));
-            })
-            .map_err(Error::StorageError)
+        self.storage.put_meta_record(&key, &value).map_ok(|_| {
+            self.meta_cache.insert(key, Some(value));
+        })
     }
 
     /// Delete metadata under `key`.
@@ -38,16 +34,13 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     /// tree structure and has no associated storage fees, so cost
     /// precision is not required here.
     pub fn delete_meta(&mut self, key: &[u8]) -> CostResult<(), Error> {
-        self.storage
-            .delete_meta(key, None)
-            .map_ok(|_| {
-                self.meta_cache.remove(key);
-            })
-            .map_err(Error::StorageError)
+        self.storage.delete_meta_record(key).map_ok(|_| {
+            self.meta_cache.remove(key);
+        })
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;

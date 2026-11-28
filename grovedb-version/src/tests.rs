@@ -6,6 +6,7 @@ use crate::version::v2::GROVE_V2;
 use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
 use crate::version::v5::GROVE_V5;
+use crate::version::v6::GROVE_V6;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
 
@@ -74,6 +75,191 @@ fn grove_version_latest_returns_v5() {
 #[test]
 fn grove_versions_count() {
     assert_eq!(GROVE_VERSIONS.len(), 5);
+}
+
+#[test]
+fn v6_matches_v5_apart_from_its_gates() {
+    // GROVE_V6 starts as GROVE_V5. A gate added to V6 flips its slot back
+    // here, so this test lists every slot V6 changes: the cost rules of
+    // stop points and finalize, and the estimates that follow them.
+    let mut v6_as_v5 = GROVE_V6.clone();
+    v6_as_v5.protocol_version = GROVE_V5.protocol_version;
+    v6_as_v5.merk_versions.cost_model.propagation = 0;
+    let average = &mut v6_as_v5.merk_versions.average_case_costs;
+    average.add_average_case_merk_propagate = GROVE_V5
+        .merk_versions
+        .average_case_costs
+        .add_average_case_merk_propagate;
+    average.sum_tree_estimated_size = GROVE_V5
+        .merk_versions
+        .average_case_costs
+        .sum_tree_estimated_size;
+    average.value_with_feature_and_flags_size = GROVE_V5
+        .merk_versions
+        .average_case_costs
+        .value_with_feature_and_flags_size;
+    average.subtree_with_feature_and_flags_size = 0;
+    v6_as_v5
+        .merk_versions
+        .worst_case_costs
+        .add_worst_case_merk_propagate = 0;
+    let operations = &mut v6_as_v5.grovedb_versions.operations;
+    operations.average_case.add_average_case_get_merk_at_path = 0;
+    operations.average_case.average_case_merk_insert_element = GROVE_V5
+        .grovedb_versions
+        .operations
+        .average_case
+        .average_case_merk_insert_element;
+    operations.average_case.average_case_merk_replace_element = 0;
+    operations.average_case.average_case_merk_patch_element = 0;
+    operations.average_case.average_case_merk_delete_tree = 0;
+    operations
+        .average_case
+        .average_case_indexed_secondary_mirror = 0;
+    operations.worst_case.add_worst_case_get_merk_at_path = 0;
+    operations.worst_case.worst_case_merk_insert_element = GROVE_V5
+        .grovedb_versions
+        .operations
+        .worst_case
+        .worst_case_merk_insert_element;
+    operations.worst_case.worst_case_merk_replace_element = 0;
+    operations.worst_case.worst_case_merk_patch_element = 0;
+    assert_eq!(format!("{v6_as_v5:?}"), format!("{GROVE_V5:?}"));
+}
+
+#[test]
+fn no_lookup_by_protocol_version_returns_v6() {
+    // A grove version is looked up through the list of those in force: its
+    // first, its last, and the one of a given protocol version. GROVE_V6 is
+    // none of them, whatever protocol version is asked for.
+    let v6 = format!("{GROVE_V6:?}");
+    for protocol_version in 0..=GROVE_V6.protocol_version + 10 {
+        let found = GROVE_VERSIONS
+            .iter()
+            .find(|v| v.protocol_version == protocol_version);
+        if protocol_version == GROVE_V6.protocol_version {
+            assert!(found.is_none());
+        }
+        if let Some(found) = found {
+            assert_ne!(format!("{found:?}"), v6, "{protocol_version}");
+        }
+    }
+    for found in GROVE_VERSIONS
+        .iter()
+        .chain([GroveVersion::first(), GroveVersion::latest()])
+    {
+        assert_ne!(found.protocol_version, GROVE_V6.protocol_version);
+        assert_ne!(format!("{found:?}"), v6);
+    }
+}
+
+#[test]
+fn stop_point_cost_rules_are_gated_to_v6() {
+    // Every grove version that is in force charges a write every level up to
+    // the root of the grove: a change of this slot there changes a tracked
+    // cost of a released version.
+    for v in GROVE_VERSIONS {
+        assert_eq!(
+            v.merk_versions.cost_model.propagation, 0,
+            "{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(GROVE_V6.merk_versions.cost_model.propagation, 1);
+    assert_eq!(GROVE_V6.protocol_version, 6);
+}
+
+#[test]
+fn the_estimates_of_one_level_are_gated_to_v6() {
+    // A write that stops at a stop point is estimated by its own level
+    // alone, so that level's estimate has to hold by itself. The released
+    // versions keep the estimates they were admitted with.
+    for v in [&GROVE_V3, &GROVE_V4, &GROVE_V5] {
+        let average = &v.merk_versions.average_case_costs;
+        assert_eq!(average.add_average_case_merk_propagate, 2);
+        assert_eq!(average.sum_tree_estimated_size, 2);
+        assert_eq!(average.value_with_feature_and_flags_size, 1);
+        assert_eq!(average.subtree_with_feature_and_flags_size, 0);
+    }
+    for v in GROVE_VERSIONS {
+        assert_eq!(
+            v.merk_versions
+                .worst_case_costs
+                .add_worst_case_merk_propagate,
+            0
+        );
+    }
+    let merk = &GROVE_V6.merk_versions;
+    assert_eq!(merk.average_case_costs.add_average_case_merk_propagate, 3);
+    assert_eq!(merk.average_case_costs.sum_tree_estimated_size, 3);
+    assert_eq!(merk.average_case_costs.value_with_feature_and_flags_size, 2);
+    assert_eq!(
+        merk.average_case_costs.subtree_with_feature_and_flags_size,
+        1
+    );
+    assert_eq!(merk.worst_case_costs.add_worst_case_merk_propagate, 1);
+    // The rest of the average-case slots are those of version 5.
+    let mut average = merk.average_case_costs.clone();
+    average.add_average_case_merk_propagate = 2;
+    average.sum_tree_estimated_size = 2;
+    average.value_with_feature_and_flags_size = 1;
+    average.subtree_with_feature_and_flags_size = 0;
+    assert_eq!(
+        format!("{average:?}"),
+        format!("{:?}", GROVE_V5.merk_versions.average_case_costs)
+    );
+}
+
+#[test]
+fn v6_is_defined_and_not_listed() {
+    // Listing it makes it `GroveVersion::latest()`, which every caller that
+    // names no version runs on. It is listed when a write stops where this
+    // version charges it.
+    assert!(GROVE_VERSIONS
+        .iter()
+        .all(|v| v.protocol_version != GROVE_V6.protocol_version));
+    assert!(GroveVersion::latest().protocol_version < GROVE_V6.protocol_version);
+}
+
+#[test]
+fn the_open_estimates_follow_the_propagation_slot() {
+    // The estimate of an open has the read of the host exactly where the
+    // open makes it.
+    for v in GROVE_VERSIONS.iter().chain([&GROVE_V6]) {
+        let propagation = v.merk_versions.cost_model.propagation;
+        let operations = &v.grovedb_versions.operations;
+        assert_eq!(
+            operations.average_case.add_average_case_get_merk_at_path, propagation,
+            "{}",
+            v.protocol_version
+        );
+        assert_eq!(
+            operations.worst_case.add_worst_case_get_merk_at_path, propagation,
+            "{}",
+            v.protocol_version
+        );
+    }
+}
+
+#[test]
+fn the_finalize_estimates_are_at_their_first_version() {
+    for v in GROVE_VERSIONS.iter().chain([&GROVE_V6]) {
+        let operations = &v.grovedb_versions.operations;
+        assert_eq!(operations.average_case.average_case_finalize, 0);
+        assert_eq!(operations.worst_case.worst_case_finalize, 0);
+        assert_eq!(
+            v.merk_versions
+                .average_case_costs
+                .add_average_case_merk_finalize,
+            0
+        );
+        assert_eq!(
+            v.merk_versions
+                .worst_case_costs
+                .add_worst_case_merk_finalize,
+            0
+        );
+    }
 }
 
 #[test]
@@ -1061,4 +1247,56 @@ fn big_sum_tree_twins_creation_is_gated_to_v5() {
             .big_sum_tree_twins_creation,
         1
     );
+}
+
+#[test]
+fn the_estimates_of_an_operation_are_gated_to_v6() {
+    // The estimates of an open, of the put of an element, of the removal of
+    // a tree and of the rows of an indexed tree are the slots of the
+    // operations that grove version 6 changes, and no other. The released
+    // versions keep the estimates they were admitted with.
+    for v in GROVE_VERSIONS {
+        let operations = &v.grovedb_versions.operations;
+        assert!(operations.average_case.average_case_merk_insert_element <= 1);
+        assert_eq!(operations.average_case.average_case_merk_replace_element, 0);
+        assert_eq!(operations.average_case.average_case_merk_patch_element, 0);
+        assert_eq!(operations.average_case.average_case_merk_delete_tree, 0);
+        assert_eq!(
+            operations
+                .average_case
+                .average_case_indexed_secondary_mirror,
+            0
+        );
+        assert!(operations.worst_case.worst_case_merk_insert_element <= 1);
+        assert_eq!(operations.worst_case.worst_case_merk_replace_element, 0);
+        assert_eq!(operations.worst_case.worst_case_merk_patch_element, 0);
+    }
+    let (v5, v6) = (
+        &GROVE_V5.grovedb_versions.operations,
+        &GROVE_V6.grovedb_versions.operations,
+    );
+    let mut average = v6.average_case.clone();
+    assert_eq!(average.add_average_case_get_merk_at_path, 1);
+    assert_eq!(average.average_case_merk_insert_element, 2);
+    assert_eq!(average.average_case_merk_replace_element, 1);
+    assert_eq!(average.average_case_merk_patch_element, 1);
+    assert_eq!(average.average_case_merk_delete_tree, 1);
+    assert_eq!(average.average_case_indexed_secondary_mirror, 1);
+    average.add_average_case_get_merk_at_path = 0;
+    average.average_case_merk_insert_element = 1;
+    average.average_case_merk_replace_element = 0;
+    average.average_case_merk_patch_element = 0;
+    average.average_case_merk_delete_tree = 0;
+    average.average_case_indexed_secondary_mirror = 0;
+    assert_eq!(format!("{average:?}"), format!("{:?}", v5.average_case));
+    let mut worst = v6.worst_case.clone();
+    assert_eq!(worst.add_worst_case_get_merk_at_path, 1);
+    assert_eq!(worst.worst_case_merk_insert_element, 2);
+    assert_eq!(worst.worst_case_merk_replace_element, 1);
+    assert_eq!(worst.worst_case_merk_patch_element, 1);
+    worst.add_worst_case_get_merk_at_path = 0;
+    worst.worst_case_merk_insert_element = 1;
+    worst.worst_case_merk_replace_element = 0;
+    worst.worst_case_merk_patch_element = 0;
+    assert_eq!(format!("{worst:?}"), format!("{:?}", v5.worst_case));
 }

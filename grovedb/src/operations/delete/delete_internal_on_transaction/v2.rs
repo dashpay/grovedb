@@ -1,5 +1,7 @@
 //! Automatic deletion with cached old-value observation on GROVE_V4.
 
+use crate::engine::node_store_error;
+use crate::engine::EngineBatch;
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
 use crate::BackwardsReferences;
 use grovedb_costs::{
@@ -7,14 +9,12 @@ use grovedb_costs::{
     CostResult, CostsExt,
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
+use grovedb_merk::store::{NodeChangeSet, NodeStore};
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions},
     Error as MerkError,
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch, StorageContext,
-};
 use grovedb_version::version::GroveVersion;
 
 use super::DeleteOptions;
@@ -22,18 +22,18 @@ use crate::{
     bidirectional_references,
     merk_cache::MerkCache,
     util::visitor::{GroveVisitor, Visit, WalkResult},
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Automatic V4 delete dispatcher.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn delete_internal_on_transaction_v2<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn delete_internal_on_transaction_v2<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -42,7 +42,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
-        batch: &StorageBatch,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         self.delete_with_backward_references_v2(
@@ -58,12 +58,12 @@ impl GroveDb {
 
     /// The `MerkCache`-based delete flow with backward-references cascade.
     #[allow(clippy::too_many_arguments)]
-    fn delete_with_backward_references_v2<B: AsRef<[u8]>>(
-        &self,
+    fn delete_with_backward_references_v2<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -72,7 +72,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
-        batch: &StorageBatch,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         let mut cost = Default::default();
@@ -190,7 +190,7 @@ impl GroveDb {
                 cost_return_on_error!(&mut cost, cache.get_merk(merk_to_delete_path.clone()));
             let is_empty = cost_return_on_error!(
                 &mut cost,
-                merk_to_delete.for_merk(|m| m.is_empty_tree().map(Ok))
+                merk_to_delete.read_merk(|m| m.is_empty_tree().map(Ok))
             );
 
             if !options.allow_deleting_non_empty_trees && !is_empty {
@@ -323,18 +323,20 @@ impl GroveDb {
 /// when and how we do modifications inside of the deletion implementation,
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
-struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
+struct DeletionVisitor<'c, 'db, 'tx: 'db, 'b, 's, B: AsRef<[u8]>, E: Engine> {
     backwards_references: BackwardsReferences,
     allow_deleting_subtrees: bool,
-    cache: &'c MerkCache<'db, 'b, B>,
+    cache: &'c MerkCache<'db, 'tx, 'b, B, E>,
     /// The caller's removal-accounting policy, applied to every referrer a
     /// cascade deletes on the way.
     sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
 }
 
-impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
+impl<'c, 'db, 'tx: 'db, 'b, 's, B: AsRef<[u8]>, E: Engine>
+    DeletionVisitor<'c, 'db, 'tx, 'b, 's, B, E>
+{
     fn new(
-        cache: &'c MerkCache<'db, 'b, B>,
+        cache: &'c MerkCache<'db, 'tx, 'b, B, E>,
         backwards_references: BackwardsReferences,
         allow_deleting_subtrees: bool,
         sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
@@ -348,7 +350,7 @@ impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     }
 }
 
-impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
+impl<'b, B: AsRef<[u8]>, E: Engine> Visit<'b, B, E> for DeletionVisitor<'_, '_, '_, 'b, '_, B, E> {
     fn visit_merk(&mut self, _path: SubtreePathBuilder<'b, B>) -> CostResult<bool, Error> {
         Ok(false).wrap_with_cost(Default::default())
     }
@@ -357,7 +359,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
         &mut self,
         path: SubtreePathBuilder<'b, B>,
         key: &[u8],
-        storage: &PrefixedRocksDbTransactionContext,
+        storage: &E::Subtree<'_>,
         element: Element,
     ) -> CostResult<bool, Error> {
         // The process involves two main tasks during traversal: cleaning up
@@ -391,7 +393,12 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
                 ))
                 .wrap_with_cost(cost);
             }
-            cost_return_on_error!(&mut cost, storage.delete(key, None).map_err(Into::into));
+            let mut removal = NodeStore::change_set(storage);
+            removal.delete_node(key, None);
+            cost_return_on_error!(
+                &mut cost,
+                NodeStore::commit(storage, removal).map_err(node_store_error)
+            );
         }
 
         // Step 2: perform backward references' deletion on top of cached

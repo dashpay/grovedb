@@ -23,6 +23,9 @@ grovedb-version = { version = "7.0.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "7.0.0", path = "../visualize" }
 grovedb-element = { version = "7.0.0", path = "../grovedb-element" }
 grovedb-query = { version = "7.0.0", path = "../grovedb-query" }
+lignindb = { version = "7.0.0", path = "../lignindb", optional = true }
+lignin-format = { version = "7.0.0", path = "../lignin-format", optional = true }
+lignin-tree = { version = "7.0.0", path = "../lignin-tree", optional = true }
 
 bincode = { workspace = true }
 bincode_derive = { workspace = true }
@@ -32,6 +35,7 @@ integer-encoding = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 byteorder = { workspace = true }
 blake3 = { workspace = true, optional = true }
 ed = { workspace = true, optional = true }
@@ -42,22 +46,37 @@ colored = { version = "3.0.0", optional = true }
 default = ["full"]
 proof_debug = []
 serde = ["dep:serde", "indexmap/serde"]
+# Merk on any `NodeStore`. It compiles no storage engine: `rocksdb_storage`
+# does, for the RocksDB contexts a Merk is opened on.
 minimal = [
         "num_cpus",
         "ed",
         "blake3",
         "grovedb-storage",
-        "grovedb-storage/rocksdb_storage",
         "grovedb-element/visualize",
         "grovedb-query/blockchain",
 ]
-full = ["minimal", "test_utils", "colored_debug"]
-test_utils = ["rand"]
+rocksdb_storage = ["minimal", "grovedb-storage/rocksdb_storage"]
+# `store::lignin`: the node store of a Merk on a LigninDB write transaction.
+lignin_storage = ["minimal", "dep:lignindb", "dep:lignin-format", "dep:lignin-tree"]
+full = ["minimal", "rocksdb_storage", "test_utils", "colored_debug"]
+# `test_utils` for other crates, with the engines of the suite that are on
+# RocksDB (`merk/test-engines.txt`). The one on LigninDB is compiled where
+# `lignin_storage` is on as well.
+test_utils = ["rand", "tempfile", "rocksdb_storage"]
 colored_debug = ["colored"]
 verify = ["ed", "blake3"]
 grovedbg = ["full"]
 
 [dev-dependencies]
+# The ledger of the cost model, which the tests of `store::lignin` hold the
+# store to.
+grovedb-costs = { version = "7.0.0", path = "../costs", features = ["cost-model-ledger"] }
+# For `test_utils` in a test build that has the feature off.
+rand = { workspace = true }
+# The file layer under the engine the tests of `store::lignin` open, for the
+# test that counts the reads of the value log a proof makes.
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 assert_matches = { workspace = true }
@@ -73,3 +92,10 @@ harness = false
 [[bench]]
 name = "branch_queries"
 harness = false
+
+# Heap allocations of a Merk for one state transition, on LigninDB and on
+# RocksDB (LigninDB task MERK-08).
+[[bench]]
+name = "allocations"
+harness = false
+required-features = ["lignin_storage", "test_utils"]

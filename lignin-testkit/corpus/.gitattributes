@@ -1,0 +1,3 @@
+# Recorded by `lignin-golden record`, not written by hand. A replay compares
+# them line by line, so line endings are never converted.
+*.trace text eol=lf linguist-generated=true

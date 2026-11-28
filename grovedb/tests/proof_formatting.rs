@@ -1,6 +1,6 @@
 //! Regression coverage for formatting malformed inner Merk proofs.
 
-#![cfg(any(feature = "minimal", feature = "verify"))]
+#![cfg(any(feature = "engine_generic", feature = "verify"))]
 
 use std::collections::BTreeMap;
 
@@ -119,7 +119,7 @@ fn invalid_element_display_still_returns_a_format_error() {
     assert!(write!(&mut String::new(), "{}", ProofBytes::Merk(encoded)).is_err());
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 #[test]
 fn formatting_preserves_generated_proof_bytes_roots_and_results() {
     use grovedb::{Element, GroveDb, PathQuery, Query};

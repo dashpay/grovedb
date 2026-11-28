@@ -6,20 +6,20 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
     util::{compat, TxRef},
-    Error, GroveDb, TransactionArg,
+    Engine, Error, GroveDb, TransactionArg,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Check if it's an empty tree.
     ///
     /// For non-Merk data trees (CommitmentTree, MmrTree, BulkAppendTree,
     /// DenseAppendOnlyFixedSizeTree), this checks the element's entry count
     /// from the parent rather than iterating the Merk (which is always
     /// empty for these types).
-    pub fn is_empty_tree<'b, B, P>(
-        &self,
+    pub fn is_empty_tree<'db, 'b, B, P>(
+        &'db self,
         path: P,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
@@ -33,7 +33,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         cost_return_on_error!(
             &mut cost,

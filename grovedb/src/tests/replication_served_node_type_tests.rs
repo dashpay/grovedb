@@ -20,7 +20,6 @@ use grovedb_merk::{
     TreeFeatureType,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -154,7 +153,7 @@ fn insert_host_tree(
 /// as its root, under `tree_type`.
 fn request_for(key: &[u8], tree_type: TreeType, locals: Vec<Vec<u8>>) -> Vec<u8> {
     let path: &[&[u8]] = &[key];
-    let prefix = RocksDbStorage::build_prefix(SubtreePath::from(path)).unwrap();
+    let prefix = grovedb_storage::prefix::build_prefix(SubtreePath::from(path)).unwrap();
     pack_nested_bytes(vec![encode_global_chunk_id(
         prefix,
         Some(entry_key(0)),

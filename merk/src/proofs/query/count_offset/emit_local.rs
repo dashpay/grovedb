@@ -167,6 +167,7 @@ where
             )))
             .wrap_with_cost(cost);
         }
+        cost_return_on_error!(&mut cost, walker.load_value());
         let value_bytes = walker.tree().value_as_slice();
         // The tag names every tree a full decode finds, wrapped or not, so only
         // a tree's bytes are decoded, rather than copying every row's payload.

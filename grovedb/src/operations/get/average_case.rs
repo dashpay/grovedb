@@ -1,21 +1,20 @@
 //! Average case get costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::OperationCost;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::tree_type::TreeType;
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "engine_generic")]
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::Error;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     GroveDb,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveDb {
     /// Get the Operation Cost for a has query that doesn't follow
     /// references with the following parameters
@@ -35,7 +34,7 @@ impl GroveDb {
                 .average_case_for_has_raw
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
+        GroveDb::add_average_case_has_raw_cost_engine_free(
             &mut cost,
             path,
             key,
@@ -65,7 +64,7 @@ impl GroveDb {
                 .average_case_for_has_raw_tree
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_has_raw_tree_cost::<RocksDbStorage>(
+        GroveDb::add_average_case_has_raw_tree_cost_engine_free(
             &mut cost,
             path,
             key,
@@ -95,7 +94,7 @@ impl GroveDb {
                 .average_case_for_get_raw
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
+        GroveDb::add_average_case_get_raw_cost_engine_free(
             &mut cost,
             path,
             key,
@@ -124,7 +123,7 @@ impl GroveDb {
                 .average_case_for_get
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_get_cost::<RocksDbStorage>(
+        GroveDb::add_average_case_get_cost_engine_free(
             &mut cost,
             path,
             key,
@@ -154,7 +153,7 @@ impl GroveDb {
                 .average_case_for_get_tree
         );
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_get_raw_tree_cost::<RocksDbStorage>(
+        GroveDb::add_average_case_get_raw_tree_cost_engine_free(
             &mut cost,
             path,
             key,

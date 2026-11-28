@@ -104,12 +104,12 @@ mod tests {
             "the reference must surface its dereferenced target"
         );
     }
+    use crate::tests::SuiteBatch;
     use grovedb_merk::{
         proofs::{encoding::Decoder, tree::execute, Node, Op, Query},
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType,
     };
-    use grovedb_storage::StorageBatch;
     use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
     use crate::{
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(item3, Element::new_sum_item(5));
 
         // Test aggregate data (count and sum)
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -417,7 +417,7 @@ mod tests {
         .expect("should insert sum_item");
 
         // Open merk and check feature types
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -554,7 +554,7 @@ mod tests {
             .expect("should apply batch");
 
         // Open the ProvableCountSumTree and verify aggregate data
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -627,7 +627,7 @@ mod tests {
         .expect("should insert item2 into child");
 
         // Verify aggregate data of child
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let child_merk = db
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(child_aggregate, AggregateData::ProvableCountAndSum(2, 15));
 
         // Verify aggregate data of parent (should include child tree's contribution)
-        let parent_batch = StorageBatch::new();
+        let parent_batch = SuiteBatch::default();
         let parent_merk = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"parent_provable"].as_ref().into(),
@@ -791,7 +791,7 @@ mod tests {
             .expect("should insert item2");
         }
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Check regular CountSumTree aggregate
@@ -811,7 +811,7 @@ mod tests {
         assert_eq!(regular_aggregate, AggregateData::CountAndSum(2, 30));
 
         // Check ProvableCountSumTree aggregate
-        let provable_batch = StorageBatch::new();
+        let provable_batch = SuiteBatch::default();
         let provable_merk = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"provable_count_sum"].as_ref().into(),
@@ -876,7 +876,7 @@ mod tests {
         ));
 
         // Verify aggregate data for empty tree
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -984,7 +984,7 @@ mod tests {
         .expect("should insert negative sum item");
 
         // Verify aggregate data
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -1033,7 +1033,7 @@ mod tests {
         .expect("should insert single item");
 
         // Verify aggregate data
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -1145,7 +1145,7 @@ mod tests {
         .expect("should insert item2");
 
         // Verify aggregate at deepest level
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let level3_merk = db
@@ -1249,7 +1249,7 @@ mod tests {
         .expect("should insert item b");
 
         // Verify aggregate in provable tree
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -1346,7 +1346,7 @@ mod tests {
         .expect("should insert into sibling3");
 
         // Verify each sibling has correct aggregate data
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         for (sibling, expected_sum) in [(b"sibling1", 10), (b"sibling2", 20), (b"sibling3", 30)] {
@@ -1435,7 +1435,7 @@ mod tests {
         .unwrap()
         .expect("should insert child_item2");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Check child aggregate: count=2, sum=300
@@ -1455,7 +1455,7 @@ mod tests {
         assert_eq!(child_aggregate, AggregateData::ProvableCountAndSum(2, 300));
 
         // Check parent aggregate: count=2 (item + child_tree), sum=50+300=350
-        let parent_batch = StorageBatch::new();
+        let parent_batch = SuiteBatch::default();
         let parent_merk = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"parent"].as_ref().into(),
@@ -1514,7 +1514,7 @@ mod tests {
         .expect("should insert item2");
 
         // Verify initial state
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -1544,7 +1544,7 @@ mod tests {
         .expect("should delete item1");
 
         // Verify after delete
-        let batch2 = StorageBatch::new();
+        let batch2 = SuiteBatch::default();
         let transaction2 = db.start_transaction();
 
         let merk2 = db
@@ -1575,7 +1575,7 @@ mod tests {
         .expect("should reinsert item1");
 
         // Verify after reinsert
-        let batch3 = StorageBatch::new();
+        let batch3 = SuiteBatch::default();
         let transaction3 = db.start_transaction();
 
         let merk3 = db
@@ -1642,7 +1642,7 @@ mod tests {
             expected_sum += sum_value;
 
             // Verify aggregate data after each insert
-            let batch = StorageBatch::new();
+            let batch = SuiteBatch::default();
             let transaction = db.start_transaction();
 
             let merk = db
@@ -1806,7 +1806,7 @@ mod tests {
         }
 
         // Verify final aggregate
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db
@@ -2485,7 +2485,7 @@ mod tests {
             expected_count += 1;
             expected_sum += sum_value;
 
-            let batch = StorageBatch::new();
+            let batch = SuiteBatch::default();
             let transaction = db.start_transaction();
 
             let merk = db
@@ -2635,7 +2635,7 @@ mod tests {
             expected_sum += sum_value;
         }
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let merk = db

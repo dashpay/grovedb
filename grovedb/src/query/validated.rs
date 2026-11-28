@@ -14,7 +14,7 @@
 use grovedb_merk::proofs::query::IndexAxis;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use super::AggregateKind;
 use super::PathQueryShape;
 use crate::{
@@ -31,7 +31,7 @@ pub(crate) struct ValidatedPathQuery<'q> {
     grove_version: &'q GroveVersion,
     /// Whether any query node carries a branch-local offset. Every layer of
     /// a proof walk shares the query, so this is scanned once, not per layer.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     has_local_offsets: bool,
 }
 
@@ -89,12 +89,12 @@ impl<'q> ValidatedPathQuery<'q> {
             query,
             shape,
             grove_version,
-            #[cfg(feature = "minimal")]
+            #[cfg(feature = "engine_generic")]
             has_local_offsets: query.query.query.has_instance_offset_anywhere(),
         })
     }
 
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn for_read(
         query: &'q PathQuery,
         grove_version: &'q GroveVersion,
@@ -131,7 +131,7 @@ impl<'q> ValidatedPathQuery<'q> {
         Ok(validated)
     }
 
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn for_proof(
         query: &'q PathQuery,
         grove_version: &'q GroveVersion,
@@ -284,14 +284,14 @@ impl<'q> ValidatedPathQuery<'q> {
     }
 
     /// Whether any query node carries a branch-local offset.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn has_local_offsets(&self) -> bool {
         self.has_local_offsets
     }
 
     /// The aggregate terminal's depth is fixed by the leaf/carrier grammar.
     /// The prover still opens and checks the actual tree at this depth.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn aggregate_at_depth(
         &self,
         depth: usize,
@@ -319,7 +319,7 @@ impl<'q> ValidatedPathQuery<'q> {
         }
     }
 
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn proof_version(&self) -> u16 {
         self.grove_version
             .grovedb_versions
@@ -329,7 +329,7 @@ impl<'q> ValidatedPathQuery<'q> {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn unknown_prove_version(received: u16) -> Error {
     Error::VersionError(GroveVersionError::UnknownVersionMismatch {
         method: "prove_query_non_serialized".to_string(),

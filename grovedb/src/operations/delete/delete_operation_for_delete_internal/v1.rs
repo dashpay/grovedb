@@ -21,29 +21,30 @@ use super::super::{DeleteOptions, PendingOperations};
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp, SubelementsDeletionBehavior},
     util::{compat, TxRef},
-    Error, GroveDb, TransactionArg,
+    Engine, Error, GroveDb, TransactionArg,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Build the delete operation for one element — version 1 (see the
     /// module documentation).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn delete_operation_for_delete_internal_v1<
+        'db,
         'a,
         B: AsRef<[u8]>,
         P: PendingOperations<'a>,
     >(
-        &self,
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &P,
         deleted_child_key: Option<&[u8]>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         let mut cost = OperationCost::default();
 

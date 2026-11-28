@@ -13,26 +13,25 @@ use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResul
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     proofs::query::count_offset::{local_count_offset_page_from_view, read_value_from_view},
+    store::NodeStore,
     tree_type::TreeType,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    Storage, StorageContext,
-};
+use grovedb_storage::{prefix::build_prefix, RawIterator};
 use grovedb_version::version::GroveVersion;
 
 use super::{
     path_query_push_args::PathQueryPushArgs, query_budget::QueryBudget, query_options::QueryOptions,
 };
 use crate::{
+    engine::SubtreeCursor,
     query_result_type::{QueryResultElements, QueryResultType},
     util::{validate_path_segment_lengths, TxRef},
-    Element, Error, SizedQuery, Transaction, TransactionArg,
+    Element, Engine, Error, SizedQuery, Transaction, TransactionArg,
 };
 
 /// One raw iterator through a transaction: a pinned storage view.
-type PinnedView<'db> = <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db>>::RawIterator;
+type PinnedView<'db, E> = SubtreeCursor<'db, E>;
 
 const NON_MERK_ON_OFFSET_PATH: &str =
     "local offsets require Merk tree intermediates along their selected path";
@@ -41,11 +40,11 @@ const NON_MERK_ON_OFFSET_PATH: &str =
 /// not a Merk tree, as the prover's `validate_local_offset_host` refuses one
 /// on a local offset's path. Returns whether a component is missing; the walk
 /// stops there, since a missing page reads as empty.
-pub(super) fn refuse_non_merk_on_offset_path(
-    storage: &RocksDbStorage,
+pub(super) fn refuse_non_merk_on_offset_path<'db, E: Engine>(
+    storage: &'db E,
     path: &[&[u8]],
     from: usize,
-    tx: &Transaction,
+    tx: &Transaction<'db, E>,
     v: &GroveVersion,
 ) -> CostResult<bool, Error> {
     let mut cost = Default::default();
@@ -53,22 +52,22 @@ pub(super) fn refuse_non_merk_on_offset_path(
         return Ok(false).wrap_with_cost(cost);
     }
     let context = storage
-        .get_transactional_storage_context(path[..from].into(), None, tx)
+        .subtree(path[..from].into(), None, tx)
         .unwrap_add_cost(&mut cost);
-    walk_offset_path(context.raw_iter(), path, from, v).add_cost(cost)
+    walk_offset_path::<E>(NodeStore::cursor(&context), path, from, v).add_cost(cost)
 }
 
 /// [`refuse_non_merk_on_offset_path`] through a view the caller already holds.
-fn walk_offset_path(
-    mut view: PinnedView<'_>,
+fn walk_offset_path<E: Engine>(
+    mut view: PinnedView<'_, E>,
     path: &[&[u8]],
     from: usize,
     v: &GroveVersion,
 ) -> CostResult<bool, Error> {
     let mut cost = Default::default();
     for depth in from..path.len() {
-        let prefix = RocksDbStorage::build_prefix(path[..depth].into()).unwrap_add_cost(&mut cost);
-        view = view.retarget(prefix);
+        let prefix = build_prefix(path[..depth].into()).unwrap_add_cost(&mut cost);
+        view = E::retarget_cursor(view, prefix);
         let value = cost_return_on_error!(
             &mut cost,
             read_value_from_view(&mut view, path[depth]).map_err(Error::MerkError)
@@ -87,29 +86,20 @@ fn walk_offset_path(
     Ok(false).wrap_with_cost(cost)
 }
 
-/// A seam for landing a commit between reading the host element and loading
-/// its root.
-#[cfg(test)]
-mod test_hooks {
-    use std::cell::RefCell;
-
-    thread_local! {
-        pub(super) static AFTER_HOST_ELEMENT: RefCell<Option<Box<dyn FnOnce()>>> =
-            const { RefCell::new(None) };
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-pub(super) fn read_local_count_page(
-    storage: &RocksDbStorage,
+pub(super) fn read_local_count_page<'db, E: Engine>(
+    storage: &'db E,
     path: &[&[u8]],
     query: &SizedQuery,
     offset: u16,
     budget: &mut QueryBudget,
     options: QueryOptions,
     result_type: QueryResultType,
-    transaction: TransactionArg,
-    add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+    transaction: TransactionArg<'db, '_, E>,
+    add_element_function: fn(
+        PathQueryPushArgs<'_, '_, '_, E>,
+        &GroveVersion,
+    ) -> CostResult<(), Error>,
     v: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16, u16), Error> {
     let mut cost = Default::default();
@@ -130,9 +120,9 @@ pub(super) fn read_local_count_page(
         .wrap_with_cost(cost);
     };
     let parent_context = storage
-        .get_transactional_storage_context(parent_path.into(), None, tx.as_ref())
+        .subtree(parent_path.into(), None, tx.as_ref())
         .unwrap_add_cost(&mut cost);
-    let mut view = parent_context.raw_iter();
+    let mut view = NodeStore::cursor(&parent_context);
     let host = cost_return_on_error!(
         &mut cost,
         read_value_from_view(&mut view, host_key).map_err(Error::MerkError)
@@ -142,7 +132,7 @@ pub(super) fn read_local_count_page(
         // either strict-path option. Intermediate descents enforce that option.
         // Absence below a non-tree ancestor is refused, as the prover refuses
         // it; a genuinely missing component is an empty page.
-        cost_return_on_error!(&mut cost, walk_offset_path(view, path, 0, v));
+        cost_return_on_error!(&mut cost, walk_offset_path::<E>(view, path, 0, v));
         if options.decrease_limit_on_range_with_no_sub_elements {
             budget.charge_empty_subtree(
                 options.decrease_instance_limits_on_range_with_no_sub_elements,
@@ -183,11 +173,15 @@ pub(super) fn read_local_count_page(
     if let Some(hook) = test_hooks::AFTER_HOST_ELEMENT.with(|hook| hook.borrow_mut().take()) {
         hook();
     }
-    let host_prefix = RocksDbStorage::build_prefix(subtree_path).unwrap_add_cost(&mut cost);
+    let host_prefix = build_prefix(subtree_path).unwrap_add_cost(&mut cost);
+    let view = E::retarget_cursor(view, host_prefix);
+    // A cursor that could not be pointed at the host shows no record, as
+    // the cursor of an empty host does.
+    cost_return_on_error_no_add!(cost, view.status().map_err(Error::StorageError));
     let rows = cost_return_on_error!(
         &mut cost,
         local_count_offset_page_from_view(
-            view.retarget(host_prefix),
+            view,
             root_key,
             tree_type,
             &query.query.items[0],
@@ -245,7 +239,19 @@ pub(super) fn read_local_count_page(
     .wrap_with_cost(cost)
 }
 
+/// A seam for landing a commit between reading the host element and loading
+/// its root.
 #[cfg(test)]
+mod test_hooks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub(super) static AFTER_HOST_ELEMENT: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
+    }
+}
+
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use super::*;
     use crate::{element::query::ElementQueryExtensions, Query};
@@ -379,7 +385,10 @@ mod tests {
     }
 
     /// The keys of `[b"host"]`'s ascending page at offset 1, limit 1.
-    fn second_row(db: &crate::tests::TempGroveDb, transaction: TransactionArg) -> Vec<Vec<u8>> {
+    fn second_row<'db>(
+        db: &'db crate::tests::TempGroveDb,
+        transaction: TransactionArg<'db, '_>,
+    ) -> Vec<Vec<u8>> {
         let mut query = Query::new_range_full();
         query.offset = Some(1);
         query.limit = Some(1);

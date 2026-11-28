@@ -8,7 +8,7 @@
 //!   owner is refunded for every byte and every byte of the new element is
 //!   added.
 
-#![cfg(feature = "minimal")]
+#![cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 #![allow(clippy::result_large_err)]
 
 use std::collections::BTreeMap;

@@ -1,18 +1,28 @@
 use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     proofs::query::QueryItem,
     tree::{kv::ValueDefinedCostType, Link, RefWalker, TreeNode},
-    CryptoHash, Error,
-    Error::StorageError,
-    Merk, TreeFeatureType,
+    CryptoHash, Error, Merk, TreeFeatureType,
 };
+
+/// Where a walk over the nodes a Merk was charged for and did not keep
+/// ended ([`Merk::walk_paid_nodes`]).
+enum PaidWalk {
+    /// At the node of the key, which the link points to.
+    Node(Link),
+    /// At a node with no child on the side of the key: the key has no node.
+    NoChild,
+    /// At a child that a Merk which keeps what it fetches has not in
+    /// memory.
+    NotInMemory,
+}
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Observe an existing value while preparing a mutation. The traversal
     /// retains every fetched node in this Merk, so applying the mutation on
@@ -119,7 +129,7 @@ where
             };
             loop {
                 if node.key() == key {
-                    return node.old_value.is_some();
+                    return node.has_old_value();
                 }
                 match node.link(key < node.key()).and_then(Link::tree) {
                     Some(child) => node = child,
@@ -131,7 +141,7 @@ where
 
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
-        self.storage.get_aux(key).map_err(StorageError)
+        self.storage.get_aux_record(key)
     }
 
     /// Returns if the value at the given key exists
@@ -359,7 +369,8 @@ where
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version)
+        self.storage
+            .get_node(key, value_defined_cost_fn, grove_version)
             .map_ok(|x| x.is_some())
     }
 
@@ -391,6 +402,16 @@ where
 
                 let maybe_child = link.tree();
                 match maybe_child {
+                    None if self.paid_nodes.contains(link.key()) => {
+                        break match self.walk_paid_nodes(link, key, grove_version) {
+                            Ok(PaidWalk::Node(_)) => Ok(true).wrap_with_cost(Default::default()),
+                            Ok(PaidWalk::NoChild) => Ok(false).wrap_with_cost(Default::default()),
+                            Ok(PaidWalk::NotInMemory) => {
+                                self.has_node_direct(key, value_defined_cost_fn, grove_version)
+                            }
+                            Err(e) => Err(e).wrap_with_cost(Default::default()),
+                        };
+                    }
                     None => {
                         // fetch from RocksDB
                         break self.has_node_direct(key, value_defined_cost_fn, grove_version);
@@ -414,12 +435,12 @@ where
     where
         F: FnOnce(&TreeNode) -> CostContext<T>,
     {
-        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version).flat_map_ok(
-            |maybe_node| {
+        self.storage
+            .get_node(key, value_defined_cost_fn, grove_version)
+            .flat_map_ok(|maybe_node| {
                 let mut cost = OperationCost::default();
                 Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
-            },
-        )
+            })
     }
 
     /// Generic way to get a node's field
@@ -454,6 +475,24 @@ where
 
                 let maybe_child = link.tree();
                 match maybe_child {
+                    None if self.paid_nodes.contains(link.key()) => {
+                        break match self.walk_paid_nodes(link, key, grove_version) {
+                            Ok(PaidWalk::Node(link)) => {
+                                match self.fetch_paid_node(&link, grove_version) {
+                                    Ok(node) => f(&node).map(|x| Ok(Some(x))),
+                                    Err(e) => Err(e).wrap_with_cost(Default::default()),
+                                }
+                            }
+                            Ok(PaidWalk::NoChild) => Ok(None).wrap_with_cost(Default::default()),
+                            Ok(PaidWalk::NotInMemory) => self.get_node_direct_fn(
+                                key,
+                                f,
+                                value_defined_cost_fn,
+                                grove_version,
+                            ),
+                            Err(e) => Err(e).wrap_with_cost(Default::default()),
+                        };
+                    }
                     None => {
                         // fetch from RocksDB
                         break self.get_node_direct_fn(
@@ -467,6 +506,38 @@ where
                 }
             }
         })
+    }
+
+    /// Goes on from `link` towards `key` with a walk that
+    /// [`Self::get_node_fn`] and [`Self::has_node`] make over the nodes in
+    /// memory, where `link` points to a node that a walk was charged for
+    /// and did not keep in the tree ([`PaidNodes`](super::source::PaidNodes)).
+    ///
+    /// A Merk that keeps such nodes walks them in memory: the walk is free
+    /// while it stays on them, and ends at the node of the key, at a side
+    /// with no child, or at a child that is not in memory, which its
+    /// caller then reads by key and is charged for. This does the same,
+    /// and reads from the store, at no charge, the nodes that Merk has in
+    /// memory.
+    fn walk_paid_nodes(
+        &self,
+        link: &Link,
+        key: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<PaidWalk, Error> {
+        let mut link = link.clone();
+        loop {
+            if key == link.key() {
+                return Ok(PaidWalk::Node(link));
+            }
+            let fetched = self.storage.fetch_node_without_value(&link, grove_version);
+            let node = fetched.value?;
+            link = match node.link(key < node.key()) {
+                None => return Ok(PaidWalk::NoChild),
+                Some(child) if self.paid_nodes.contains(child.key()) => child.clone(),
+                Some(_) => return Ok(PaidWalk::NotInMemory),
+            };
+        }
     }
 
     /// Execute an `AggregateCountOnRange` query without producing a proof,
@@ -687,7 +758,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod test {
     use grovedb_version::version::GroveVersion;
 

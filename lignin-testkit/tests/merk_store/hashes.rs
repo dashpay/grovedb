@@ -1,0 +1,350 @@
+//! The hashes of the committed pages against Merk's hash rules
+//! (`grovedb_merk::store::lignin::hash`, MERK-02).
+//!
+//! The replay writes every node with the hashes Merk made on RocksDB, and
+//! compares each committed node with RocksDB's record. Here the rules make
+//! the same hashes again, from the committed pages alone, **after a
+//! reload**: write-back has put every page version of the commit into a
+//! segment, and the pages are read from there by a buffer pool of this
+//! check's own, which has never held one of them. So every hash below went
+//! to a file as a part of a page image or as a hash record of its own, and
+//! came back through the materialisation of its page.
+//!
+//! 0. Every cell that is read from the segments stores the hashes that the
+//!    same cell has in the pool of the store, which are the ones the replay
+//!    compared with RocksDB's.
+//! 1. Every cell of every Merk is checked with [`hash::check`]: each hash
+//!    the cell stores is what the rules make of what it is made from, as
+//!    that is stored. A value hash that only its writer can make is taken
+//!    as it is stored: a reference's, that of a tree whose data is no
+//!    Merk, and that of a tree which an old GroveVersion inserted as a
+//!    plain value and which has no root yet.
+//! 2. Then the engine makes them: in a copy of the pages, every hash the
+//!    rules can make is overwritten and marked stale, and one evaluation
+//!    makes them all ([`Hashes::evaluate_all`]). Every cell then holds,
+//!    byte for byte, the hashes it held, which are RocksDB's.
+//! 3. The hash the rules make of the root of the grove's first Merk, which
+//!    no cell stores, is the root hash GroveDB gives on RocksDB. The root
+//!    of every other Merk is hosted by a cell whose value hash was made
+//!    from it in step 2.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use grovedb_merk::store::lignin::hash::{HashRefusal, MerkHashRules};
+use grovedb_version::version::GroveVersion;
+use lignin_format::{
+    tree_page::{Hash, HashField, Side},
+    value_log::ValuePlace,
+    CellAddress, CommitVersion, PageId,
+};
+use lignin_store::{
+    cache::{BufferPool, PoolConfig},
+    load::{LoadBuffers, PageLoader},
+};
+use lignin_tree::{
+    fragment::{FragmentError, PageMut, Pages},
+    hash::{self, Hashes, Stale, ValueReader},
+    node::{ChangeSink, Lease, NodeError, NodePage, NodePageMut},
+    value::{InlinePolicy, TreeValues, ValueSource},
+};
+use lignindb::{
+    snapshot::Versions,
+    txn::{
+        testing::{Db, SIZE},
+        Subtree,
+    },
+};
+
+/// What one check made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Made {
+    /// The cells whose hashes were checked and made again.
+    pub cells: u64,
+    /// The hashes the evaluation made and wrote.
+    pub hashes: u64,
+    /// The value hashes that only their writer can make, which were left
+    /// as they are.
+    pub stated: u64,
+    /// Those among them of a tree with no root that has the hash of its
+    /// insert as a plain value.
+    pub inserted_plain: u64,
+    /// The cells that host a secondary Merk with a root, and those among
+    /// them whose element has a list of axes: where the order of the
+    /// hosted roots is in the value hash.
+    pub with_secondary: u64,
+    pub with_axes: u64,
+    /// The pages that were loaded from the segments for the check.
+    pub reloaded: u64,
+}
+
+/// The frames of the pool the pages are loaded into again: a few, since
+/// the check holds one page at a time.
+const RELOAD_FRAMES: usize = 32;
+
+/// The committed tree pages at one version, with the pages that were
+/// changed since kept in memory.
+struct Frames<'a> {
+    loader: PageLoader<'a>,
+    at: CommitVersion,
+    buffers: LoadBuffers,
+    lease: Lease,
+    changed: HashMap<PageId, Vec<u8>>,
+}
+
+fn unread(page: PageId, error: impl std::fmt::Display) -> FragmentError {
+    FragmentError::Pages(format!("{page}: {error}").into())
+}
+
+impl Pages for Frames<'_> {
+    fn read<R>(
+        &mut self,
+        page: PageId,
+        read: impl FnOnce(NodePage<'_>) -> R,
+    ) -> Result<R, FragmentError> {
+        if let Some(frame) = self.changed.get(&page) {
+            return Ok(read(NodePage::open(frame, self.lease)?));
+        }
+        let frame = (self.loader.get(page, self.at, &mut self.buffers))
+            .map_err(|error| unread(page, error))?;
+        Ok(read(NodePage::open(&frame, self.lease)?))
+    }
+
+    fn write<R>(
+        &mut self,
+        page: PageId,
+        change: impl FnOnce(&mut PageMut<'_, '_>) -> Result<R, NodeError>,
+    ) -> Result<R, FragmentError> {
+        if !self.changed.contains_key(&page) {
+            let frame = (self.loader.get(page, self.at, &mut self.buffers))
+                .map_err(|error| unread(page, error))?;
+            self.changed.insert(page, frame.to_vec());
+        }
+        let frame = self.changed.get_mut(&page).expect("the copy was made");
+        let sink: &mut dyn ChangeSink = &mut ();
+        let mut page = NodePageMut::open(frame, SIZE, self.lease, sink)?;
+        Ok(change(&mut page)?)
+    }
+
+    fn create(&mut self) -> Result<PageId, FragmentError> {
+        Err(FragmentError::Pages("an evaluation makes no page".into()))
+    }
+
+    fn free(&mut self, page: PageId) -> Result<(), FragmentError> {
+        Err(unread(page, "an evaluation frees no page"))
+    }
+}
+
+/// One cell as it is committed: the hashes it stores, and what its value
+/// hash is made from.
+struct Cell {
+    at: CellAddress,
+    hashes: [Option<Hash>; 4],
+    /// The value, where it is in the cell, and its place where it is not.
+    value: Result<Vec<u8>, ValuePlace>,
+    /// How many Merks the cell hosts, and how many of them have a root.
+    hosted: usize,
+    rooted: usize,
+}
+
+fn stored(pages: &mut Frames<'_>, at: CellAddress) -> [Option<Hash>; 4] {
+    let read = pages.read(at.page(), |page| {
+        let node = page.node(at.slot()).expect("a cell");
+        HashField::ALL.map(|field| node.hash(field).copied())
+    });
+    read.expect("the page is read")
+}
+
+/// Checks the hashes of every Merk that `roots` names against Merk's hash
+/// rules: as they are stored, and made again by an evaluation. `top` is the
+/// first Merk of the grove, and `root_hash` the grove's root hash on
+/// RocksDB.
+///
+/// The pages are read from the segments, so write-back has written every
+/// page version of `at` before this is called.
+pub fn check(
+    db: &Db,
+    versions: &Versions,
+    at: CommitVersion,
+    roots: &BTreeMap<Subtree, CellAddress>,
+    top: Subtree,
+    root_hash: Hash,
+    grove_version: &GroveVersion,
+) -> Made {
+    let _guard = versions.guard();
+    let pool = BufferPool::new(PoolConfig {
+        page_size: SIZE,
+        capacity: RELOAD_FRAMES * (SIZE.get() + 512),
+    });
+    let pool = pool.expect("a pool");
+    let reloader = PageLoader::new(&pool, &db.table, &db.segments, SIZE).expect("a loader");
+    let mut pages = Frames {
+        loader: reloader,
+        at,
+        buffers: LoadBuffers::new(),
+        lease: Lease::take(),
+        changed: HashMap::new(),
+    };
+    // The same pages as the pool of the store has them.
+    let mut pooled = Frames {
+        loader: db.loader(),
+        at,
+        buffers: LoadBuffers::new(),
+        lease: Lease::take(),
+        changed: HashMap::new(),
+    };
+    let source = ValueSource::new(&db.values, reloader, at);
+    let no_values = TreeValues::new(InlinePolicy::DEFAULT);
+    let mut values = no_values.reader(&source);
+
+    // Every cell that a root of a Merk reaches.
+    let mut made = Made::default();
+    let mut cells = Vec::new();
+    let mut hosted_roots = HashSet::new();
+    let mut ahead: Vec<CellAddress> = roots.values().copied().collect();
+    while let Some(at) = ahead.pop() {
+        let read = pages.read(at.page(), |page| {
+            let node = page.node(at.slot()).expect("a cell");
+            let below = Side::BOTH.map(|side| node.link(side).map(|link| link.child));
+            let hosted: Vec<Option<CellAddress>> = node.hosted_roots().collect();
+            let value = match node.value().inline() {
+                Some(value) => Ok(value.to_vec()),
+                None => Err(node
+                    .value()
+                    .place()
+                    .expect("a value out of line has a place")),
+            };
+            let hashes = HashField::ALL.map(|field| node.hash(field).copied());
+            let cell = Cell {
+                at,
+                hashes,
+                value,
+                hosted: hosted.len(),
+                rooted: hosted.iter().flatten().count(),
+            };
+            (cell, below, hosted)
+        });
+        let (cell, below, hosted) = read.expect("the page is read");
+        ahead.extend(below.into_iter().flatten());
+        if hosted.iter().skip(1).any(Option::is_some) {
+            made.with_secondary += 1;
+            made.with_axes += u64::from(hosted.len() > 2);
+        }
+        hosted_roots.extend(hosted.into_iter().flatten());
+        cells.push(cell);
+    }
+
+    // 0. As the pool of the store has them.
+    let mut reloaded_pages = HashSet::new();
+    for cell in &cells {
+        reloaded_pages.insert(cell.at.page());
+        assert_eq!(
+            cell.hashes,
+            stored(&mut pooled, cell.at),
+            "the hashes of {} after a reload",
+            cell.at
+        );
+    }
+
+    // 1. As they are stored.
+    let mut check_rules = MerkHashRules::for_check(grove_version);
+    for cell in &cells {
+        let differing = hash::check(&mut pages, &mut values, &mut check_rules, cell.at);
+        let differing = differing.unwrap_or_else(|error| panic!("{}: {error}", cell.at));
+        assert_eq!(differing, Stale::NONE, "the hashes of {}", cell.at);
+    }
+
+    // 2. Made by the engine. Every hash the rules can make is marked, and
+    //    its bytes are turned over so that none is right by having been
+    //    left.
+    let mut hashes = Hashes::new();
+    let mut classify = MerkHashRules::new(grove_version);
+    let mut buffer = Vec::new();
+    for cell in &cells {
+        let value = match &cell.value {
+            Ok(value) => value,
+            Err(place) => {
+                buffer.clear();
+                (values.read(*place, cell.at.page(), &mut buffer)).expect("the value is read");
+                &buffer
+            }
+        };
+        let mut marked: Stale = (HashField::ALL.into_iter().zip(&cell.hashes))
+            .filter(|(_, hash)| hash.is_some())
+            .map(|(field, _)| field)
+            .collect();
+        let at_insert = classify.value_hash_at_insert(value);
+        let at_insert = cell.rooted == 0 && at_insert.is_some() && at_insert == cell.hashes[0];
+        match classify.element_value_hash(value, &vec![None; cell.hosted]) {
+            Ok(_) if !at_insert => {}
+            Ok(_) | Err(HashRefusal::StatedByWriter(_)) => {
+                marked = marked.without(HashField::Value);
+                made.stated += 1;
+                made.inserted_plain += u64::from(at_insert);
+            }
+            Err(refused) => panic!("the value of {}: {refused}", cell.at),
+        }
+        let turned = pages.write(cell.at.page(), |page| {
+            let mut node = page.node_mut(cell.at.slot()).expect("a cell");
+            for field in marked.fields() {
+                let stored = node.node().hash(field).expect("a stored hash");
+                node.set_hash(field, &stored.map(|byte| !byte))?;
+            }
+            Ok(())
+        });
+        turned.expect("the hashes are overwritten");
+        for field in marked.fields() {
+            hashes.mark(cell.at, field);
+        }
+        made.hashes += marked.len() as u64;
+    }
+    made.cells = cells.len() as u64;
+
+    let mut rules = MerkHashRules::new(grove_version);
+    hashes
+        .evaluate_all(&mut pages, &mut values, &mut rules)
+        .expect("every marked hash is made");
+    assert!(hashes.is_empty());
+    let counters = hashes.counters();
+    assert_eq!(counters.written, made.hashes, "every made hash was written");
+    assert_eq!((counters.unchanged, counters.nodes), (0, made.cells));
+    assert_eq!(counters.kv_hashes, made.cells);
+    assert_eq!(counters.value_hashes, made.cells - made.stated);
+    for cell in &cells {
+        assert_eq!(
+            stored(&mut pages, cell.at),
+            cell.hashes,
+            "the hashes of {} as the rules made them",
+            cell.at
+        );
+    }
+
+    // 3. The root hashes.
+    let top_hash = match roots.get(&top) {
+        None => [0; 32],
+        Some(root) => hashes
+            .hash_of(&mut pages, &mut values, &mut rules, *root)
+            .expect("the root hash is made"),
+    };
+    assert_eq!(top_hash, root_hash, "the root hash of the grove");
+    for (subtree, root) in roots {
+        assert!(
+            *subtree == top || hosted_roots.contains(root),
+            "the root of {subtree} is hosted by no cell"
+        );
+    }
+    let roots: HashSet<&CellAddress> = roots.values().collect();
+    assert!(
+        hosted_roots.iter().all(|hosted| roots.contains(hosted)),
+        "a cell hosts a root that is the root of no Merk"
+    );
+
+    // Every page of a cell was loaded from the segments, at least once.
+    made.reloaded = pool.stats().misses;
+    assert!(
+        made.reloaded >= reloaded_pages.len() as u64,
+        "{} pages and {} loads",
+        reloaded_pages.len(),
+        made.reloaded
+    );
+    made
+}

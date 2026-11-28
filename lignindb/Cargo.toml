@@ -1,0 +1,56 @@
+[package]
+name = "lignindb"
+description = "LigninDB storage engine: transactions, snapshots, savepoints, checkpoints and verify"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-store = { version = "7.0.0", path = "../lignin-store" }
+lignin-tree = { version = "7.0.0", path = "../lignin-tree" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
+tempfile = { workspace = true, optional = true }
+
+[features]
+# A test fixture, and no API: the store on disk of this crate's own tests
+# (`txn::testing`), for tests of other crates that read the parts of a store
+# the engine (`Db`) gives nobody: its pages through the loader, the roots of
+# its directory, its segments. The replay of the corpus in `lignin-testkit`
+# is the one user. It is switched on from `[dev-dependencies]` only, and no
+# other feature turns it on.
+testing = ["dep:tempfile"]
+# A check, and no API: the answers that decide what a transaction reads of
+# a subtree which it moved, or which is below one it moved, are held to
+# the functions that made them before they were made to cost less than the
+# transaction is large (`txn::opened::held`, `txn::write_set::held`), and
+# so are the subtrees that a transaction wrote below a Merk which one of
+# its batches drops or clears (`txn::below`, `Frames::below`, and by key
+# `ByKey::cut`), and what
+# the write set says of a subtree as a whole and of the operations of an
+# open scope (`WriteSet::subtree`, `WriteSet::ops_of`). The
+# two are compared at every call that both answer, at the cost of the old
+# one, and a difference panics, as does an answer that could only be made
+# the old way. A read that fails in either ends the call with its error
+# before they are compared. In the same way, what a transaction's table
+# of places answers of a key is held, at every answer, to the search from
+# the root of the Merk that it stands for (`txn::pages::held`). It is on
+# in this crate's own tests. A run of another crate's tests switches it
+# on to hold the answers over that crate's calls (`--features
+# lignindb/held_reads`), and nothing else does: no feature of any crate
+# turns it on. It turns on the check of the same name in `lignin-tree`,
+# which this crate's own tests have on as well.
+held_reads = ["lignin-tree/held_reads"]
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
+[dev-dependencies]
+lignin-tree = { version = "7.0.0", path = "../lignin-tree", features = ["held_reads"] }
+tempfile = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

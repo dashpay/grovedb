@@ -1,0 +1,72 @@
+lignin-golden-trace 1
+name legacy-filled-tree-entry-of-indexed-tree
+seed 0x0
+grove-version 1
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-filled-tree-entry-of-indexed-tree
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+cc439r6415
+  step 1
+  # Batch([InsertOnly { path: [[116, 111, 112]], key: [102, 105, 108, 108, 101, 100], element: provable_sum_indexed_tree: primary=None, secondary=None, sum: 0 }])
+  cost seeks=6 loaded=150 added=129 replaced=77 removed=- hashes=13 sinsemilla=0
+  root d6da3e50618b1259b4b271f9293433e2d51ec7d54085bf1e7b21d84c16290380
+cb7ddr6415
+  step 2
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root d6da3e50618b1259b4b271f9293433e2d51ec7d54085bf1e7b21d84c16290380
+cb9c2e72a5r6415
+  step 3
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [97, 108, 111, 110, 101], element: tree: None }])
+  # failed: invalid input: ProvableSumIndexedTree only accepts sum-bearing children (SumItem, ItemWithSumItem, ReferenceWithSumItem, or any sum-bearing tree variant)
+  cost seeks=1 loaded=90 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidInput
+  root d6da3e50618b1259b4b271f9293433e2d51ec7d54085bf1e7b21d84c16290380
+cb7ddr6415
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root d6da3e50618b1259b4b271f9293433e2d51ec7d54085bf1e7b21d84c16290380
+c95dbvbb7c
+  step 5
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+c7033re075
+  step 6
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [116, 114, 101, 101], element: tree: None }, InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], key: [101, 110, 116, 114, 121], element: item: [hex: 656e747279, str: entry] }])
+  cost seeks=15 loaded=468 added=486 replaced=167 removed=- hashes=32 sinsemilla=0
+  root b0840bc4c7bb41f1b7648b01ab5a6b9788cd3cb0b5426a4973610815a3ffc45c
+cb7ddre075
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b0840bc4c7bb41f1b7648b01ab5a6b9788cd3cb0b5426a4973610815a3ffc45c
+cc7aav6e4e
+  step 8
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=3 loaded=509 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564 74726565 020105656e74727900
+  skipped 0
+c1937v1247q65eep24bc
+  step 9
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit… (441 characters)
+  # prove failed: not supported: V0 proofs do not support subqueries into CountIndexedTree / ProvableCountIndexedTree; use a V1 proof (axis-ordered reads go through PathQuery::new_axis_top_k)
+  cost seeks=3 loaded=511 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564/74726565 656e747279 0005656e74727900
+  skipped 0
+  prove-cost seeks=4 loaded=247 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  prove-failed NotSupported
+stream 10 4abd8b5fa637aa6de683d2cb2c7d88d803a805d8ae3fcfcdf0ef59a0382813fa
+tally failed=1 unproved=1 unverified=0
+end 10 c20ff864a949411abd4b0182bd5fbe0760a575c87491f68eacd86c2da37fe944

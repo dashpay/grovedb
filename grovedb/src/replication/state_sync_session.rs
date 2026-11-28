@@ -8,14 +8,15 @@ use std::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::costs::ElementCostExtensions,
+    store::NodeStore,
     tree::{kv::ValueDefinedCostType, value_hash},
     tree_type::TreeType,
     CryptoHash, Merk, Restorer,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, RocksDbStorage},
-    Storage, StorageContext,
+    prefix::{build_prefix, secondary_prefix_for},
+    FlatStore,
 };
 use grovedb_version::version::GroveVersion;
 
@@ -27,10 +28,11 @@ use super::{
 };
 use crate::{
     element::elements_iterator::ElementIteratorExtensions,
+    engine::SubtreeHandle,
     operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag, indexed_element_axes},
     replication,
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
 /// Number of elements packed together
@@ -43,21 +45,21 @@ pub(crate) type SubtreePrefix = [u8; 32];
 /// (CommitmentTree / MmrTree / BulkAppendTree /
 /// DenseAppendOnlyFixedSizeTree / PrivateDocumentStore) — see issues #785
 /// and #783 / #784.
-enum SubtreeRestorer<'db> {
-    Merk(Restorer<PrefixedRocksDbImmediateStorageContext<'db>>),
+enum SubtreeRestorer<'db, E: Engine> {
+    Merk(Restorer<E::ImmediateSubtree<'db>>),
     NonMerk(NonMerkRestorer),
     /// An indexed primary waiting for its header
     /// page: the actual `Restorer` cannot be constructed until the
     /// [`IndexedHeader`] delivers the expected primary root hash. Holds
     /// the opened Merk; `None` only transiently while the header page is
     /// being processed.
-    IndexedPending(Option<Merk<PrefixedRocksDbImmediateStorageContext<'db>>>),
+    IndexedPending(Option<Merk<E::ImmediateSubtree<'db>>>),
 }
 
 /// Struct governing the state synchronization of one subtree.
-struct SubtreeStateSyncInfo<'db> {
+struct SubtreeStateSyncInfo<'db, E: Engine> {
     /// Current chunk restorer (Merk chunks or non-Merk entry replay)
-    restorer: SubtreeRestorer<'db>,
+    restorer: SubtreeRestorer<'db, E>,
 
     /// Set of global chunk ids requested to be fetched and pending for
     /// processing. For the description of global chunk id check
@@ -77,7 +79,7 @@ struct SubtreeStateSyncInfo<'db> {
     num_processed_chunks: usize,
 }
 
-impl SubtreeStateSyncInfo<'_> {
+impl<E: Engine> SubtreeStateSyncInfo<'_, E> {
     /// Applies a chunk using the given `SubtreeStateSyncInfo`.
     ///
     /// # Parameters
@@ -113,8 +115,8 @@ impl SubtreeStateSyncInfo<'_> {
     ///   must be used carefully to maintain correctness.
     fn apply_inner_chunk<'tx, 'db: 'tx>(
         &mut self,
-        db: &'db GroveDb,
-        tx: &'tx Transaction<'db>,
+        db: &'db GroveDb<E>,
+        tx: &'tx Transaction<'db, E>,
         chunk_id: &[u8],
         chunk_data: &[u8],
         grove_version: &GroveVersion,
@@ -227,8 +229,8 @@ impl SubtreeStateSyncInfo<'_> {
     }
 }
 
-impl<'tx> SubtreeStateSyncInfo<'tx> {
-    pub fn new(restorer: Restorer<PrefixedRocksDbImmediateStorageContext<'tx>>) -> Self {
+impl<'tx, E: Engine> SubtreeStateSyncInfo<'tx, E> {
+    pub fn new(restorer: Restorer<E::ImmediateSubtree<'tx>>) -> Self {
         SubtreeStateSyncInfo {
             restorer: SubtreeRestorer::Merk(restorer),
             root_key: None,
@@ -241,14 +243,18 @@ impl<'tx> SubtreeStateSyncInfo<'tx> {
 }
 
 /// Struct governing the state synchronization process.
-pub struct MultiStateSyncSession<'db> {
+pub struct MultiStateSyncSession<
+    'db,
+    #[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))] E: Engine = crate::engine::DefaultEngine,
+    #[cfg(not(any(feature = "rocksdb_storage", feature = "lignin_storage")))] E: Engine,
+> {
     /// GroveDb instance to apply changes to
-    db: &'db GroveDb,
+    db: &'db GroveDb<E>,
 
     /// Map of currently processing subtrees.
     /// Keys are `SubtreePrefix` (path digests), and values are
     /// `SubtreeStateSyncInfo` for each subtree.
-    current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
+    current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db, E>>,
 
     /// Set of processed prefixes, represented as `SubtreePrefix` (path
     /// digests).
@@ -316,7 +322,7 @@ pub struct MultiStateSyncSession<'db> {
 
     /// Transaction used for the synchronization process.
     /// This is placed last to ensure it is dropped last.
-    transaction: Transaction<'db>,
+    transaction: Transaction<'db, E>,
 
     /// Marker to ensure this struct is not moved in memory.
     _pin: PhantomPinned,
@@ -360,7 +366,7 @@ struct IndexedSyncGroup {
     secondary_roots: BTreeMap<u8, CryptoHash>,
 }
 
-impl<'db> MultiStateSyncSession<'db> {
+impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
     /// Initializes a new state sync session speaking the given state sync
     /// protocol version.
     ///
@@ -372,7 +378,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// a session pinned to a version other than the wire's and exercise
     /// the session-consistency check in [`Self::apply_chunk`].
     pub(crate) fn new(
-        db: &'db GroveDb,
+        db: &'db GroveDb<E>,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
         version: u16,
@@ -606,7 +612,7 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   transaction. Ensure that the transaction is properly managed and the
     ///   lifetime guarantees are respected.
     pub(crate) fn add_subtree_sync_info<'b, B: AsRef<[u8]>>(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         path: SubtreePath<'b, B>,
         hash: CryptoHash,
         actual_hash: Option<CryptoHash>,
@@ -620,8 +626,8 @@ impl<'db> MultiStateSyncSession<'db> {
         }
         // Covers the grove root, which no discovery pass produces.
         self.as_mut().discovered_prefixes().insert(chunk_prefix);
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
+        let transaction_ref: &'db Transaction<'db, E> = unsafe {
+            let tx: &Transaction<'db, E> = &self.as_ref().transaction;
             &*(tx as *const _)
         };
 
@@ -704,29 +710,31 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     fn current_prefixes(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
-    ) -> &mut BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>> {
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
+    ) -> &mut BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db, E>> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.current_prefixes
     }
 
     fn processed_prefixes(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
     ) -> &mut BTreeSet<SubtreePrefix> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.processed_prefixes
     }
 
-    fn num_processed_subtrees_in_batch(self: Pin<&mut MultiStateSyncSession<'db>>) -> &mut usize {
+    fn num_processed_subtrees_in_batch(
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
+    ) -> &mut usize {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.num_processed_subtrees_in_batch
     }
 
     fn pending_discovered_subtrees(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
     ) -> &mut Option<SubtreesMetadata> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
@@ -797,8 +805,8 @@ impl<'db> MultiStateSyncSession<'db> {
     /// and they are the load-bearing part:
     ///
     /// - `current_prefixes` must be empty. Every live `SubtreeStateSyncInfo`
-    ///   owns a `PrefixedRocksDbImmediateStorageContext` built from a
-    ///   `&'db Transaction` conjured out of the pinned session
+    ///   owns a `E::ImmediateSubtree<'_>` built from a
+    ///   `&'db Transaction<'_, E>` conjured out of the pinned session
     ///   (`add_subtree_sync_info` and friends). Replacing the transaction
     ///   under a live context would dangle that reference. An empty map is
     ///   the proof that none exists.
@@ -841,7 +849,9 @@ impl<'db> MultiStateSyncSession<'db> {
     /// [`Self::commit`] clears the stamp in the same transaction that
     /// passes the root hash check, so the marker is present for exactly
     /// the window in which the destination holds unverified data.
-    fn intermediate_commit(self: &mut Pin<Box<MultiStateSyncSession<'db>>>) -> Result<(), Error> {
+    fn intermediate_commit(
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
+    ) -> Result<(), Error> {
         // SAFETY: only `transaction` is protected by the pin, and it is
         // replaced here rather than moved out from under a borrower:
         // `intermediate_commit_decision` established that no storage
@@ -885,12 +895,14 @@ impl<'db> MultiStateSyncSession<'db> {
         let storage = self
             .db
             .db
-            .get_immediate_storage_context(SubtreePath::empty(), &self.transaction)
+            .immediate_subtree(SubtreePath::empty(), &self.transaction)
             .unwrap();
         let result = if present {
-            storage.put_aux(INCOMPLETE_RESTORE_AUX_KEY, &self.app_hash, None)
+            storage
+                .aux()
+                .put(INCOMPLETE_RESTORE_AUX_KEY, &self.app_hash, None)
         } else {
-            storage.delete_aux(INCOMPLETE_RESTORE_AUX_KEY, None)
+            storage.aux().delete(INCOMPLETE_RESTORE_AUX_KEY, None)
         };
         result
             .unwrap()
@@ -898,21 +910,21 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     fn commits_deferred_for_open_group_mut(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
     ) -> &mut usize {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.commits_deferred_for_open_group
     }
 
-    fn bytes_since_commit(self: Pin<&mut MultiStateSyncSession<'db>>) -> &mut u64 {
+    fn bytes_since_commit(self: Pin<&mut MultiStateSyncSession<'db, E>>) -> &mut u64 {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.bytes_since_commit
     }
 
     fn indexed_groups(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
     ) -> &mut BTreeMap<SubtreePrefix, IndexedSyncGroup> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
@@ -920,7 +932,7 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     fn secondary_owner(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
     ) -> &mut BTreeMap<SubtreePrefix, (SubtreePrefix, u8)> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
@@ -928,7 +940,7 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     fn discovered_prefixes(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Pin<&mut MultiStateSyncSession<'db, E>>,
     ) -> &mut BTreeSet<SubtreePrefix> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
@@ -945,7 +957,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// actual restorer. Axis secondaries are activated when that header
     /// arrives (see [`Self::register_indexed_header`]).
     fn add_indexed_primary_sync_info(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         path: Vec<Vec<u8>>,
         elem_value_hash: CryptoHash,
         actual_value_hash: CryptoHash,
@@ -953,8 +965,8 @@ impl<'db> MultiStateSyncSession<'db> {
         chunk_prefix: SubtreePrefix,
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
+        let transaction_ref: &'db Transaction<'db, E> = unsafe {
+            let tx: &Transaction<'db, E> = &self.as_ref().transaction;
             &*(tx as *const _)
         };
 
@@ -980,8 +992,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut request_axes = Vec::with_capacity(axes_pairs.len());
         for (axis, secondary_root_key) in axes_pairs {
             let secondary_prefix =
-                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis))
-                    .unwrap();
+                secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis)).unwrap();
             axes.push((axis.tag(), secondary_prefix, secondary_root_key.clone()));
             request_axes.push((axis.tag(), secondary_root_key));
         }
@@ -1025,7 +1036,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// per-chunk against the group header's hash for that axis. Called
     /// only after the group's header arrived.
     fn add_indexed_secondary_sync_info(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         secondary_prefix: SubtreePrefix,
         primary_prefix: SubtreePrefix,
         axis_tag: u8,
@@ -1057,14 +1068,14 @@ impl<'db> MultiStateSyncSession<'db> {
             .map_err(|e| Error::CorruptedData(format!("invalid axis tag in indexed group: {e}")))?;
         let tree_type = axis_secondary_tree_type(axis);
 
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
+        let transaction_ref: &'db Transaction<'db, E> = unsafe {
+            let tx: &Transaction<'db, E> = &self.as_ref().transaction;
             &*(tx as *const _)
         };
         let storage = self
             .db
             .db
-            .get_immediate_storage_context_by_subtree_prefix(secondary_prefix, transaction_ref)
+            .immediate_subtree_by_prefix(secondary_prefix, transaction_ref)
             .unwrap();
         let merk = if root_key.is_some() {
             Merk::open_layered_with_root_key(
@@ -1110,7 +1121,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// and returns the metadata entries that activate the group's
     /// secondaries.
     fn register_indexed_header(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         primary_prefix: SubtreePrefix,
         header: IndexedHeader,
     ) -> Result<SubtreesMetadata, Error> {
@@ -1154,13 +1165,33 @@ impl<'db> MultiStateSyncSession<'db> {
         Ok(metadata)
     }
 
+    /// The path of the element that hosts the subtree `chunk_prefix`, whose
+    /// restore is at `path`: `path` itself, and for the secondary of an
+    /// indexed tree's axis, which is restored at no path, the path of its
+    /// primary. It is read while the group of the indexed tree is still
+    /// registered: [`Self::note_indexed_member_complete`] un-registers the
+    /// members of a group once the group resolves.
+    fn hosted_at(
+        &self,
+        chunk_prefix: &SubtreePrefix,
+        path: &[Vec<u8>],
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let Some((primary_prefix, _)) = self.secondary_owner.get(chunk_prefix) else {
+            return Ok(path.to_vec());
+        };
+        let group = self.indexed_groups.get(primary_prefix);
+        group.map(|group| group.path.clone()).ok_or_else(|| {
+            Error::InternalError("indexed secondary has no registered group".to_string())
+        })
+    }
+
     /// Records the actual restored root hash of a completed subtree that
     /// is a member of an indexed group (no-op otherwise) and, once the
     /// whole group is restored, runs the unconditional joint verification
     /// against the parent binding. The recorded hashes come from the
     /// restored Merks themselves — the wire header plays no part here.
     fn note_indexed_member_complete(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         chunk_prefix: SubtreePrefix,
         actual_root_hash: CryptoHash,
     ) -> Result<(), Error> {
@@ -1251,7 +1282,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - The pinned `self` ensures that the session cannot be moved in memory,
     ///   preserving consistency during the synchronization process.
     pub fn apply_chunk(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         packed_global_chunk_ids: &[u8],
         packed_global_chunks: &[u8],
         version: u16,
@@ -1310,7 +1341,7 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     fn apply_decoded_chunks(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         nested_global_chunk_ids: Vec<Vec<u8>>,
         nested_global_chunks: Vec<Vec<u8>>,
         payload_bytes: u64,
@@ -1340,8 +1371,8 @@ impl<'db> MultiStateSyncSession<'db> {
             // after the loop may replace the transaction in an intermediate
             // commit. This mirrors the pattern used by
             // `add_subtree_sync_info` and `discover_new_subtrees_metadata`.
-            let transaction_ref: &'db Transaction<'db> = unsafe {
-                let tx: &Transaction<'db> = &self.as_ref().transaction;
+            let transaction_ref: &'db Transaction<'db, E> = unsafe {
+                let tx: &Transaction<'db, E> = &self.as_ref().transaction;
                 &*(tx as *const _)
             };
             let mut next_chunk_ids = vec![];
@@ -1452,9 +1483,30 @@ impl<'db> MultiStateSyncSession<'db> {
                                 }
                                 completed_member_root = Some(merk_root);
                             } else {
+                                // The restore hands a Merk with nodes to
+                                // the store, through an immediate handle:
+                                // an engine that keeps a record of its
+                                // subtrees is told of the element that
+                                // hosts the Merk, before the hand-over and
+                                // again after it
+                                // (`Engine::adopt_restored_subtrees`). A
+                                // subtree the restore writes nothing into
+                                // is not named to the engine.
+                                let hosted_at = self.hosted_at(&chunk_prefix, &completed_path)?;
+                                let hosted_at: Vec<&[u8]> =
+                                    hosted_at.iter().map(Vec::as_slice).collect();
+                                db.db.adopt_restored_subtrees(
+                                    hosted_at.as_slice().into(),
+                                    transaction_ref,
+                                )?;
                                 match restorer.finalize_with_grovedb_elements(grove_version) {
                                     Ok(merk) => {
                                         completed_member_root = Some(merk.root_hash().unwrap());
+                                        drop(merk);
+                                        db.db.adopt_restored_subtrees(
+                                            hosted_at.as_slice().into(),
+                                            transaction_ref,
+                                        )?;
                                     }
                                     Err(err) => {
                                         return Err(Error::InternalError(format!(
@@ -1648,12 +1700,12 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - The function modifies the state of the synchronization session, so it
     ///   should be used carefully to maintain session integrity.
     fn discover_new_subtrees_metadata(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         path_vec: &[Vec<u8>],
         grove_version: &GroveVersion,
     ) -> Result<SubtreesMetadata, Error> {
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
+        let transaction_ref: &'db Transaction<'db, E> = unsafe {
+            let tx: &Transaction<'db, E> = &self.as_ref().transaction;
             &*(tx as *const _)
         };
         let subtree_path: Vec<&[u8]> = path_vec.iter().map(|vec| vec.as_slice()).collect();
@@ -1668,7 +1720,7 @@ impl<'db> MultiStateSyncSession<'db> {
         }
         let mut subtree_elements: BTreeMap<Vec<u8>, Element> = BTreeMap::new();
 
-        let mut raw_iter = Element::iterator(merk.storage.raw_iter()).unwrap();
+        let mut raw_iter = Element::iterator(NodeStore::cursor(&merk.storage)).unwrap();
         while let Some((key, value)) = raw_iter.next_element(grove_version).unwrap()? {
             if value.is_any_tree() {
                 // Indexed trees are discovered like any subtree; their
@@ -1712,7 +1764,7 @@ impl<'db> MultiStateSyncSession<'db> {
 
             let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
-            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+            let prefix = build_prefix(path.as_ref().into()).unwrap();
 
             let entry = if element.is_indexed_tree() {
                 SubtreeMetadata::IndexedPrimary {
@@ -1762,7 +1814,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// groups *close sooner*, and the commit guard in
     /// [`Self::intermediate_commit_decision`] is untouched.
     fn activation_order(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         subtrees_metadata: SubtreesMetadata,
     ) -> Vec<(SubtreePrefix, SubtreeMetadata)> {
         fn is_secondary(metadata: &SubtreeMetadata) -> bool {
@@ -1837,7 +1889,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - Proper handling of the returned global chunk IDs is essential to
     ///   ensure seamless state synchronization.
     fn prepare_sync_state_sessions(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Pin<Box<MultiStateSyncSession<'db, E>>>,
         subtrees_metadata: SubtreesMetadata,
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {

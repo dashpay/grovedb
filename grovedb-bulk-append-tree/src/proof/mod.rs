@@ -22,7 +22,7 @@ use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
 use grovedb_merkle_mountain_range::{MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_query::{Query, QueryItem};
 #[cfg(feature = "storage")]
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 #[cfg(feature = "storage")]
 use grovedb_version::version::GroveVersion;
 
@@ -234,7 +234,7 @@ impl BulkAppendTreeProof {
     /// * `query` - Query describing the positions to prove
     /// * `tree` - The BulkAppendTree to prove against
     #[cfg(feature = "storage")]
-    pub fn generate<'db, S: StorageContext<'db>>(
+    pub fn generate<S: FlatStore>(
         query: &Query,
         tree: &BulkAppendTree<S>,
     ) -> Result<Self, BulkAppendError> {
@@ -246,7 +246,7 @@ impl BulkAppendTreeProof {
     /// hash validating each chunk leaf read from storage), bagging the MMR peaks right of the
     /// proved chunks, and generating the buffer's dense tree proof.
     #[cfg(feature = "storage")]
-    pub fn generate_with_cost<'db, S: StorageContext<'db>>(
+    pub fn generate_with_cost<S: FlatStore>(
         query: &Query,
         tree: &BulkAppendTree<S>,
         grove_version: &GroveVersion,
@@ -392,7 +392,7 @@ impl BulkAppendTreeProof {
     /// the authenticated element's total count, not out of per-position
     /// absence proofs.
     #[cfg(feature = "storage")]
-    pub fn generate_for_range<'db, S: StorageContext<'db>>(
+    pub fn generate_for_range<S: FlatStore>(
         tree: &BulkAppendTree<S>,
         start: u64,
         limit: u16,

@@ -26,7 +26,6 @@ use std::{
 
 use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, tree_type::TreeType};
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -307,7 +306,7 @@ pub(super) fn served_targets(
             .root_key_and_tree_type_owned()
             .expect("fixture element is a tree");
         let path: &[&[u8]] = &[key];
-        let prefix = RocksDbStorage::build_prefix(SubtreePath::from(path)).unwrap();
+        let prefix = grovedb_storage::prefix::build_prefix(SubtreePath::from(path)).unwrap();
         add(prefix, root_key, tree_type, None);
     }
 
@@ -446,7 +445,7 @@ mod tests {
                 .expect("a tree");
             assert_eq!(honest_type, TreeType::NormalTree);
             let path: &[&[u8]] = &[b"normal"];
-            let prefix = RocksDbStorage::build_prefix(SubtreePath::from(path)).unwrap();
+            let prefix = grovedb_storage::prefix::build_prefix(SubtreePath::from(path)).unwrap();
             let request = |type_byte: u8, locals: Vec<Vec<u8>>| {
                 pack_nested_bytes(vec![global_chunk_id_with_type_byte(
                     prefix,

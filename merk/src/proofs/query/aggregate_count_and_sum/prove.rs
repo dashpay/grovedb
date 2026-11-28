@@ -62,6 +62,7 @@ where
 
         let mut cost = OperationCost::default();
         let mut ops = LinkedList::new();
+        self.values_on_demand();
         let (count, sum_i128) = cost_return_on_error!(
             &mut cost,
             emit_count_and_sum_proof(self, inner_range, None, None, &mut ops, grove_version,)
@@ -155,6 +156,7 @@ where
         }
         let mut cost = OperationCost::default();
         let mut ops = LinkedList::new();
+        self.values_on_demand();
         let (count, sum) = cost_return_on_error!(
             &mut cost,
             emit_count_and_sum_proof(self, inner_range, None, None, &mut ops, grove_version)

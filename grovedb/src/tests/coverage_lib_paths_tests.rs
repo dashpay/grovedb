@@ -12,16 +12,13 @@ mod tests {
         BatchEntry, CryptoHash, Merk,
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-        Storage, StorageBatch, StorageContext,
-    };
+    use grovedb_storage::{Storage, StorageContext};
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
         operations::indexed_tree::make_axis_secondary_key,
-        tests::{make_test_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, SuiteBatch, TEST_LEAF},
         AggregateData, Element, Error, GroveDb,
     };
 
@@ -43,21 +40,25 @@ mod tests {
 
     /// Derived storage prefix of an indexed primary's per-axis secondary
     /// namespace (`Blake3(primary_prefix ‖ axis_tag)`).
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn axis_secondary_prefix(primary_path: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
-        let primary_prefix = RocksDbStorage::build_prefix(subtree_path(primary_path)).unwrap();
-        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
+        let primary_prefix =
+            grovedb_storage::prefix::build_prefix(subtree_path(primary_path)).unwrap();
+        grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
     }
 
     /// Write a raw key/value straight into a subtree's data namespace,
     /// bypassing the Merk tree structure entirely. The row is invisible to
     /// tree traversal but IS visible to the raw iteration that
     /// `verify_grovedb`'s content walks use.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn raw_put_in_subtree(db: &GroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let ctx = db
                 .db
+                .storage()
                 .get_transactional_storage_context(subtree_path(path), Some(&batch), &tx)
                 .unwrap();
             ctx.put(key, value, None, None)
@@ -65,6 +66,7 @@ mod tests {
                 .expect("raw put into subtree namespace");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit raw put");
@@ -76,6 +78,7 @@ mod tests {
     /// stored bytes are a real node the integrity walk can decode. Raw
     /// storage puts are only usable for malformed-key cases, which the walk
     /// reports before it reaches the payload decode.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn insert_into_axis_secondary(
         db: &GroveDb,
         primary_path: &[&[u8]],
@@ -88,7 +91,7 @@ mod tests {
         let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
         let (parent_path, indexed_key) = path.derive_parent().expect("non-root indexed tree");
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let secondary_root_key = {
             let parent = db
                 .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
@@ -125,12 +128,14 @@ mod tests {
                 .expect("insert secondary row");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
         tx.commit().expect("commit tx");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn raw_put_in_axis_secondary(
         db: &GroveDb,
         primary_path: &[&[u8]],
@@ -140,10 +145,11 @@ mod tests {
     ) {
         let prefix = axis_secondary_prefix(primary_path, axis);
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let ctx = db
                 .db
+                .storage()
                 .get_transactional_storage_context_by_subtree_prefix(prefix, Some(&batch), &tx)
                 .unwrap();
             ctx.put(key, value, None, None)
@@ -151,6 +157,7 @@ mod tests {
                 .expect("raw put into secondary namespace");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit raw put");
@@ -160,6 +167,7 @@ mod tests {
     /// Insert an element straight into a subtree's Merk, bypassing the
     /// grovedb-level insert API (and therefore the indexed-tree secondary
     /// mirroring and key-length validation).
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn merk_insert_element(
         db: &GroveDb,
         path: &[&[u8]],
@@ -168,7 +176,7 @@ mod tests {
         grove_version: &GroveVersion,
     ) {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let mut merk = db
                 .open_transactional_merk_at_path(
@@ -185,6 +193,7 @@ mod tests {
                 .expect("direct merk insert");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit merk insert");
@@ -199,6 +208,7 @@ mod tests {
     /// consumer that reads the list back. Because the key already exists,
     /// this is a replace: the parent Merk's shape (and therefore its own
     /// root key, held one level further up) is untouched.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcpsit_axes(
         db: &GroveDb,
         parent_path: &[&[u8]],
@@ -207,7 +217,7 @@ mod tests {
         grove_version: &GroveVersion,
     ) {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let mut merk = db
                 .open_transactional_merk_at_path(
@@ -246,6 +256,7 @@ mod tests {
                 .expect("replace element with corrupt axes");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit corrupt axes");
@@ -260,6 +271,7 @@ mod tests {
     ///
     /// Commits only when propagation succeeded, so a rejected propagation
     /// leaves the database byte-identical.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn propagate_from(
         db: &GroveDb,
         path: &[&[u8]],
@@ -267,17 +279,14 @@ mod tests {
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let result = {
             let sp = subtree_path(path);
             let merk = db
                 .open_transactional_merk_at_path(sp.clone(), &tx, Some(&batch), grove_version)
                 .unwrap()
                 .expect("open merk at propagation start");
-            let mut merk_cache: HashMap<
-                SubtreePath<&[u8]>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::new();
+            let mut merk_cache: HashMap<SubtreePath<&[u8]>, Merk<_>> = HashMap::new();
             merk_cache.insert(sp.clone(), merk);
             db.propagate_changes_with_transaction_with_initial_deferred(
                 merk_cache,
@@ -291,6 +300,7 @@ mod tests {
         };
         if result.is_ok() {
             db.db
+                .storage()
                 .commit_multi_context_batch(batch, Some(&tx))
                 .unwrap()
                 .expect("commit propagation");
@@ -299,6 +309,7 @@ mod tests {
         result
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn issue_keys(issues: &crate::VerificationIssues) -> Vec<String> {
         issues
             .keys()
@@ -311,6 +322,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn sentinel_path(primary: &[&[u8]], sentinel: &str, item_key: &[u8]) -> Vec<Vec<u8>> {
         let mut p: Vec<Vec<u8>> = primary.iter().map(|s| s.to_vec()).collect();
         p.push(sentinel.as_bytes().to_vec());
@@ -377,6 +389,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn open_with_cidx_integrity_check_rejects_drifted_secondary() {
         let grove_version = GroveVersion::latest();
@@ -466,6 +479,7 @@ mod tests {
     // `propagate_changes_with_transaction_with_initial_deferred` guards
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_with_deferred_secondary_over_plain_tree_is_rejected() {
         // A deferred secondary means "the child I just came from was an
@@ -518,7 +532,7 @@ mod tests {
         let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let result = {
             let root_path: SubtreePath<[u8; 0]> = SubtreePath::empty();
             let merk = db
@@ -530,10 +544,7 @@ mod tests {
                 )
                 .unwrap()
                 .expect("open root merk");
-            let mut merk_cache: HashMap<
-                SubtreePath<[u8; 0]>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::new();
+            let mut merk_cache: HashMap<SubtreePath<[u8; 0]>, Merk<_>> = HashMap::new();
             merk_cache.insert(root_path.clone(), merk);
             db.propagate_changes_with_transaction_with_initial_deferred(
                 merk_cache,
@@ -572,7 +583,7 @@ mod tests {
         let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let result = {
             let root_path: SubtreePath<[u8; 0]> = SubtreePath::empty();
             let merk = db
@@ -584,10 +595,7 @@ mod tests {
                 )
                 .unwrap()
                 .expect("open root merk");
-            let mut merk_cache: HashMap<
-                SubtreePath<[u8; 0]>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::new();
+            let mut merk_cache: HashMap<SubtreePath<[u8; 0]>, Merk<_>> = HashMap::new();
             merk_cache.insert(root_path.clone(), merk);
             db.propagate_changes_inner(
                 merk_cache,
@@ -619,6 +627,7 @@ mod tests {
     // PCPSIT propagation: rebuilding the axes digest from on-disk state
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn all_axes() -> Vec<(u8, Option<Vec<u8>>)> {
         vec![
             (IndexAxis::Count.tag(), None),
@@ -627,6 +636,7 @@ mod tests {
         ]
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_from_pcpsit_primary_rebuilds_axes_digest_from_disk() {
         // When propagation starts AT an indexed primary and no per-axis
@@ -717,6 +727,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_from_pcpsit_primary_with_unknown_axis_tag_is_rejected() {
         // The axes list is read back from the element, so a tag outside
@@ -749,6 +760,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_mirror_over_indexed_element_with_unknown_axis_tag_is_rejected() {
         // Same corrupt element, but reached from BELOW: the mirror step
@@ -813,7 +825,7 @@ mod tests {
         .expect("create plain tree");
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let merk = db
             .open_transactional_merk_at_path(
                 subtree_path(&[TEST_LEAF]),
@@ -825,7 +837,7 @@ mod tests {
             .expect("open test leaf merk");
 
         let mut ops: Vec<BatchEntry<Vec<u8>>> = Vec::new();
-        let result = GroveDb::update_indexed_tree_item_preserve_flag_into_batch_operations(
+        let result = crate::update_indexed_tree_item_preserve_flag_into_batch_operations(
             &merk,
             b"plain".to_vec(),
             None,
@@ -855,6 +867,7 @@ mod tests {
     // `verify_indexed_axis_content`: malformed / oversize key sentinels
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_flags_oversize_primary_key_in_pcit() {
         // A primary item key longer than the 247-byte cidx ceiling cannot
@@ -931,6 +944,7 @@ mod tests {
         )));
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_flags_malformed_secondary_key_in_pcit() {
         // A secondary row whose key is shorter than the axis sort-key
@@ -988,6 +1002,7 @@ mod tests {
     // `verify_indexed_axis_content`: per-axis decoded mismatch reporting
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_reports_psit_sum_mismatch_with_decoded_sums() {
         // Plant a second row for item `a` under a LOWER sum sort key. The
@@ -1043,6 +1058,7 @@ mod tests {
         assert_eq!(&entry.1[..24], &[0u8; 24], "sum is right-aligned");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_reports_pcpsit_avg_mismatch_with_decoded_averages() {
         // Same shape on the avg axis, whose sort key is a 16-byte
@@ -1112,6 +1128,7 @@ mod tests {
     // `verify_grovedb`: hard errors surfacing out of the indexed arms
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_undecodable_row_error(err: Error) {
         match err {
             Error::MerkError(_) | Error::ElementError(_) | Error::CorruptedData(_) => {}
@@ -1119,6 +1136,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_in_pcit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1154,6 +1172,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_in_psit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1189,6 +1208,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_in_pcpsit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1225,6 +1245,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_below_pcit_primary() {
         // The bad row lives one level DEEPER than the primary, so the
@@ -1268,6 +1289,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_below_psit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1308,6 +1330,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_below_pcpsit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1349,6 +1372,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_pcpsit_element_with_unknown_axis_tag() {
         let grove_version = GroveVersion::latest();

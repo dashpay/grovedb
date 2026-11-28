@@ -12,9 +12,9 @@ use grovedb_costs::{
 use grovedb_merk::Merk;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{util::TxRef, Error, GroveDb, PathQuery, TransactionArg};
+use crate::{util::TxRef, Engine, Error, GroveDb, PathQuery, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Executes an `AggregateCountAndSumOnRange` query in either the
     /// **leaf** or **carrier** shape without generating a proof,
     /// returning one `(outer_key, count, sum)` triple per matched outer
@@ -68,10 +68,10 @@ impl GroveDb {
     /// are trusting their own merk read path. For verifiable pairs, use
     /// [`Self::prove_query`] +
     /// [`GroveDb::verify_aggregate_count_and_sum_query_per_key`].
-    pub fn query_aggregate_count_and_sum_per_key(
-        &self,
+    pub fn query_aggregate_count_and_sum_per_key<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<(Vec<u8>, u64, i64)>, Error> {
         check_grovedb_v0_with_cost!(
@@ -116,7 +116,8 @@ impl GroveDb {
         // driver is generic over the per-key payload, so the `(u64,
         // i64)` pairs come back tupled and are flattened to triples
         // here to match the per-key verifier's surface.
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         let pairs = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(
@@ -142,10 +143,10 @@ impl GroveDb {
     /// The wide form of [`Self::query_aggregate_count_and_sum_per_key`]: one
     /// count and one `i128` sum per matched outer key, each over a
     /// `ProvableCountProvableBigSumTree`, without a proof.
-    pub fn query_aggregate_count_and_big_sum_per_key(
-        &self,
+    pub fn query_aggregate_count_and_big_sum_per_key<'db>(
+        &'db self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<(Vec<u8>, u64, i128)>, Error> {
         check_grovedb_v0_with_cost!(
@@ -178,7 +179,8 @@ impl GroveDb {
             return Ok(vec![(Vec::new(), count, sum)]).wrap_with_cost(cost);
         }
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
         let pairs = cost_return_on_error!(
             &mut cost,
             self.query_aggregate_carrier_per_key(

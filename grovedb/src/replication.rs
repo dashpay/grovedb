@@ -40,16 +40,17 @@ mod verify;
 
 use std::pin::Pin;
 
-use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer, Merk};
+use grovedb_merk::{
+    store::NodeStore, tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer, Merk,
+};
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 pub use self::state_sync_session::{MultiStateSyncSession, CONST_GROUP_PACKING_SIZE};
 use crate::{
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     util::TxRef,
-    Error, GroveDb, SubtreePrefix, TransactionArg,
+    Engine, Error, GroveDb, SubtreePrefix, TransactionArg,
 };
 
 /// Type alias representing a chunk identifier in the state synchronization
@@ -195,8 +196,8 @@ impl RestoreCommitMode {
     }
 }
 
-#[cfg(feature = "minimal")]
-impl GroveDb {
+#[cfg(feature = "engine_generic")]
+impl<E: Engine> GroveDb<E> {
     /// Starts a new state synchronization session with the given app hash,
     /// batch size and state sync protocol version, ready to apply the root
     /// chunk requested by `app_hash`.
@@ -213,7 +214,7 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_, E>>>, Error> {
         self.start_syncing_session_with_mode(
             app_hash,
             subtrees_batch_size,
@@ -232,7 +233,7 @@ impl GroveDb {
         version: u16,
         commit_mode: RestoreCommitMode,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_, E>>>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version
@@ -308,7 +309,7 @@ impl GroveDb {
     /// element bytes before committing. Returns an error on any mismatch.
     pub fn commit_session(
         &self,
-        session: Pin<Box<MultiStateSyncSession>>,
+        session: Pin<Box<MultiStateSyncSession<'_, E>>>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         session.commit(grove_version)
@@ -376,10 +377,10 @@ impl GroveDb {
     ///   primary and per-axis secondary root hashes) followed by ordinary
     ///   Merk chunks; the axis secondaries are served as ordinary
     ///   by-prefix Merk chunks (see `indexed_sync`).
-    pub fn fetch_chunk(
-        &self,
+    pub fn fetch_chunk<'db>(
+        &'db self,
         packed_global_chunk_id: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
@@ -388,7 +389,7 @@ impl GroveDb {
             grove_version.grovedb_versions.replication.fetch_chunk
         );
 
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
 
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(format!(
@@ -600,7 +601,7 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_, E>>>, Error> {
         self.start_snapshot_syncing_with_mode(
             app_hash,
             subtrees_batch_size,
@@ -626,7 +627,7 @@ impl GroveDb {
         version: u16,
         commit_mode: RestoreCommitMode,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_, E>>>, Error> {
         self.start_syncing_session_with_mode(
             app_hash,
             subtrees_batch_size,
@@ -666,8 +667,8 @@ impl GroveDb {
 /// names the type the element it restored carries, which is the type the
 /// nodes were written under, so this never refuses a request an honest
 /// target sends.
-pub(crate) fn ensure_served_merk_family(
-    merk: &Merk<PrefixedRocksDbTransactionContext<'_>>,
+pub(crate) fn ensure_served_merk_family<'db, S: NodeStore<'db>>(
+    merk: &Merk<S>,
     chunk_prefix: &SubtreePrefix,
 ) -> Result<(), Error> {
     let expected = merk.tree_type.inner_node_type();
@@ -692,8 +693,8 @@ pub(crate) fn ensure_served_merk_family(
 /// type come from a peer, so the family is checked first
 /// ([`ensure_served_merk_family`]) and the hash is taken with
 /// `Merk::try_root_hash`, which returns an error there.
-pub(crate) fn served_merk_root_hash(
-    merk: &Merk<PrefixedRocksDbTransactionContext<'_>>,
+pub(crate) fn served_merk_root_hash<'db, S: NodeStore<'db>>(
+    merk: &Merk<S>,
     chunk_prefix: &SubtreePrefix,
 ) -> Result<CryptoHash, Error> {
     ensure_served_merk_family(merk, chunk_prefix)?;

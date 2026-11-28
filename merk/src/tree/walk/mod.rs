@@ -18,7 +18,7 @@ use grovedb_version::version::GroveVersion;
 pub use ref_walker::RefWalker;
 
 #[cfg(feature = "minimal")]
-use super::{Link, TreeNode};
+use super::{Link, TreeNode, WalkedSlot};
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
@@ -51,8 +51,23 @@ where
     /// same source as `self`. Returned tuple is `(updated_self,
     /// maybe_child_walker)`.
     pub fn detach<V>(
+        self,
+        left: bool,
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Self, Option<Self>), Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+    {
+        self.detach_child(left, false, value_defined_cost_fn, grove_version)
+    }
+
+    /// Detaches the child on the given side. A walk lends the child to its
+    /// closure: it passes `lend` to have the child marked as on loan.
+    fn detach_child<V>(
         mut self,
         left: bool,
+        lend: bool,
         value_defined_cost_fn: Option<&V>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Self, Option<Self>), Error>
@@ -66,8 +81,8 @@ where
             Some(link) => link,
         };
 
-        let child = if link.tree().is_some() {
-            match self.tree.own_return(|t| t.detach(left)) {
+        let mut child = if link.tree().is_some() {
+            match self.tree.own_return(|t| t.detach_child(left, lend)) {
                 Some(child) => child,
                 _ => {
                     return Err(Error::CorruptedState(
@@ -77,23 +92,22 @@ where
                 }
             }
         } else {
-            let link = self.tree.slot_mut(left).take();
-            match link {
-                Some(Link::Reference { .. }) => (),
-                _ => {
-                    return Err(Error::CorruptedState(
-                        "expected Link::Reference but found other variant or None",
-                    ))
-                    .wrap_with_cost(cost);
-                }
+            let Some(link @ Link::Reference { .. }) = self.tree.take_link(left, lend) else {
+                return Err(Error::CorruptedState(
+                    "expected Link::Reference but found other variant or None",
+                ))
+                .wrap_with_cost(cost);
+            };
+            let fetched = self
+                .source
+                .fetch(&link, value_defined_cost_fn, grove_version);
+            if let Link::Reference { key, .. } = link {
+                super::spare::give(key);
             }
-            cost_return_on_error!(
-                &mut cost,
-                self.source
-                    .fetch(&link.unwrap(), value_defined_cost_fn, grove_version)
-            )
+            cost_return_on_error!(&mut cost, fetched)
         };
 
+        child.inner.marks.on_loan = lend;
         let child = self.wrap(child);
         Ok((self, Some(child))).wrap_with_cost(cost)
     }
@@ -144,15 +158,21 @@ where
     {
         let mut cost = OperationCost::default();
 
+        let walked = WalkedSlot::of(&self.tree, left);
         let (mut walker, maybe_child) = cost_return_on_error!(
             &mut cost,
-            self.detach(left, value_defined_cost_fn, grove_version)
+            self.detach_child(left, true, value_defined_cost_fn, grove_version)
         );
         let new_child = match f(maybe_child).unwrap_add_cost(&mut cost) {
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
-        cost_return_on_error_no_add!(cost, walker.tree.own_result(|t| t.attach(left, new_child)));
+        cost_return_on_error_no_add!(
+            cost,
+            walker
+                .tree
+                .own_result(|t| t.attach_walked(left, new_child, walked))
+        );
         Ok(walker).wrap_with_cost(cost)
     }
 
@@ -172,15 +192,29 @@ where
     {
         let mut cost = OperationCost::default();
 
-        let (mut walker, child) = cost_return_on_error!(
+        let walked = WalkedSlot::of(&self.tree, left);
+        let (mut walker, maybe_child) = cost_return_on_error!(
             &mut cost,
-            self.detach_expect(left, value_defined_cost_fn, grove_version)
+            self.detach_child(left, true, value_defined_cost_fn, grove_version)
         );
+        let Some(child) = maybe_child else {
+            return Err(Error::CorruptedState(if left {
+                "Expected left child, got None"
+            } else {
+                "Expected right child, got None"
+            }))
+            .wrap_with_cost(cost);
+        };
         let new_child = match f(child).unwrap_add_cost(&mut cost) {
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
-        cost_return_on_error_no_add!(cost, walker.tree.own_result(|t| t.attach(left, new_child)));
+        cost_return_on_error_no_add!(
+            cost,
+            walker
+                .tree
+                .own_result(|t| t.attach_walked(left, new_child, walked))
+        );
         Ok(walker).wrap_with_cost(cost)
     }
 
@@ -584,6 +618,136 @@ mod test {
         ) -> CostResult<TreeNode, Error> {
             TreeNode::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerkNode).map(Ok)
         }
+    }
+
+    #[test]
+    fn a_walk_marks_the_children_changed_only_when_a_child_slot_changes() {
+        let grove_version = GroveVersion::latest();
+        let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        let parent = || {
+            let mut tree = TreeNode::new(b"m".to_vec(), b"abc".to_vec(), None, BasicMerkNode)
+                .unwrap()
+                .attach(
+                    true,
+                    Some(
+                        TreeNode::new(b"c".to_vec(), b"abc".to_vec(), None, BasicMerkNode).unwrap(),
+                    ),
+                )
+                .unwrap();
+            tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+                .unwrap()
+                .unwrap();
+            tree.inner.marks.children_changed = false;
+            Walker::new(tree, MockSource {})
+        };
+        let other = || TreeNode::new(b"a".to_vec(), b"abc".to_vec(), None, BasicMerkNode).unwrap();
+
+        let same = parent()
+            .walk(
+                true,
+                |child| Ok(child).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!same.tree().inner.marks.children_changed);
+        let same = same
+            .walk_expect(
+                true,
+                |child| Ok(Some(child)).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!same.tree().inner.marks.children_changed);
+        let same = same
+            .walk(
+                false,
+                |absent| Ok(absent).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!same.tree().inner.marks.children_changed);
+
+        let replaced = parent()
+            .walk(
+                true,
+                |_| Ok(Some(other())).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(replaced.tree().inner.marks.children_changed);
+        let replaced = parent()
+            .walk_expect(
+                true,
+                |_| Ok(Some(other())).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(replaced.tree().inner.marks.children_changed);
+        let removed = parent()
+            .walk(
+                true,
+                |_| Ok(None::<TreeNode>).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(removed.tree().inner.marks.children_changed);
+
+        let (detached, child) = parent()
+            .detach(true, no_cost, grove_version)
+            .unwrap()
+            .unwrap();
+        assert!(child.is_some());
+        assert!(detached.tree().inner.marks.children_changed);
+    }
+
+    #[test]
+    fn a_walk_into_a_pruned_child_that_comes_back_leaves_the_children_unchanged() {
+        let grove_version = GroveVersion::latest();
+        let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        let tree = TreeNode::from_fields(
+            b"m".to_vec(),
+            b"abc".to_vec(),
+            Default::default(),
+            Some(Link::Reference {
+                hash: Default::default(),
+                key: b"c".to_vec(),
+                child_heights: (0, 0),
+                aggregate_data: AggregateData::NoAggregateData,
+            }),
+            None,
+            BasicMerkNode,
+        )
+        .unwrap();
+
+        let walker = Walker::new(tree, MockSource {})
+            .walk(
+                true,
+                |child| Ok(child).wrap_with_cost(Default::default()),
+                no_cost,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!walker.tree().inner.marks.children_changed);
+
+        let (walker, child) = walker
+            .detach(true, no_cost, grove_version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.unwrap().tree().key(), b"c");
+        assert!(walker.tree().inner.marks.children_changed);
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! - [`MMRStoreReadOps`] — read an element by MMR position.
 //! - [`MMRStoreWriteOps`] — persist a contiguous run of elements.
 //! - [`MemStore`] — in-memory store (requires `mem_store` feature).
-//! - [`MmrStore`] — GroveDB `StorageContext` adapter (requires `storage`
+//! - [`MmrStore`] — GroveDB `FlatStore` adapter (requires `storage`
 //!   feature).
 
 #![deny(missing_docs)]

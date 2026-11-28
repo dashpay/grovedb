@@ -1,65 +1,52 @@
 //! Worst case costs
 //! Implements worst case cost functions in GroveDb
 
-use grovedb_costs::{cost_return_on_error_into_no_add, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
+    cost_model::storage_cost_model,
     estimated_costs::{
-        add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
+        add_cost_case_merk_insert_layered,
         worst_case_costs::{
             add_worst_case_get_merk_node, add_worst_case_merk_delete,
-            add_worst_case_merk_delete_layered, add_worst_case_merk_propagate,
+            add_worst_case_merk_delete_layered, add_worst_case_merk_propagate_versioned,
             add_worst_case_merk_replace_layered, WorstCaseLayerInformation,
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
     tree::TreeNode,
     tree_type::{CostSize, TreeType},
-    HASH_LENGTH,
 };
-use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_storage::{
+    worst_case_costs::{get_storage_context_cost, WorstKeyLength},
+    Storage,
+};
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 use integer_encoding::VarInt;
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    Element, ElementFlags, Error, GroveDb,
+    ElementFlags, Error, GroveDb,
 };
 
+mod finalize;
+mod get_merk_at_path;
 mod merk_insert_element;
+mod merk_patch_element;
 mod merk_replace_element;
 
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
 impl GroveDb {
-    /// Add worst case for getting a merk tree
+    /// The estimate of [`Self::add_worst_case_get_merk_at_path_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_merk_at_path<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        check_grovedb_v0!(
-            "add_worst_case_get_merk_at_path",
-            grove_version
-                .grovedb_versions
-                .operations
-                .worst_case
-                .add_worst_case_get_merk_at_path
-        );
-
-        cost.seek_count += 2;
-        match path.last() {
-            None => {}
-            Some(key) => {
-                cost.storage_loaded_bytes += TreeNode::worst_case_encoded_tree_size(
-                    key.max_length() as u32,
-                    HASH_LENGTH as u32,
-                    tree_type.inner_node_type(), // todo This is probably wrong
-                ) as u64;
-            }
-        }
-        *cost += S::get_storage_context_cost(path.as_vec());
-        Ok(())
+        Self::add_worst_case_get_merk_at_path_engine_free(cost, path, tree_type, grove_version)
     }
 
     /// Add worst case for insertion into merk
@@ -91,8 +78,12 @@ impl GroveDb {
             in_parent_tree_type.inner_node_type(),
         );
         if propagate {
-            add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
-                .map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(
+                &mut cost,
+                worst_case_layer_information,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -130,7 +121,8 @@ impl GroveDb {
         let value_len = tree_cost + flags_len + wrapper_overhead;
         add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_parent_tree_type);
         if let Some(input) = propagate_if_input {
-            add_worst_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(&mut cost, input, grove_version)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -160,62 +152,12 @@ impl GroveDb {
         let layer_extra_size = tree_cost + WORST_CASE_FLAGS_LEN;
         add_worst_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
-            add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add worst case for patch in merk
-    /// This only propagates on 1 level
-    /// As higher level propagation is done in batching
-    pub fn worst_case_merk_patch_element(
-        key: &KeyInfo,
-        value: &Element,
-        change_in_bytes: i32,
-        in_parent_tree_type: TreeType,
-        propagate_for_level: Option<&WorstCaseLayerInformation>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "worst_case_merk_patch_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .worst_case
-                .worst_case_merk_patch_element
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        match value {
-            Element::Item(_, flags) => {
-                let flags_len = flags.as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                // Items need to be always the same serialized size for this to work
-                let sum_item_cost_size =
-                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                        as u32;
-                let value_len = sum_item_cost_size + flags_len;
-                add_cost_case_merk_patch(
-                    &mut cost,
-                    key_len,
-                    value_len,
-                    change_in_bytes,
-                    in_parent_tree_type,
-                )
-            }
-            _ => {
-                return Err(Error::InvalidParameter("patching can only be on Items"))
-                    .wrap_with_cost(cost);
-            }
-        };
-        if let Some(level) = propagate_for_level {
-            add_worst_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(
+                &mut cost,
+                worst_case_layer_information,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -242,16 +184,41 @@ impl GroveDb {
         let key_len = key.max_length() as u32;
         add_worst_case_merk_delete(&mut cost, key_len, MERK_BIGGEST_VALUE_SIZE);
         if propagate {
-            add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
-                .map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(
+                &mut cost,
+                worst_case_layer_information,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
         } else {
             Ok(())
         }
         .wrap_with_cost(cost)
     }
 
-    /// Add worst case cost for "has raw" into merk
+    /// The estimate of [`Self::add_worst_case_has_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_has_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_has_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            max_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for "has raw" into merk
+    pub fn add_worst_case_has_raw_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -275,12 +242,33 @@ impl GroveDb {
         );
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size as u64;
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 
-    /// Add worst case cost for get raw tree into merk
+    /// The estimate of [`Self::add_worst_case_get_raw_tree_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_raw_tree_cost_engine_free(
+            cost,
+            path,
+            key,
+            tree_type,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for get raw tree into merk
+    pub fn add_worst_case_get_raw_tree_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -308,8 +296,29 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
-    /// Add worst case cost for get raw into merk
+    /// The estimate of [`Self::add_worst_case_get_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            max_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for get raw into merk
+    pub fn add_worst_case_get_raw_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -336,8 +345,31 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
-    /// Add worst case cost for get into merk
+    /// The estimate of [`Self::add_worst_case_get_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_worst_case_get_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        in_parent_tree_type: TreeType,
+        max_references_sizes: Vec<u32>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_worst_case_get_cost_engine_free(
+            cost,
+            path,
+            key,
+            max_element_size,
+            in_parent_tree_type,
+            max_references_sizes,
+            grove_version,
+        )
+    }
+
+    /// Add worst case cost for get into merk
+    pub fn add_worst_case_get_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -364,46 +396,49 @@ impl GroveDb {
         cost.seek_count += 1 + max_references_sizes.len() as u32;
         cost.storage_loaded_bytes +=
             value_size as u64 + max_references_sizes.iter().map(|x| *x as u64).sum::<u64>();
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full", grovedb_test_engine))]
 mod test {
     use std::option::Option::None;
 
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
-        estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        merk::NodeType,
-        test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
-        tree::kv::ValueDefinedCostType,
-        tree_type::TreeType,
+        estimated_costs::worst_case_costs::add_worst_case_get_merk_node, merk::NodeType,
+        test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk,
     };
-    use grovedb_storage::{
-        rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
-        worst_case_costs::WorstKeyLength,
-        Storage, StorageBatch,
-    };
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength};
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::{common::EMPTY_PATH, TEST_LEAF},
-        Element, GroveDb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb, SuiteBatch, TEST_LEAF},
+        Element, Engine, GroveDb,
     };
 
     #[test]
     fn test_get_merk_node_worst_case() {
         let grove_version = GroveVersion::latest();
         // Open a merk and insert 10 elements.
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
+        let db = make_empty_grovedb();
+        let storage = db.engine();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
-        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
+        let mut merk = Merk::open_base(
+            storage
+                .subtree(EMPTY_PATH, Some(&batch), &transaction)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         let merk_batch = make_batch_seq(1..10);
         merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
@@ -411,13 +446,17 @@ mod test {
             .unwrap();
 
         // this consumes the batch so storage contexts and merks will be dropped
-        storage
-            .commit_multi_context_batch(batch, Some(&transaction))
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);
+        let merk = Merk::open_base(
+            storage.subtree(EMPTY_PATH, None, &transaction).unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         // To simulate worst case, we need to pick a node that:
         // 1. Is not in memory

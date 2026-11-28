@@ -25,56 +25,56 @@
 mod average_case;
 /// Versioned dispatch for `clear_subtree`. Consensus-critical — see the
 /// module docs (issue #893).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod clear_subtree;
 /// Versioned dispatch for `delete_internal_on_transaction` (the shared
 /// delete path). Consensus-critical — see the module docs.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod delete_internal_on_transaction;
 /// Versioned dispatch for `delete_operation_for_delete_internal` (building
 /// a delete into a batch). Consensus-critical — see the module docs.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod delete_operation_for_delete_internal;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod delete_up_tree;
 /// Flat-subtree drop (issue #848): O(1) removal of a populated subtree
 /// declared to contain no child subtrees, with storage reclaimed outside
 /// consensus via range tombstones driven from durable redo records.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub mod flat_drop;
 /// The operations pending in a batch that delete operations are built into.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod pending_operations;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::BackwardsReferences;
+#[cfg(feature = "engine_generic")]
+use crate::Engine;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use delete_up_tree::DeleteUpTreeOptions;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use flat_drop::PendingPrefixDropsReport;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::{Error as MerkError, MerkOptions};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use pending_operations::PendingOperations;
 
 use crate::util::TxRef;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone)]
 /// Clear options
 pub struct ClearOptions {
@@ -92,7 +92,7 @@ pub struct ClearOptions {
     pub backwards_references: BackwardsReferences,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for ClearOptions {
     fn default() -> Self {
         ClearOptions {
@@ -104,7 +104,7 @@ impl Default for ClearOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone)]
 /// Delete options
 pub struct DeleteOptions {
@@ -127,7 +127,7 @@ pub struct DeleteOptions {
     pub backwards_references: BackwardsReferences,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl DeleteOptions {
     /// Replace the declaration about the displaced value.
     pub fn with_backwards_references(mut self, backwards_references: BackwardsReferences) -> Self {
@@ -136,7 +136,7 @@ impl DeleteOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for DeleteOptions {
     fn default() -> Self {
         DeleteOptions {
@@ -149,7 +149,7 @@ impl Default for DeleteOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl DeleteOptions {
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
@@ -158,8 +158,8 @@ impl DeleteOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
-impl GroveDb {
+#[cfg(feature = "engine_generic")]
+impl<E: Engine> GroveDb<E> {
     /// Delete an element at a specified subtree path and key.
     ///
     /// # Dangling references
@@ -176,12 +176,12 @@ impl GroveDb {
     /// With the default maintenance policy (`GROVE_V4`+), bidirectional references pointing at
     /// the deleted element are cascade-deleted instead — see the
     /// [module-level documentation](self).
-    pub fn delete<'b, B, P>(
-        &self,
+    pub fn delete<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         options: Option<DeleteOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -196,7 +196,7 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
 
         let options = options.unwrap_or_default();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let mut cost = Default::default();
 
@@ -221,9 +221,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
@@ -242,12 +240,12 @@ impl GroveDb {
     /// [`Self::delete`]; a `DontCheck` delete of a participant is refused
     /// outright. See the
     /// [module-level documentation](self) for details.
-    pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
-        &self,
+    pub fn delete_with_sectional_storage_function<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: Option<DeleteOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -277,7 +275,7 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
 
         let options = options.unwrap_or_default();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let mut cost = Default::default();
 
@@ -312,9 +310,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
@@ -333,11 +329,11 @@ impl GroveDb {
     /// [`Self::delete`]; a `DontCheck` delete of a participant is refused
     /// outright. See the
     /// [module-level documentation](self) for details.
-    pub fn delete_if_empty_tree<'b, B, P>(
-        &self,
+    pub fn delete_if_empty_tree<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
@@ -355,7 +351,7 @@ impl GroveDb {
 
         let mut cost = Default::default();
 
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let tx = TxRef::new(&self.db, transaction);
 
         let result = cost_return_on_error!(
@@ -377,20 +373,18 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().map(|_| result).wrap_with_cost(cost)
     }
 
     /// Delete if an empty tree with section storage function
-    fn delete_if_empty_tree_with_sectional_storage_function<B: AsRef<[u8]>>(
-        &self,
+    fn delete_if_empty_tree_with_sectional_storage_function<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -399,7 +393,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        batch: &StorageBatch,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         check_grovedb_v0_with_cost!(
@@ -450,8 +444,8 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use crate::BackwardsReferences;
     use grovedb_costs::{
@@ -1055,7 +1049,9 @@ mod tests {
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
-        transaction.commit().expect("cannot commit transaction");
+        db.commit_transaction(transaction)
+            .unwrap()
+            .expect("cannot commit transaction");
         assert!(matches!(
             db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
                 .unwrap(),
@@ -1392,7 +1388,9 @@ mod tests {
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
-        transaction.commit().expect("cannot commit transaction");
+        db.commit_transaction(transaction)
+            .unwrap()
+            .expect("cannot commit transaction");
         assert!(matches!(
             db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
                 .unwrap(),

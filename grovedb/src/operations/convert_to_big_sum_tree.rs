@@ -17,7 +17,6 @@ use grovedb_merk::{
     Error as MerkError,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -26,10 +25,10 @@ use crate::{
         insert::check_wide_sum_tree_creation,
     },
     util::{check_v1_slot_enabled, validate_path_segment_lengths, TxRef, MAX_KEY_LENGTH},
-    Element, Error, GroveDb, TransactionArg,
+    Element, Engine, Error, GroveDb, TransactionArg,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Converts the tree at `path`/`key`, which keeps a 64-bit sum, into the
     /// tree that holds the same children with the sum in 128 bits, in place:
     ///
@@ -110,11 +109,11 @@ impl GroveDb {
     ///
     /// Everything is written at the end, in one batch: a call that is
     /// refused or fails leaves the tree as it was.
-    pub fn convert_to_big_sum_tree<'b, B, P>(
-        &self,
+    pub fn convert_to_big_sum_tree<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -143,7 +142,7 @@ impl GroveDb {
         }
 
         let tx = TxRef::new(&self.db, transaction);
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
@@ -390,7 +389,7 @@ impl GroveDb {
         // hash, which the write below changes: the propagation refreshes it.
         let old_indexed_state = cost_return_on_error!(
             &mut cost,
-            GroveDb::capture_indexed_entry_state(&parent_merk, key, &narrow_element, grove_version)
+            crate::capture_indexed_entry_state(&parent_merk, key, &narrow_element, grove_version)
         );
         match indexed_second_hash {
             Some(second_hash) => cost_return_on_error_into!(
@@ -427,9 +426,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)

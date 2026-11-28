@@ -27,7 +27,7 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
     use crate::{
@@ -157,20 +157,13 @@ mod tests {
     /// `primary_path` and axis `axis`.
     fn secondary_prefix_for_path(primary_path: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
         let subtree: SubtreePath<&[u8]> = primary_path.into();
-        let primary_prefix = RocksDbStorage::build_prefix(subtree).unwrap();
-        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
+        let primary_prefix = grovedb_storage::prefix::build_prefix(subtree).unwrap();
+        grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
     }
 
     /// Whether the storage namespace at `prefix` holds any rows.
     fn namespace_non_empty(db: &TempGroveDb, prefix: [u8; 32]) -> bool {
-        let tx = db.start_transaction();
-        let ctx = db
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        iter.valid().unwrap()
+        crate::tests::data_keyspace_len(db, prefix, None) > 0
     }
 
     /// Assert that all three axis namespaces of the indexed primary at

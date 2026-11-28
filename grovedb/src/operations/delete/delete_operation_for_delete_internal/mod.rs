@@ -39,9 +39,9 @@ use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
 use super::{DeleteOptions, PendingOperations};
-use crate::{batch::QualifiedGroveDbOp, Error, GroveDb, TransactionArg};
+use crate::{batch::QualifiedGroveDbOp, Engine, Error, GroveDb, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Delete operation for delete internal.
     ///
     /// # Dangling references
@@ -66,14 +66,14 @@ impl GroveDb {
     /// [`PendingOperations`] for what can be passed: a slice, `&Vec`, an
     /// iterator or adapter over the caller's own operations, or an index by
     /// path.
-    pub fn delete_operation_for_delete_internal<'a, B: AsRef<[u8]>>(
-        &self,
+    pub fn delete_operation_for_delete_internal<'db, 'a, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: impl PendingOperations<'a>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
         self.delete_operation_for_delete_internal_with_deleted_child(
@@ -96,18 +96,19 @@ impl GroveDb {
     /// Version dispatch (consensus-critical) — see the module documentation.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn delete_operation_for_delete_internal_with_deleted_child<
+        'db,
         'a,
         B: AsRef<[u8]>,
         P: PendingOperations<'a>,
     >(
-        &self,
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &P,
         deleted_child_key: Option<&[u8]>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
         match grove_version

@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# Runs every command of the operator documents, as they are written, in one
+# shell: each block marked `sh` of migration.md (the rehearsal of its step 3
+# among them), then of backup-and-full-disk.md and of tuning.md. It prints
+# each command after `$ ` and then what it printed, so its output is the
+# transcript of a run. It stops at the first command that fails.
+#
+#   GROVEDB_REF=<tag or branch> runbook.sh WORK
+#
+# WORK is the directory the runbook's WORK names: empty or not there. The
+# runbook builds the tool from GROVEDB_REF, cloned from GitHub, so the run
+# needs the network and that ref pushed. A line `<!-- runbook.sh: ... -->`
+# of a document is run before the block after it and printed after `# `:
+# the variables that the document asks its reader to set, for this run.
+#
+# Step 4 of migration.md keeps no list of the entries of a LigninDB database:
+# it cites the refusal of `lignin migrate` for a source that holds one. Once
+# every block has run, the script surveys the LigninDB database the runbook
+# made, at TARGET, and holds the survey to that refusal.
+#
+# For a run on a clean machine, start it with no Rust on the path and with
+# CARGO_HOME and RUSTUP_HOME naming empty directories: the runbook then
+# installs Rust itself, and every crate is fetched again.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+documents=(migration.md backup-and-full-disk.md tuning.md)
+others=(architecture.md messages.md)
+
+if [ $# -ne 1 ]; then
+    echo "usage: GROVEDB_REF=<tag or branch> $0 WORK" >&2
+    exit 2
+fi
+: "${GROVEDB_REF:?set GROVEDB_REF to the tag or branch the runbook builds from}"
+work=$1
+case "$work" in *$'\n'*)
+    echo "runbook.sh: a WORK with a line break in it is not taken" >&2
+    exit 2
+    ;;
+esac
+if [ -e "$work" ] && [ -n "$(ls -A "$work")" ]; then
+    echo "runbook.sh: $work is not empty" >&2
+    exit 2
+fi
+case "/$work/" in */../*)
+    echo "runbook.sh: a WORK with a .. in it is not taken" >&2
+    exit 2
+    ;;
+esac
+# Nothing is made inside a database directory, the source's among them:
+# above the part of WORK that is not there yet, the walk goes up the
+# directories it is in, with their links followed.
+case "$work" in
+    /*) above=$work ;;
+    *) above=$(pwd -P)/$work ;;
+esac
+while [ ! -d "$above" ]; do
+    case "$(basename -- "$above" | tr '[:upper:]' '[:lower:]')" in *.creating)
+        echo "runbook.sh: $work lies inside $above, which LigninDB takes for the build of a checkpoint" >&2
+        exit 2
+        ;;
+    esac
+    above=$(dirname -- "$above")
+done
+above=$(cd -P -- "$above" && pwd -P)
+while :; do
+    case "$(basename -- "$above" | tr '[:upper:]' '[:lower:]')" in *.creating)
+        echo "runbook.sh: $work lies inside $above, which LigninDB takes for the build of a checkpoint" >&2
+        exit 2
+        ;;
+    esac
+    if [ -e "$above/CURRENT" ] || [ -e "$above/MANIFEST" ] || [ -e "$above/MANIFEST.deleting" ]; then
+        echo "runbook.sh: $work lies inside $above, a database directory" >&2
+        exit 2
+    fi
+    if [ "$above" = / ] || [ "$above" = . ]; then
+        break
+    fi
+    above=$(dirname -- "$above")
+done
+mkdir -p "$work"
+work=$(cd "$work" && pwd -P && echo .)
+work=${work%$'\n.'}
+case "$work" in *$'\n'*)
+    echo "runbook.sh: WORK resolves to a path with a line break in it" >&2
+    exit 2
+    ;;
+esac
+
+# The chapters are read from beside this script: a copy of it elsewhere, or
+# a link to it, would find none and run nothing.
+for document in "${documents[@]}" "${others[@]}"; do
+    if [ ! -f "$here/$document" ]; then
+        echo "runbook.sh: $here/$document is not there: run the script where it is, beside the chapters" >&2
+        exit 2
+    fi
+done
+for document in "${others[@]}"; do
+    if grep -q '^ *```sh' "$here/$document"; then
+        echo "runbook.sh: $document has a block marked sh, which this script does not run" >&2
+        exit 2
+    fi
+done
+
+# The blocks of each document, in order, as `@@ KIND DOCUMENT LINE`, their
+# lines, and `@@ end`: a block of commands, or the line a directive is on.
+extract() {
+    awk -v document="$1" '
+        /^ *<!-- runbook\.sh: .* -->$/ && !open {
+            text = $0
+            sub(/^ *<!-- runbook\.sh: /, "", text)
+            sub(/ -->$/, "", text)
+            printf "@@ set %s %d\n%s\n@@ end\n", document, NR, text
+            next
+        }
+        /^[[:space:]]*```[[:space:]]*sh[[:space:]]*$/ && !open {
+            open = 1
+            indent = index($0, "`") - 1
+            printf "@@ run %s %d\n", document, NR + 1
+            next
+        }
+        /^[[:space:]]*```[[:space:]]*$/ && open {
+            open = 0
+            print "@@ end"
+            next
+        }
+        open { print substr($0, indent + 1) }
+    ' "$here/$1"
+}
+
+script=$(mktemp "${TMPDIR:-/tmp}/runbook.XXXXXX")
+trap 'rm -f "$script"' EXIT
+{
+    echo 'set -euo pipefail'
+    echo "export GROVEDB_REF=$(printf '%q' "$GROVEDB_REF") WORK=$(printf '%q' "$work")"
+    echo 'cd "$WORK"'
+    echo 'where=start'
+    echo 'trap '\''echo; echo "runbook.sh: the command at $where failed" >&2'\'' ERR'
+} >"$script"
+pending=''
+# Writes the command in `pending` to the script: printed, then run.
+flush() {
+    local first=1 line
+    printf "where=%q\n" "$place" >>"$script"
+    while IFS= read -r line; do
+        if [ $first = 1 ]; then
+            printf "printf '%%s\\\\n' %q\n" "\$ $line" >>"$script"
+            first=0
+        else
+            printf "printf '%%s\\\\n' %q\n" "> $line" >>"$script"
+        fi
+    done <<<"$pending"
+    printf '%s\n' "$pending" >>"$script"
+    pending=''
+}
+for document in "${documents[@]}"; do
+    printf "printf '\\\\n## %s\\\\n'\n" "$document" >>"$script"
+    kind='' place='' blocks=0
+    while IFS= read -r line; do
+        case "$line" in
+            '@@ run '* | '@@ set '*)
+                read -r _ kind name number <<<"$line"
+                place="$name:$number"
+                if [ "$kind" = run ]; then
+                    blocks=$((blocks + 1))
+                fi
+                ;;
+            '@@ end')
+                if [ -n "$pending" ]; then
+                    echo "runbook.sh: an incomplete command at the end of the block at $place" >&2
+                    exit 2
+                fi
+                kind=''
+                ;;
+            *)
+                if [ "$kind" = set ]; then
+                    printf "printf '%%s\\\\n' %q\n" "# set by runbook.sh: $line" >>"$script"
+                    printf '%s\n' "$line" >>"$script"
+                    continue
+                fi
+                pending=${pending:+$pending$'\n'}$line
+                # A command is complete when the shell parses it and its last
+                # line does not go on in the next.
+                if [ "${line%\\}" = "$line" ] && bash -n <<<"$pending" 2>/dev/null; then
+                    flush
+                fi
+                ;;
+        esac
+    done < <(extract "$document")
+    # What `extract` could not read is no error of this loop's: a document
+    # that gave it no block is refused here.
+    if [ "$blocks" -eq 0 ]; then
+        echo "runbook.sh: no block marked sh was read from $document" >&2
+        exit 2
+    fi
+done
+cat >>"$script" <<'REFUSAL'
+where='runbook.sh: the refusal that step 4 cites'
+printf '\n## %s\n$ lignin migrate "$TARGET" --survey\n' "$where"
+if refusal=$(lignin migrate "$TARGET" --survey 2>&1); then
+    printf '%s\n' "$refusal"
+    echo "runbook.sh: the survey took the LigninDB database at $TARGET" >&2
+    false
+fi
+printf '%s\n' "$refusal"
+case "$refusal" in *", an entry that only a LigninDB database makes, and this command reads a RocksDB database alone: nothing was opened or locked. "*) ;; *)
+    echo "runbook.sh: the survey of $TARGET was refused otherwise than step 4 says" >&2
+    false
+    ;;
+esac
+REFUSAL
+echo "printf '\\nrunbook.sh: every command ran\\n'" >>"$script"
+
+echo "runbook.sh: GROVEDB_REF=$GROVEDB_REF WORK=$work, $(uname -sm)"
+bash "$script"

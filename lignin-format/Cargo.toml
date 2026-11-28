@@ -1,0 +1,16 @@
+[package]
+name = "lignin-format"
+description = "LigninDB on-disk byte formats: page images, delta records, log records, segments, manifest and value log"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
+crc32c = "0.6.9"
+lz4_flex = { version = "0.14.2", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
+
+[dev-dependencies]
+lignin-io = { version = "7.0.0", path = "../lignin-io" }

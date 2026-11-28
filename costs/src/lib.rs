@@ -32,6 +32,7 @@
 
 /// Cost Contexts
 pub mod context;
+pub mod cost_model;
 /// Cost Errors
 pub mod error;
 /// Storage Costs

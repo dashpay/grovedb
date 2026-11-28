@@ -44,6 +44,8 @@ pub mod committer;
 mod convert_to_big_sum_tree;
 /// Getting values by key from a Merk tree.
 pub mod get;
+/// The set of keys an apply notes.
+mod key_set;
 /// Metadata (non-authenticated KV) access for Merk trees, cached in memory
 /// alongside uncommitted tree state.
 mod meta;
@@ -63,21 +65,22 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
     fmt,
+    ops::Deref,
 };
 
-use committer::MerkCommitter;
+use committer::{MerkCommitter, NodeUpdate, NodeUpdates};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithValue, CostContext,
-    CostResult, CostsExt, FeatureSumLength, OperationCost, TreeCostType,
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
-use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
-use source::MerkSource;
+pub use key_set::KeySet;
+use source::{MerkSource, PaidNodes};
 
 use crate::{
     error::Error,
-    merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
+    merk::options::MerkOptions,
     proofs::{
         branch::{
             calculate_chunk_depths, calculate_chunk_depths_with_minimum,
@@ -90,12 +93,12 @@ use crate::{
         query::query_item::QueryItem,
         Query,
     },
+    store::{NodeChangeSet, NodeCursor, NodeStore},
     tree::{
         kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Fetch, Op, RefWalker,
         TreeNode, NULL_HASH,
     },
     tree_type::TreeType,
-    Error::{CostsError, EdError, StorageError},
     Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
@@ -103,9 +106,9 @@ use crate::{
 /// Key update types
 pub struct KeyUpdates {
     /// Keys that were newly inserted.
-    pub new_keys: BTreeSet<Vec<u8>>,
+    pub new_keys: KeySet,
     /// Keys whose values were updated.
-    pub updated_keys: BTreeSet<Vec<u8>>,
+    pub updated_keys: KeySet,
     /// Keys that were deleted, along with their storage costs.
     pub deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
     /// The previous root key if the root key changed.
@@ -115,33 +118,30 @@ pub struct KeyUpdates {
 impl KeyUpdates {
     /// New KeyUpdate
     pub fn new(
-        new_keys: BTreeSet<Vec<u8>>,
-        updated_keys: BTreeSet<Vec<u8>>,
+        new_keys: impl Into<KeySet>,
+        updated_keys: impl Into<KeySet>,
         deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
         updated_root_key_from: Option<Vec<u8>>,
     ) -> Self {
         Self {
-            new_keys,
-            updated_keys,
+            new_keys: new_keys.into(),
+            updated_keys: updated_keys.into(),
             deleted_keys,
             updated_root_key_from,
         }
     }
-}
 
-/// Type alias for simple function signature
-pub type BatchValue = (
-    Vec<u8>,
-    Option<(TreeCostType, FeatureSumLength)>,
-    ChildrenSizesWithValue,
-    KeyValueStorageCost,
-);
+    /// No key update.
+    pub fn none() -> Self {
+        Self::new(KeySet::new(), KeySet::new(), LinkedList::new(), None)
+    }
+}
 
 /// Root hash key and sum
 pub type RootHashKeyAndAggregateData = (CryptoHash, Option<Vec<u8>>, AggregateData);
 
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
-pub struct KVIterator<'a, I: RawIterator> {
+pub struct KVIterator<'a, I: NodeCursor> {
     raw_iter: I,
     _query: &'a Query,
     left_to_right: bool,
@@ -149,7 +149,7 @@ pub struct KVIterator<'a, I: RawIterator> {
     current_query_item: Option<&'a QueryItem>,
 }
 
-impl<'a, I: RawIterator> KVIterator<'a, I> {
+impl<'a, I: NodeCursor> KVIterator<'a, I> {
     /// New iterator
     pub fn new(raw_iter: I, query: &'a Query) -> CostContext<Self> {
         let mut cost = OperationCost::default();
@@ -166,34 +166,38 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 
     /// Returns the current node the iter points to if it's valid for the given
     /// query item returns None otherwise
+    ///
+    /// A key the cursor stands on with no record under it was removed under
+    /// the cursor, and is passed over. Where the record could not be read,
+    /// which the cursor's status says, the walk ends.
     fn get_kv(&mut self, query_item: &QueryItem) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
-        if query_item
+        while query_item
             .iter_is_valid_for_type(&self.raw_iter, None, None, self.left_to_right)
             .unwrap_add_cost(&mut cost)
         {
-            let kv = (
-                self.raw_iter
-                    .key()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("key must exist as iter is valid")
-                    .to_vec(),
-                self.raw_iter
-                    .value()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("value must exists as iter is valid")
-                    .to_vec(),
-            );
+            let key = self
+                .raw_iter
+                .key()
+                .unwrap_add_cost(&mut cost)
+                .expect("key must exist as iter is valid")
+                .to_vec();
+            let value = self.raw_iter.value().unwrap_add_cost(&mut cost);
+            let value = value.map(<[u8]>::to_vec);
+            if value.is_none() && self.raw_iter.status().is_err() {
+                break;
+            }
             if self.left_to_right {
                 self.raw_iter.next().unwrap_add_cost(&mut cost)
             } else {
                 self.raw_iter.prev().unwrap_add_cost(&mut cost)
             }
-            Some(kv).wrap_with_cost(cost)
-        } else {
-            None.wrap_with_cost(cost)
+            if let Some(value) = value {
+                return Some((key, value)).wrap_with_cost(cost);
+            }
         }
+        None.wrap_with_cost(cost)
     }
 
     /// Moves the iter to the start of the next query item
@@ -212,7 +216,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 }
 
 // Cannot be an Iterator as it should return cost
-impl<I: RawIterator> KVIterator<'_, I> {
+impl<I: NodeCursor> KVIterator<'_, I> {
     /// Next key-value
     pub fn next_kv(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
@@ -291,7 +295,7 @@ pub use grovedb_query::proofs::NodeType;
 ///
 /// Each `Merk` instance is a self-balancing binary search tree where every
 /// node carries a cryptographic hash of its subtree. The generic parameter
-/// `S` is the backing storage (typically a RocksDB storage context).
+/// `S` is the [`NodeStore`] that holds its nodes.
 ///
 /// In GroveDB a `Merk` represents a single subtree in the grove hierarchy.
 /// Its root hash is propagated upward into the parent tree's node, forming
@@ -300,23 +304,16 @@ pub struct Merk<S> {
     /// The in-memory root of the AVL tree, or `None` if the tree is empty.
     /// Wrapped in a `Cell` so it can be temporarily taken out for traversal
     /// and mutation (see `use_tree`, `walk`) without requiring `&mut self`.
-    pub(crate) tree: Cell<Option<TreeNode>>,
+    pub(crate) tree: TreeCell,
     /// The key under which the root `TreeNode` is stored, or `None` for an
     /// empty tree. For standalone/base Merks this is read from the
     /// `ROOT_KEY_KEY` metadata entry; for layered Merks it is supplied by
     /// the parent tree. Updated after each commit when the root may change
     /// due to AVL rotations.
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
-    /// The backing storage context for reading and writing tree nodes.
-    ///
-    /// Concrete types used in practice:
-    /// - `PrefixedRocksDbImmediateStorageContext` — direct reads/writes outside
-    ///   a transaction.
-    /// - `PrefixedRocksDbTransactionContext` — reads/writes within an
-    ///   optimistic transaction; writes go to a `StorageBatch` and are
-    ///   committed atomically.
-    /// - `PrefixedRocksDbReadOnlyStorageContext` — read-only access used during
-    ///   proof generation and queries.
+    /// The node store: the handle through which this Merk reads and writes
+    /// its nodes. Every storage context of `grovedb-storage` is one (see
+    /// [`crate::store::kv`]).
     pub storage: S,
     /// How this Merk is managed: standalone, base, or layered under a parent.
     pub merk_type: MerkType,
@@ -326,6 +323,9 @@ pub struct Merk<S> {
     meta_cache: HashMap<Vec<u8>, Option<Vec<u8>>>,
     /// The kind of data this tree holds (normal, sum, count, etc.).
     pub tree_type: TreeType,
+    /// The nodes a walk was charged for and did not keep in `tree`, on a
+    /// store that leaves the values of such a walk's nodes out.
+    paid_nodes: PaidNodes,
 }
 
 /// Adds the key of `walker`'s node and of every node under it to `keys`.
@@ -356,28 +356,37 @@ where
     Ok(()).wrap_with_cost(cost)
 }
 
+/// The cell of a Merk's tree. When it is dropped, with its Merk, the
+/// memory of the tree it holds is given to the thread
+/// ([`crate::tree::spare`]).
+#[derive(Default)]
+pub(crate) struct TreeCell(Cell<Option<TreeNode>>);
+
+impl Deref for TreeCell {
+    type Target = Cell<Option<TreeNode>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TreeCell {
+    fn drop(&mut self) {
+        if let Some(tree) = self.0.take() {
+            crate::tree::spare::give_tree(tree);
+        }
+    }
+}
+
 impl<S> fmt::Debug for Merk<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Merk").finish()
     }
 }
 
-/// Result type for tree mutation operations, containing tuples of
-/// (key, optional cost type and feature sum length, children sizes with value,
-/// key-value storage cost).
-pub type UseTreeMutResult = CostResult<
-    Vec<(
-        Vec<u8>,
-        Option<(TreeCostType, FeatureSumLength)>,
-        ChildrenSizesWithValue,
-        KeyValueStorageCost,
-    )>,
-    Error,
->;
-
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Returns the root hash of the tree (a digest for the entire store which
     /// proofs can be checked against). If the tree is empty, returns the null
@@ -467,20 +476,22 @@ where
     {
         let mut cost = OperationCost::default();
         let options = options.unwrap_or_default();
-        let mut batch = self.storage.new_batch();
-        let to_batch_wrapped = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
+        let mut change_set = self.storage.change_set();
+        let to_batch_wrapped = self.use_tree_mut(|maybe_tree| {
             // TODO: concurrent commit
             let mut inner_cost = OperationCost::default();
 
             if let Some(tree) = maybe_tree {
                 // TODO: configurable committer
-                let mut committer = MerkCommitter::new(tree.height(), 100);
+                let mut committer = MerkCommitter::new(&mut change_set, tree.height(), 100);
                 cost_return_on_error!(
                     &mut inner_cost,
                     tree.commit(&mut committer, old_specialized_cost)
                 );
+                let to_batch = committer.batch;
 
                 let tree_key = tree.key();
+                change_set.state_root(Some(tree_key));
                 // if they are a base merk we should update the root key
                 if self.merk_type.requires_root_storage_update() {
                     // there are two situation where we want to put the root key
@@ -507,15 +518,14 @@ where
                         // update pointer to root node
                         cost_return_on_error_no_add!(
                             inner_cost,
-                            batch
-                                .put_root(ROOT_KEY_KEY, tree_key, costs)
-                                .map_err(CostsError)
+                            change_set.put_root_key(tree_key, costs)
                         );
                     }
                 }
 
-                Ok(committer.batch)
+                Ok(to_batch)
             } else {
+                change_set.state_root(None);
                 if self.merk_type.requires_root_storage_update() {
                     // empty tree, delete pointer to root
                     let cost = if options.base_root_storage_is_free {
@@ -524,10 +534,10 @@ where
                     } else {
                         None // means it will be calculated
                     };
-                    batch.delete_root(ROOT_KEY_KEY, cost);
+                    change_set.delete_root_key(cost);
                 }
 
-                Ok(vec![])
+                Ok(NodeUpdates::new())
             }
             .wrap_with_cost(inner_cost)
         });
@@ -535,25 +545,18 @@ where
         let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
 
         // TODO: move this to MerkCommitter impl?
-        for (key, maybe_cost) in key_updates.deleted_keys {
-            to_batch.push((key, None, None, maybe_cost));
+        for (key, storage_cost) in key_updates.deleted_keys {
+            to_batch.push(&key, NodeUpdate::Remove(storage_cost));
         }
-        to_batch.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, maybe_sum_tree_cost, maybe_value, storage_cost) in to_batch {
-            if let Some((value, left_size, right_size)) = maybe_value {
-                cost_return_on_error_no_add!(
+        let (keys, to_batch) = to_batch.into_sorted();
+        for (key, update) in to_batch {
+            let key = &keys[key];
+            match update {
+                NodeUpdate::Write(node, write_cost) => cost_return_on_error_no_add!(
                     cost,
-                    batch
-                        .put(
-                            &key,
-                            &value,
-                            Some((maybe_sum_tree_cost, left_size, right_size)),
-                            Some(storage_cost)
-                        )
-                        .map_err(CostsError)
-                );
-            } else {
-                batch.delete(&key, Some(storage_cost));
+                    change_set.put_node(key, node, Some(write_cost))
+                ),
+                NodeUpdate::Remove(storage_cost) => change_set.delete_node(key, Some(storage_cost)),
             }
         }
 
@@ -561,11 +564,9 @@ where
             match value {
                 Op::Put(value, ..) => cost_return_on_error_no_add!(
                     cost,
-                    batch
-                        .put_aux(key, value, storage_cost.clone())
-                        .map_err(CostsError)
+                    change_set.put_aux_record(key.as_ref(), value, storage_cost.clone())
                 ),
-                Op::Delete => batch.delete_aux(key, storage_cost.clone()),
+                Op::Delete => change_set.delete_aux_record(key.as_ref(), storage_cost.clone()),
                 _ => {
                     cost_return_on_error_no_add!(
                         cost,
@@ -578,7 +579,7 @@ where
         }
 
         // write to db
-        let commit_result = self.storage.commit_batch(batch).map_err(StorageError);
+        let commit_result = self.storage.commit(change_set);
         if grove_version.merk_versions.batch.commit >= 1 {
             // V1+: preserve accumulated batch costs (seek counts, storage costs)
             commit_result.add_cost(cost)
@@ -628,16 +629,26 @@ where
     }
 
     /// Checks if it's an empty tree
+    ///
+    /// A cursor that reports an error answers "not empty": the first node
+    /// could not be read, so nothing is known of the tree. That is the safe
+    /// side. A caller acts on "empty" by removing the tree's element and
+    /// leaving its nodes alone, which would strand the nodes of a tree
+    /// that has some; on "not empty" it refuses or walks the tree.
     pub fn is_empty_tree(&self) -> CostContext<bool> {
-        let mut iter = self.storage.raw_iter();
-        iter.seek_to_first().flat_map(|_| iter.valid().map(|x| !x))
+        let mut iter = self.storage.cursor();
+        iter.seek_to_first()
+            .flat_map(|_| iter.valid().map(|x| !x && iter.status().is_ok()))
     }
 
     /// Checks if it's an empty tree excluding exceptions
+    ///
+    /// A cursor that reports an error answers "not empty", as for
+    /// [`Self::is_empty_tree`]: the walk did not come to every node.
     pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> CostContext<bool> {
         let mut cost = OperationCost::default();
 
-        let mut iter = self.storage.raw_iter();
+        let mut iter = self.storage.cursor();
         iter.seek_to_first().unwrap_add_cost(&mut cost);
         while let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
             if except_keys.take(key).is_none() {
@@ -645,7 +656,7 @@ where
             }
             iter.next().unwrap_add_cost(&mut cost)
         }
-        true.wrap_with_cost(cost)
+        iter.status().is_ok().wrap_with_cost(cost)
     }
 
     /// Use tree
@@ -674,15 +685,7 @@ where
     /// treated as free in the default configuration
     /// (\`base_root_storage_is_free: true\`).
     pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostResult<(), Error> {
-        if let Some(key) = key {
-            self.storage
-                .put_root(ROOT_KEY_KEY, key.as_slice(), None)
-                .map_err(Error::StorageError)
-        } else {
-            self.storage
-                .delete_root(ROOT_KEY_KEY, None)
-                .map_err(Error::StorageError)
-        }
+        self.storage.set_root_key(key.as_deref())
     }
 
     /// Loads the Merk from the base root key
@@ -695,30 +698,24 @@ where
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        self.storage
-            .get_root(ROOT_KEY_KEY)
-            .map(|root_result| root_result.map_err(Error::StorageError))
-            .flat_map_ok(|tree_root_key_opt| {
-                // In case of successful seek for root key check if it exists
-                if let Some(tree_root_key) = tree_root_key_opt {
-                    // Trying to build a tree out of it, costs will be accumulated because
-                    // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-                    TreeNode::get(
-                        &self.storage,
-                        tree_root_key,
-                        value_defined_cost_fn,
-                        grove_version,
-                    )
+        self.storage.root_key().flat_map_ok(|tree_root_key_opt| {
+            // In case of successful seek for root key check if it exists
+            if let Some(tree_root_key) = tree_root_key_opt {
+                // Trying to build a tree out of it, costs will be accumulated because
+                // `get_node` returns `CostContext` and this call happens inside `flat_map_ok`.
+                self.storage
+                    .get_node(&tree_root_key, value_defined_cost_fn, grove_version)
                     .map_ok(|tree| {
                         if let Some(t) = tree.as_ref() {
                             self.root_tree_key = Cell::new(Some(t.key().to_vec()));
                         }
-                        self.tree = Cell::new(tree);
+                        self.tree.set(tree);
+                        self.paid_nodes.clear();
                     })
-                } else {
-                    Ok(()).wrap_with_cost(Default::default())
-                }
-            })
+            } else {
+                Ok(()).wrap_with_cost(Default::default())
+            }
+        })
     }
 
     /// Loads the Merk from it's parent root key
@@ -734,16 +731,13 @@ where
         // In case of successful seek for root key check if it exists
         if let Some(tree_root_key) = self.root_tree_key.get_mut() {
             // Trying to build a tree out of it, costs will be accumulated because
-            // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-            TreeNode::get(
-                &self.storage,
-                tree_root_key,
-                value_defined_cost_fn,
-                grove_version,
-            )
-            .map_ok(|tree| {
-                self.tree = Cell::new(tree);
-            })
+            // `get_node` returns `CostContext` and this call happens inside `flat_map_ok`.
+            self.storage
+                .get_node(tree_root_key, value_defined_cost_fn, grove_version)
+                .map_ok(|tree| {
+                    self.tree.set(tree);
+                    self.paid_nodes.clear();
+                })
         } else {
             // The tree is empty
             Ok(()).wrap_with_cost(Default::default())
@@ -861,13 +855,14 @@ where
         };
 
         let instruction_id = traversal_instruction_as_vec_bytes(traversal_instruction);
-        let node = TreeNode::get(
-            &self.storage,
-            key,
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )
-        .unwrap();
+        let node = self
+            .storage
+            .get_node(
+                &key,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap();
 
         if node.is_err() {
             bad_link_map.insert(instruction_id.to_vec(), hash);
@@ -1062,6 +1057,7 @@ where
                 }
                 Some(w) => w,
             };
+            walker.values_on_demand();
 
             // First, find the path to the target key
             let find_result = walker
@@ -1153,46 +1149,24 @@ where
     }
 }
 
-fn fetch_node<'db>(
-    db: &impl StorageContext<'db>,
-    key: &[u8],
-    value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-    grove_version: &GroveVersion,
-) -> Result<Option<TreeNode>, Error> {
-    let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
-    if let Some(bytes) = bytes {
-        Ok(Some(
-            TreeNode::decode(key.to_vec(), &bytes, value_defined_cost_fn, grove_version)
-                .map_err(EdError)?,
-        ))
-    } else {
-        Ok(None)
-    }
-}
-
-// // TODO: get rid of Fetch/source and use GroveDB storage_cost abstraction
-
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod test {
 
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-        RawIterator, Storage, StorageBatch, StorageContext,
-    };
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use super::{Merk, RefWalker};
     use crate::{
         merk::source::MerkSource,
+        store::{stored_record, NodeChange, NodeCursor, NodeStore},
         test_utils::*,
-        tree::{kv::ValueDefinedCostType, NULL_HASH},
+        tree::{kv::ValueDefinedCostType, TreeNode, NULL_HASH},
         tree_type::TreeType,
-        Error, Op,
+        Error, Op, TreeFeatureType,
         TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
@@ -1208,8 +1182,6 @@ mod test {
     /// the tree links it; the walk names only what the tree links.
     #[test]
     fn linked_keys_names_what_the_tree_links_not_what_storage_holds() {
-        use grovedb_storage::StorageContext;
-
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..20);
@@ -1217,19 +1189,23 @@ mod test {
             .unwrap()
             .expect("apply");
         let (linked_key, _) = &batch[7];
-        let node = merk.storage.get(linked_key).unwrap().expect("read a node");
-        assert!(node.is_none(), "the batch is not in storage yet");
+        assert!(
+            stored_record(&merk.storage, linked_key).is_none(),
+            "the batch is not in storage yet"
+        );
         merk.commit(grove_version);
-        let node = merk
-            .storage
-            .get(linked_key)
-            .unwrap()
-            .expect("read a node")
-            .expect("the node is stored");
+        let node = stored_record(&merk.storage, linked_key).expect("the node is stored");
 
         // A copy of a node under a key of its own, linked by nothing.
+        let unlinked = TreeNode::decode_raw(
+            &node,
+            b"unlinked".to_vec(),
+            None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .expect("decode the node");
         merk.storage
-            .put(b"unlinked", &node, None, None)
+            .write_node(&unlinked, NodeChange::ValueWritten)
             .unwrap()
             .expect("store a record");
         merk.commit(grove_version);
@@ -1249,6 +1225,171 @@ mod test {
         assert_eq!(linked.len(), 20);
         assert!(!linked.contains(b"unlinked".as_slice()));
         assert!(batch.iter().all(|(key, _)| linked.contains(key)));
+    }
+
+    /// The feature of a node of a tree of `tree_type` that carries `n`.
+    fn feature_of(tree_type: TreeType, n: u64) -> TreeFeatureType {
+        use TreeFeatureType::*;
+        let sum = n as i64 - 3;
+        let big = i128::from(sum) << 70;
+        match tree_type {
+            TreeType::NormalTree => BasicMerkNode,
+            TreeType::SumTree => SummedMerkNode(sum),
+            TreeType::BigSumTree => BigSummedMerkNode(big),
+            TreeType::CountTree => CountedMerkNode(1),
+            TreeType::CountSumTree => CountedSummedMerkNode(1, sum),
+            TreeType::ProvableCountTree => ProvableCountedMerkNode(1),
+            TreeType::ProvableCountSumTree => ProvableCountedSummedMerkNode(1, sum),
+            TreeType::ProvableSumTree => ProvableSummedMerkNode(sum),
+            TreeType::ProvableCountProvableSumTree => {
+                ProvableCountedAndProvableSummedMerkNode(1, sum)
+            }
+            TreeType::ProvableCountProvableBigSumTree => {
+                ProvableCountedAndProvableBigSummedMerkNode(1, big)
+            }
+            TreeType::CountBigSumTree => CountedBigSummedMerkNode(1, big),
+            TreeType::ProvableBigSumTree => ProvableBigSummedMerkNode(big),
+            other => panic!("no feature chosen for {other:?}"),
+        }
+    }
+
+    /// Values of every size are stored and read back as they were put,
+    /// under every tree type whose nodes carry an aggregate of their own:
+    /// an empty value, values on both sides of 256 bytes and of 4, 8, 16
+    /// and 32 KiB, which are the sizes at which a store that keeps nodes
+    /// in pages may keep a value elsewhere, and a megabyte.
+    #[test]
+    fn large_values_are_stored_and_read_back_under_every_tree_type() {
+        let grove_version = GroveVersion::latest();
+        let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        let lengths: [usize; 16] = [
+            0,
+            255,
+            256,
+            257,
+            4_095,
+            4_097,
+            8_191,
+            8_193,
+            16_383,
+            16_385,
+            32_767,
+            32_768,
+            32_769,
+            100_000,
+            300_000,
+            1 << 20,
+        ];
+        // Each stretch of 256 bytes of a value, counted from its start,
+        // begins with its own number in two bytes.
+        let value = |len: usize, salt: u8| -> Vec<u8> {
+            let byte = |at: usize| match at % 256 {
+                0 => (at >> 8) as u8,
+                1 => (at >> 16) as u8,
+                within => (within as u8).wrapping_mul(31).wrapping_add(salt),
+            };
+            (0..len).map(byte).collect()
+        };
+        let longest = value(1 << 20, 1);
+        let stretches: std::collections::BTreeSet<&[u8]> = longest.chunks(256).collect();
+        assert_eq!(stretches.len(), 1 << 12, "two stretches are the same");
+        let key = |k: usize| vec![b'k', k as u8];
+        for tree_type in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableCountProvableBigSumTree,
+            TreeType::CountBigSumTree,
+            TreeType::ProvableBigSumTree,
+        ] {
+            let mut merk = TempMerk::new_with_tree_type(grove_version, tree_type);
+            let count = lengths.len();
+            // What the Merk holds after each round, by the number of its
+            // key: a length and the salt of the bytes. First a value of
+            // every length. Then every key has the length of the key at
+            // the other end, so that a long value becomes a short one and
+            // a short one a long one, but the middle one, which is put
+            // again as it is, and the first, which is removed.
+            let first: Vec<Option<(usize, u8)>> =
+                lengths.iter().map(|len| Some((*len, 1))).collect();
+            let second: Vec<Option<(usize, u8)>> = (0..count)
+                .map(|k| match k {
+                    0 => None,
+                    k if k == count / 2 => first[k],
+                    k => Some((lengths[count - 1 - k], 2)),
+                })
+                .collect();
+
+            for (round, held) in [first, second].into_iter().enumerate() {
+                let at = format!("{tree_type}, round {round}");
+                let batch: Vec<_> = (held.iter().enumerate())
+                    .map(|(k, held)| match held {
+                        Some((len, salt)) => {
+                            let feature = feature_of(tree_type, k as u64 + u64::from(*salt));
+                            (key(k), Op::Put(value(*len, *salt), feature))
+                        }
+                        None => (key(k), Op::Delete),
+                    })
+                    .collect();
+                merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+                    .unwrap()
+                    .expect("apply");
+                let root_hash = merk.root_hash().unwrap();
+                // The Merk is opened again on what the commit stored.
+                merk.commit(grove_version);
+                assert_eq!(merk.root_hash().unwrap(), root_hash, "{at}");
+                for (k, held) in held.iter().enumerate() {
+                    let read = merk.get(&key(k), true, no_cost, grove_version);
+                    let read = read.unwrap().expect("a read");
+                    let expected = held.map(|(len, salt)| value(len, salt));
+                    assert!(read == expected, "the value under key {k}, {at}");
+                    // A node that is read from the store carries the value
+                    // hash of the bytes it was put with.
+                    let hash = merk.get_value_hash(&key(k), true, no_cost, grove_version);
+                    let expected = expected.map(|value| crate::tree::value_hash(&value).unwrap());
+                    assert_eq!(hash.unwrap().expect("a read"), expected, "{at}");
+                }
+                // The cursor shows the keys the Merk holds, in their
+                // order and each once, and under each the record of its
+                // node, with its value and its feature.
+                let mut cursor = merk.storage.cursor();
+                cursor.seek_to_first().unwrap();
+                let mut shown = Vec::new();
+                while cursor.valid().unwrap() {
+                    let shown_key = cursor.key().unwrap().expect("a key").to_vec();
+                    let record = cursor.value().unwrap().expect("a record").to_vec();
+                    let node =
+                        TreeNode::decode_raw(&record, shown_key.clone(), no_cost, grove_version);
+                    let node = node.expect("a node record");
+                    let k = shown.len();
+                    shown.push((
+                        shown_key,
+                        node.value_as_slice().to_vec(),
+                        node.feature_type(),
+                    ));
+                    assert!(k < count, "more records than keys, {at}");
+                    cursor.next().unwrap();
+                }
+                assert!(cursor.status().is_ok(), "{at}");
+                let expected: Vec<_> = (held.iter().enumerate())
+                    .filter_map(|(k, held)| {
+                        let (len, salt) = (*held)?;
+                        let feature = feature_of(tree_type, k as u64 + u64::from(salt));
+                        Some((key(k), value(len, salt), feature))
+                    })
+                    .collect();
+                assert_eq!(shown.len(), expected.len(), "{at}");
+                for (shown, expected) in shown.iter().zip(&expected) {
+                    assert!(shown == expected, "the record under {:?}, {at}", expected.0);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1636,7 +1777,7 @@ mod test {
             .unwrap()
             .unwrap();
 
-        let value = merk.storage.get(key.as_slice()).unwrap().unwrap();
+        let value = stored_record(&merk.storage, key.as_slice());
         assert!(value.is_none());
     }
 
@@ -1725,18 +1866,13 @@ mod test {
     fn reopen_check_root_hash() {
         let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+        let storage = SuiteEngine::open(tmp_dir.path());
         let transaction = storage.start_transaction();
-        let storage_batch = StorageBatch::new();
+        let storage_batch = SuiteBatch::default();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(
-                    SubtreePath::empty(),
-                    Some(&storage_batch),
-                    &transaction,
-                )
+                .subtree(SubtreePath::empty(), Some(&storage_batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1758,18 +1894,13 @@ mod test {
     fn test_get_node_cost() {
         let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+        let storage = SuiteEngine::open(tmp_dir.path());
         let transaction = storage.start_transaction();
-        let storage_batch = StorageBatch::new();
+        let storage_batch = SuiteBatch::default();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(
-                    SubtreePath::empty(),
-                    Some(&storage_batch),
-                    &transaction,
-                )
+                .subtree(SubtreePath::empty(), Some(&storage_batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1787,8 +1918,8 @@ mod test {
     #[test]
     fn reopen() {
         let grove_version = GroveVersion::latest();
-        fn collect(
-            mut node: RefWalker<MerkSource<PrefixedRocksDbTransactionContext>>,
+        fn collect<'db, S: NodeStore<'db>>(
+            mut node: RefWalker<MerkSource<S>>,
             nodes: &mut Vec<Vec<u8>>,
         ) {
             let grove_version = GroveVersion::latest();
@@ -1820,18 +1951,13 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
 
         let original_nodes = {
-            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
-            let batch = StorageBatch::new();
+            let storage = SuiteEngine::open(tmp_dir.path());
+            let batch = SuiteBatch::default();
             let transaction = storage.start_transaction();
 
             let mut merk = Merk::open_base(
                 storage
-                    .get_transactional_storage_context(
-                        SubtreePath::empty(),
-                        Some(&batch),
-                        &transaction,
-                    )
+                    .subtree(SubtreePath::empty(), Some(&batch), &transaction)
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1845,13 +1971,13 @@ mod test {
                 .unwrap();
 
             storage
-                .commit_multi_context_batch(batch, Some(&transaction))
+                .apply_batch(batch, &transaction)
                 .unwrap()
                 .expect("cannot commit batch");
 
             let merk = Merk::open_base(
                 storage
-                    .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                    .subtree(SubtreePath::empty(), None, &transaction)
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1871,13 +1997,12 @@ mod test {
             nodes
         };
 
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+        let storage = SuiteEngine::open(tmp_dir.path());
         let transaction = storage.start_transaction();
 
         let merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .subtree(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1894,13 +2019,10 @@ mod test {
         assert_eq!(reopen_nodes, original_nodes);
     }
 
-    type PrefixedStorageIter<'db, 'ctx> =
-        &'ctx mut <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db>>::RawIterator;
-
     #[test]
     fn reopen_iter() {
         let grove_version = GroveVersion::latest();
-        fn collect(iter: PrefixedStorageIter<'_, '_>, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+        fn collect(iter: &mut impl NodeCursor, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
             while iter.valid().unwrap() {
                 nodes.push((
                     iter.key().unwrap().unwrap().to_vec(),
@@ -1912,18 +2034,13 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
 
         let original_nodes = {
-            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
-            let batch = StorageBatch::new();
+            let storage = SuiteEngine::open(tmp_dir.path());
+            let batch = SuiteBatch::default();
             let transaction = storage.start_transaction();
 
             let mut merk = Merk::open_base(
                 storage
-                    .get_transactional_storage_context(
-                        SubtreePath::empty(),
-                        Some(&batch),
-                        &transaction,
-                    )
+                    .subtree(SubtreePath::empty(), Some(&batch), &transaction)
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1937,14 +2054,14 @@ mod test {
                 .unwrap();
 
             storage
-                .commit_multi_context_batch(batch, Some(&transaction))
+                .apply_batch(batch, &transaction)
                 .unwrap()
                 .expect("cannot commit batch");
 
             let mut nodes = vec![];
             let merk = Merk::open_base(
                 storage
-                    .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                    .subtree(SubtreePath::empty(), None, &transaction)
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1952,19 +2069,18 @@ mod test {
             )
             .unwrap()
             .expect("cannot open merk");
-            collect(&mut merk.storage.raw_iter(), &mut nodes);
+            collect(&mut merk.storage.cursor(), &mut nodes);
 
             storage.commit_transaction(transaction).unwrap().unwrap();
 
             nodes
         };
 
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+        let storage = SuiteEngine::open(tmp_dir.path());
         let transaction = storage.start_transaction();
         let merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .subtree(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1974,7 +2090,7 @@ mod test {
         .expect("cannot open merk");
 
         let mut reopen_nodes = vec![];
-        collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);
+        collect(&mut merk.storage.cursor(), &mut reopen_nodes);
 
         assert_eq!(reopen_nodes, original_nodes);
     }
@@ -1983,14 +2099,13 @@ mod test {
     fn update_node() {
         let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let batch = StorageBatch::new();
+        let storage = SuiteEngine::open(tmp_dir.path());
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
+                .subtree(SubtreePath::empty(), Some(&batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2048,18 +2163,14 @@ mod test {
         assert_eq!(result, Some(b"b".to_vec()));
 
         storage
-            .commit_multi_context_batch(batch, Some(&transaction))
+            .apply_batch(batch, &transaction)
             .unwrap()
             .expect("cannot commit batch");
 
-        let batch2 = StorageBatch::new();
+        let batch2 = SuiteBatch::default();
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(
-                    SubtreePath::empty(),
-                    Some(&batch2),
-                    &transaction,
-                )
+                .subtree(SubtreePath::empty(), Some(&batch2), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

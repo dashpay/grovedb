@@ -20,7 +20,7 @@ graph TD
             LEFT["<b>left:</b> Option&lt;Link&gt;"]
             RIGHT["<b>right:</b> Option&lt;Link&gt;"]
         end
-        OLD["<b>old_value:</b> Option&lt;Vec&lt;u8&gt;&gt; — предыдущее значение для дельт стоимости"]
+        OLD["<b>baseline:</b> Baseline — предыдущее значение для дельт стоимости"]
         KNOWN["<b>known_storage_cost:</b> Option&lt;KeyValueStorageCost&gt;"]
     end
 
@@ -39,7 +39,7 @@ graph TD
 ```rust
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_value: Option<Vec<u8>>,        // Previous value for cost tracking
+    pub(crate) baseline: Baseline,                  // Previous value for cost tracking
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 

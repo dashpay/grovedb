@@ -5,7 +5,7 @@
 //! `verify_consistency_of_operations`, `apply_operations_without_batching`,
 //! non-Merk tree propagation in batch, and reference chain resolution in batch.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use grovedb_merk::tree::AggregateData;
     use grovedb_merk::tree_type::TreeType;

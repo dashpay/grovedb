@@ -9,6 +9,9 @@ on:
       - master
       - develop
       - 'v[0-9]+.[0-9]+-dev'
+      # The integration branch of the LigninDB work, while pull requests
+      # are opened into it. The line goes when the branch merges.
+      - 'feat/LigninDB'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -19,10 +22,14 @@ concurrency:
 # The jobs run on the organisation's own runners, which do not queue for the
 # GitHub-hosted slots every repository in the organisation shares.
 #
-# - The test shards, Linting, Formatting and Bincode run on the self-hosted
-#   Rust runners, [self-hosted, Linux, rust-ci].
+# - The test shards, the engine suites, Linting, Formatting and Bincode run on
+#   the self-hosted Rust runners, [self-hosted, Linux, rust-ci].
 # - Detect Changes runs on the light runner pool, which the organisation
 #   variable DASH_LIGHT_RUNNER names.
+# - The LigninDB crates' tests on Linux aarch64 and macOS aarch64 run on the
+#   GitHub-hosted runners of those platforms (ubuntu-24.04-arm, macos-15),
+#   and Miri on ubuntu-latest, because it installs a nightly toolchain.
+#   docs/lignindb/ci.md lists the LigninDB jobs and the platforms of each.
 #
 # Those runners are persistent, so they never run a pull request from a fork:
 # such a pull request runs on GitHub-hosted runners instead. The steps below
@@ -44,6 +51,8 @@ jobs:
       any-code: ${{ steps.filter.outputs.any-code }}
       needs-tests: ${{ steps.decide.outputs.needs-tests }}
       bincode: ${{ steps.filter.outputs.bincode }}
+      operator-docs: ${{ steps.filter.outputs.operator-docs }}
+      engine-suites: ${{ steps.engines.outputs.suites }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,21 +62,45 @@ jobs:
         with:
           # A change to this workflow or to the action it uses runs every job,
           # so the change is exercised before it merges.
+          #
+          # The golden corpus, the cost model's script and the golden files of
+          # the format are test data: a change to them runs the tests.
           filters: |
             any-code:
               - '**/*.rs'
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '**/test-engines.txt'
+              - 'lignin-testkit/corpus/**'
+              - 'lignin-testkit/cost-model-storage/**'
+              - 'lignin-format/fuzz/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
+              - '.github/scripts/**'
             build-files:
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '**/test-engines.txt'
+              - 'lignin-testkit/corpus/**'
+              - 'lignin-testkit/cost-model-storage/**'
+              - 'lignin-format/fuzz/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
+              - '.github/scripts/**'
             bincode:
               - 'grovedb-bincode/**'
               - 'grovedb-bincode-derive/**'
+              - '.github/workflows/grovedb.yml'
+              - '.github/actions/**'
+            operator-docs:
+              - 'docs/lignindb/**'
+              - 'docs/book/src/lignindb/**'
+              - 'docs/book/src/SUMMARY.md'
+              - 'lignin-tools/tests/operator_docs.rs'
+              - 'lignin-testkit/tests/runbook_rehearsal.rs'
+              - 'lignin-tools/tests/document_text/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
       - name: Check if Rust changes are doc-comment-only
@@ -95,6 +128,12 @@ jobs:
           else
             echo "needs-tests=${{ steps.filter.outputs.any-code }}" >> "$GITHUB_OUTPUT"
           fi
+      # A suite that is registered for more than one engine runs once on each.
+      # The test shards below run every suite on its first engine; this lists
+      # the others, from grovedb/test-engines.txt and merk/test-engines.txt.
+      - name: List the engines the suites run on besides their first
+        id: engines
+        run: echo "suites=$(.github/scripts/engine-suites.sh matrix)" >> "$GITHUB_OUTPUT"
 
   # Run tests sharded on Ubuntu
   test-ubuntu:
@@ -136,6 +175,13 @@ jobs:
         if: runner.environment == 'github-hosted'
       - uses: taiki-e/install-action@cargo-nextest
         if: runner.environment == 'github-hosted'
+      # The tests of the file layer's direct I/O path make io_uring
+      # instances, which a runner in a container can be refused. This prints
+      # in one line what the runner answers and sets LIGNIN_IO_URING for the
+      # tests, which hold the runner to it (docs/lignindb/ci.md, "The
+      # platforms of DEC-06").
+      - name: Ask the runner for an io_uring instance
+        run: .github/scripts/lignin-ci.sh rings
       - name: Run tests (shard ${{ matrix.partition }}/3)
         # --exclude removes the imported crates from both tests and coverage.
         # Their own checks run in the bincode job only when their files change.
@@ -178,15 +224,24 @@ jobs:
             du -sh target/llvm-cov-target || true
           fi
 
-  linting:
-    name: Linting
+  # The suites that are registered for more than one engine, on each of the
+  # others. Registering an engine adds its run here; nothing in this file
+  # names an engine.
+  test-engines:
+    name: Test ${{ matrix.suite.package }} on ${{ matrix.suite.engine }}
     needs: detect-changes
-    if: needs.detect-changes.outputs.any-code == 'true'
+    if: >-
+      needs.detect-changes.outputs.needs-tests == 'true'
+      && needs.detect-changes.outputs.engine-suites != '[]'
     runs-on: >-
       ${{ fromJSON((github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
       && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.detect-changes.outputs.engine-suites) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -196,7 +251,45 @@ jobs:
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/persistent-runner
         with:
-          tools: clang cmake
+          tools: clang cmake cargo-nextest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      - uses: taiki-e/install-action@cargo-nextest
+        if: runner.environment == 'github-hosted'
+      # The engine of a suite is the engine of the package's unit tests, so
+      # this runs those. The integration tests use the package as a dependent
+      # does and are run by the test shards, which also measure coverage.
+      - name: Run the suite on ${{ matrix.suite.engine }}
+        env:
+          SUITE_PACKAGE: ${{ matrix.suite.package }}
+          SUITE_VARIABLE: ${{ matrix.suite.variable }}
+          SUITE_ENGINE: ${{ matrix.suite.engine }}
+        run: >
+          env "$SUITE_VARIABLE=$SUITE_ENGINE"
+          cargo nextest run -p "$SUITE_PACKAGE" --all-features --lib
+
+  linting:
+    name: Linting
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake jq
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -234,6 +327,240 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
         run: cargo build --no-default-features --features verify -p grovedb
+      # The feature sets that must build apart: GroveDB with no engine (no
+      # RocksDB and no LigninDB among its crates, no gate that says
+      # `minimal`, and its tests that open no database), Merk on each engine
+      # alone, and the LigninDB crates with and without their features.
+      - name: Check the feature sets
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
+        run: .github/scripts/lignin-ci.sh features
+      # Only for the LigninDB crates: the older crates have documentation
+      # warnings (grovedb-merk had 33 when this step was added).
+      - name: Build the LigninDB documentation with warnings denied
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: ${{ runner.environment == 'github-hosted' && 'sccache' || '' }}
+        run: .github/scripts/lignin-ci.sh docs
+      # The order release-crates.yml publishes in, against the workspace: a
+      # new dependency between crates is caught here, not halfway through a
+      # release.
+      - name: Check the order of the crates a release publishes
+        run: .github/scripts/release-crates.sh check
+
+  # The LigninDB crates' tests on the platforms of DEC-06 that the test shards
+  # do not run on. The shards run them on Linux x86_64.
+  lignin-platforms:
+    name: LigninDB on ${{ matrix.platform }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: ${{ matrix.runner }}
+    # The tests grow with the engine: 74, 88 and 86 minutes on macOS on three
+    # heads, then more than 90. The limit is well above the slowest run seen.
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux aarch64
+            runner: ubuntu-24.04-arm
+          - platform: macOS aarch64
+            runner: macos-15
+    env:
+      # A panic still names its file and line, and the build takes about a
+      # third less disk and a quarter less memory (measured on x86_64).
+      # The hosted arm runner died three runs in a row while the test
+      # executables were linked with full debug info (docs/lignindb/ci.md,
+      # "Hosted runners").
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Describe the runner
+        continue-on-error: true
+        run: .github/scripts/lignin-ci.sh machine
+      # The RocksDB build of the test kit's dependencies needs libclang.
+      - name: Install clang
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v clang >/dev/null || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang libclang-dev
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      # The machine is printed every minute beside the tests, so a runner
+      # that dies leaves its last sample in the log.
+      - name: Run the LigninDB crates' tests
+        run: |
+          .github/scripts/lignin-ci.sh machine --every 60 &
+          monitor=$!
+          status=0
+          .github/scripts/lignin-ci.sh test || status=$?
+          kill "$monitor" 2>/dev/null || true
+          exit "$status"
+
+  # The loom models of the buffer pool, the snapshots and the write scopes.
+  lignin-loom:
+    name: LigninDB loom models
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/loom"
+      - name: Run the loom models
+        run: .github/scripts/lignin-ci.sh loom
+
+  # Miri over the unsafe code of the file layer and the buffer pool, and the
+  # software path of the checksum; and a build of the fuzz targets of
+  # lignin-format, which are not a workspace member. Both need a nightly
+  # toolchain, which a job installs, so this job stays hosted.
+  lignin-miri:
+    name: LigninDB Miri and fuzz targets
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: ubuntu-latest
+    # Miri's time on a hosted runner varies by a factor of two (51 to more
+    # than 90 minutes on the same sets of tests), so the limit is well above
+    # the slowest run seen.
+    timeout-minutes: 150
+    env:
+      LIGNIN_NIGHTLY: nightly-2026-02-24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LIGNIN_NIGHTLY }}
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run Miri
+        run: .github/scripts/lignin-ci.sh miri
+      - name: Build the fuzz targets of lignin-format
+        run: .github/scripts/lignin-ci.sh fuzz-targets
+
+  # The golden corpus replayed on the cost model of docs/lignindb/cost-model.md,
+  # a stand-in for the storage crate that keeps no node record.
+  cost-model:
+    name: Cost model replay
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/cost-model/target"
+      - name: Replay the golden corpus on the cost model
+        run: .github/scripts/lignin-ci.sh cost-model
+
+  # The golden corpus of the standard scale replayed on LigninDB and compared
+  # with the files RocksDB recorded: any cost, result, error, root hash or
+  # proof that differs fails it.
+  corpus-lignindb:
+    name: Golden corpus on LigninDB
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      - name: Replay the golden corpus on LigninDB
+        run: .github/scripts/lignin-ci.sh corpus --engine lignindb
+
+  # The operator's documents of LigninDB held to the code: each command, each
+  # quoted message and each default they give, their links, and the book's
+  # chapters, which are written from them. The test shards run this test
+  # too, but only when code changes; this job runs it when a document
+  # changes alone, which the shards do not see.
+  operator-docs:
+    name: Operator documents
+    needs: detect-changes
+    if: needs.detect-changes.outputs.operator-docs == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+      # The second step's build of the test kit needs libclang.
+      - name: Install clang
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v clang >/dev/null || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang libclang-dev
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      # Without the migrator's feature, so this build compiles no RocksDB:
+      # the case that migrates a GroveDB on RocksDB is left to the shards,
+      # which build every feature.
+      - name: Hold the operator's documents to the code
+        run: cargo test -p lignin-tools --test operator_docs
+      # The documents' commands of the benchmark, held to its own parser.
+      # It builds lignin-testkit, and with it GroveDB on RocksDB, which costs
+      # minutes on a runner without a kept target; it is here all the same
+      # because a change to a document alone runs no other job that would.
+      - name: Hold the benchmark's commands to its parser
+        run: cargo test -p lignin-testkit --test runbook_rehearsal
 
   formatting:
     name: Formatting

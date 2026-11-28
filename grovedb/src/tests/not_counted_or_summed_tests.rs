@@ -13,7 +13,7 @@
 
 #[cfg(test)]
 mod tests {
-    use grovedb_storage::StorageBatch;
+    use crate::tests::SuiteBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -201,7 +201,7 @@ mod tests {
         .expect("insert inner sum item");
 
         // The outer count-sum tree's aggregate must be (count=1, sum=5).
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let tx = db.start_transaction();
         let outer_merk = db
             .open_transactional_merk_at_path(
@@ -327,7 +327,7 @@ mod tests {
         // Outer aggregate must be (count=1, sum=7): only `plain` contributes;
         // the wrapped ProvableSumTree's implicit count-of-one and its
         // inner sum=42 are both suppressed.
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let tx = db.start_transaction();
         let outer_merk = db
             .open_transactional_merk_at_path(
@@ -451,7 +451,7 @@ mod tests {
 
         // Outer aggregate must NOT include the wrapped subtree's count (1)
         // or sum (123). Only `plain` contributes (1, 5).
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let tx = db.start_transaction();
         let outer_merk = db
             .open_transactional_merk_at_path(

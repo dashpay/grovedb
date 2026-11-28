@@ -1,21 +1,21 @@
 //! Proof generation and verification benchmarks
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb::{Element, GroveDb, PathQuery, Query, SizedQuery};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use rand::{prelude::*, rngs::StdRng, SeedableRng};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use tempfile::TempDir;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 const N_KEYS: u32 = 10_000;
 
 /// Single-item proof generation at various depths
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn single_item_proof(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let mut group = c.benchmark_group("single_item_proof");
@@ -42,7 +42,7 @@ pub fn single_item_proof(c: &mut Criterion) {
 }
 
 /// Full-leaf proof: range query over all items in a subtree
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn full_leaf_proof(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let (_dir, db, path, _first_key) = setup_db(1);
@@ -62,7 +62,7 @@ pub fn full_leaf_proof(c: &mut Criterion) {
 }
 
 /// Proof verification benchmark
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn proof_verification(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let (_dir, db, path, key) = setup_db(3);
@@ -88,7 +88,7 @@ pub fn proof_verification(c: &mut Criterion) {
 /// with `N_KEYS` items. Returns (TempDir, GroveDb, path, first_key).
 ///
 /// TempDir must be kept alive for the GroveDb to remain valid.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 fn setup_db(depth: usize) -> (TempDir, GroveDb, Vec<Vec<u8>>, Vec<u8>) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().expect("should create tmpdir");
@@ -137,12 +137,12 @@ fn setup_db(depth: usize) -> (TempDir, GroveDb, Vec<Vec<u8>>, Vec<u8>) {
     )
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_group!(
     benches,
     single_item_proof,
     full_leaf_proof,
     proof_verification
 );
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_main!(benches);

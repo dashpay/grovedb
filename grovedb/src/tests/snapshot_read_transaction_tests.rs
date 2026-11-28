@@ -110,16 +110,22 @@ mod tests {
 
         let plain_transaction = db.start_transaction();
         assert!(!plain_transaction.is_snapshot_read());
+        // How long a snapshot has been held is a question to RocksDB's
+        // transaction, which the seam does not ask an engine.
+        #[cfg(any(grovedb_test_engine = "rocksdb", grovedb_test_engine = "pinned-reads"))]
         assert_eq!(plain_transaction.snapshot_age(), None);
 
         let snapshot_transaction = db.start_snapshot_read_transaction();
         assert!(snapshot_transaction.is_snapshot_read());
-        let first = snapshot_transaction
-            .snapshot_age()
-            .expect("snapshot transactions report their hold time");
-        let second = snapshot_transaction
-            .snapshot_age()
-            .expect("snapshot transactions report their hold time");
-        assert!(second >= first, "hold time must not run backwards");
+        #[cfg(any(grovedb_test_engine = "rocksdb", grovedb_test_engine = "pinned-reads"))]
+        {
+            let first = snapshot_transaction
+                .snapshot_age()
+                .expect("snapshot transactions report their hold time");
+            let second = snapshot_transaction
+                .snapshot_age()
+                .expect("snapshot transactions report their hold time");
+            assert!(second >= first, "hold time must not run backwards");
+        }
     }
 }

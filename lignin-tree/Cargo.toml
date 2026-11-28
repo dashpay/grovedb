@@ -1,0 +1,38 @@
+[package]
+name = "lignin-tree"
+description = "LigninDB tree layer: Merkle host, flat keyspace, subtree directory, lazy hashing and cursors"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-store = { version = "7.0.0", path = "../lignin-store" }
+
+[features]
+# A check, and nothing to build on: an answer of `Directory::rooted_beside` is held to a
+# reference walk of the same entries, which is made within the call at its
+# own cost. Where that ends with an answer too and the two differ, the call
+# panics (the function's documentation says what is compared). In the same
+# way, each walk of a write's plan that counts the bytes of a fragment in one
+# step on its page is held to the walk cell by cell, over the cells it left
+# read (`fragment::plan::held`). And the records of a batch that
+# `Directory::settle` wrote into the directory are held to the pages: each
+# key is looked up again, at the cost of a lookup a record, and a value that
+# is not the one that was settled panics. And two counts, which the feature
+# makes public for the tests of `lignindb`: how many images of leaves the
+# thread has written into flat keyspaces and into how many further pieces it
+# has cut leaves (`flat::leaf_images_written`, `flat::leaf_pieces_cut`), for
+# the tests that hold a batch to the leaves it may write; and a fault that
+# only a test arms, for its own thread: the write of one image of a leaf
+# fails (`flat::fail_leaf_image_after`). It is on in this crate's own tests,
+# `lignindb/held_reads` turns it on with its own checks, and `lignindb` has
+# it on for its own tests by a dev-dependency.
+held_reads = []
+
+[dev-dependencies]
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
+tempfile = { workspace = true }

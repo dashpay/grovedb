@@ -17,16 +17,15 @@ use grovedb_merkle_mountain_range::{
     mmr_size_to_leaf_count, push_call_site_hashes, MmrNode, MmrStore, MMR,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::TxRef,
-    Element, Error, GroveDb, Merk, Transaction, TransactionArg,
+    Element, Engine, Error, GroveDb, Merk, Transaction, TransactionArg,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Append a value to an MmrTree subtree.
     ///
     /// This is the primary write operation for MmrTree. It:
@@ -37,12 +36,12 @@ impl GroveDb {
     /// 5. Propagates changes through the GroveDB Merk hierarchy
     ///
     /// Returns `(mmr_root_hash, leaf_index)`.
-    pub fn mmr_tree_append<'b, B, P>(
-        &self,
+    pub fn mmr_tree_append<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         value: Vec<u8>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u64), Error>
     where
@@ -79,10 +78,10 @@ impl GroveDb {
         // 3. Open storage, create store adapter, push value.
         // Uses transactional context — the MMRBatch overlay provides
         // read-after-write, and root is computed before commit.
-        let data_batch = StorageBatch::new();
+        let data_batch = E::Batch::default();
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path.clone(), Some(&data_batch), tx.as_ref())
+            .subtree(subtree_path.clone(), Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let store = MmrStore::new(&storage_ctx);
@@ -132,16 +131,16 @@ impl GroveDb {
         // in the transaction. This is the same pattern as other direct GroveDB
         // operations — the caller is expected to rollback the tx on error.
         // The batch path (preprocess_mmr_tree_ops) avoids this by using a
-        // shared StorageBatch that commits atomically with all other ops.
+        // shared E::Batch that commits atomically with all other ops.
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .apply_batch(data_batch, tx.as_ref())
                 .map_err(Into::into)
         );
 
         // 4. Open parent Merk and update the MmrTree element
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -170,7 +169,7 @@ impl GroveDb {
         // alone. Snapshot before the rewrite; mirror after.
         let old_indexed_state = cost_return_on_error!(
             &mut cost,
-            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+            crate::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
         );
 
         // MMR root hash flows as the Merk child hash
@@ -181,8 +180,7 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::new();
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
@@ -201,9 +199,7 @@ impl GroveDb {
         // 6. Commit batch and transaction
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local()
@@ -215,11 +211,11 @@ impl GroveDb {
     ///
     /// Computes the root from the MMR data in storage. For an empty MMR,
     /// returns `[0u8; 32]`.
-    pub fn mmr_tree_root_hash<'b, B, P>(
-        &self,
+    pub fn mmr_tree_root_hash<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<[u8; 32], Error>
     where
@@ -228,7 +224,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -254,7 +251,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let store = MmrStore::new(&storage_ctx);
@@ -272,12 +269,12 @@ impl GroveDb {
     /// Get a leaf value from an MmrTree by its 0-based leaf index.
     ///
     /// Reads the individual node from data storage at the leaf's MMR position.
-    pub fn mmr_tree_get_value<'b, B, P>(
-        &self,
+    pub fn mmr_tree_get_value<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         leaf_index: u64,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
     where
@@ -286,7 +283,8 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
+        let tx = TxRef::for_read(&self.db, transaction);
+        let transaction = Some(tx.as_ref());
 
         // Validate element type and check bounds
         let element = cost_return_on_error!(
@@ -314,7 +312,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .subtree(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let store = MmrStore::new(&storage_ctx);
@@ -339,11 +337,11 @@ impl GroveDb {
     /// Get the leaf count of an MmrTree subtree.
     ///
     /// Derives the count from the Element's mmr_size field.
-    pub fn mmr_tree_leaf_count<'b, B, P>(
-        &self,
+    pub fn mmr_tree_leaf_count<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error>
     where
@@ -388,11 +386,11 @@ impl GroveDb {
     ///    mmr_root and mmr_size
     ///
     /// The returned ops list contains no `MmrTreeAppend` variants.
-    pub(crate) fn preprocess_mmr_tree_ops(
-        &self,
+    pub(crate) fn preprocess_mmr_tree_ops<'db>(
+        &'db self,
         ops: Vec<QualifiedGroveDbOp>,
-        transaction: &Transaction,
-        storage_batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        storage_batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -471,7 +469,7 @@ impl GroveDb {
             // is computed before commit, so immediate context is not needed.
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path, Some(storage_batch), transaction)
+                .subtree(st_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let store = MmrStore::new(&storage_ctx);

@@ -1,24 +1,24 @@
 //! Average case costs
 //! Implements average case cost functions in GroveDb
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
-    CostResult, CostsExt, OperationCost,
-};
+use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
+    cost_model::storage_cost_model,
     estimated_costs::{
-        add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
+        add_cost_case_merk_insert_layered,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
-            add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
+            add_average_case_merk_propagate, add_average_case_merk_replace_layered,
+            EstimatedLayerInformation, EstimatedLayerSizes,
         },
     },
     tree::TreeNode,
     tree_type::{CostSize, TreeType},
-    HASH_LENGTH,
 };
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
+use grovedb_storage::{
+    worst_case_costs::{get_storage_context_cost, WorstKeyLength},
+    Storage,
+};
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
@@ -26,14 +26,54 @@ use integer_encoding::VarInt;
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    Element, ElementFlags, Error, GroveDb,
+    ElementFlags, Error, GroveDb,
 };
 
+mod finalize;
+mod get_merk_at_path;
+mod indexed_secondary_mirror;
+mod merk_delete_tree;
 mod merk_insert_element;
+mod merk_patch_element;
 mod merk_replace_element;
 
+/// The keys of a layer at their longest, whatever the layer holds. A kind
+/// that a layer of several kinds gives no weight holds no element there.
+/// The estimate of a finalize sizes a root key by it, and on grove version 6
+/// the estimate of the rows of an indexed tree the keys of its primary.
+pub(crate) fn layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
+    match sizes {
+        EstimatedLayerSizes::AllSubtrees(key, ..)
+        | EstimatedLayerSizes::AllItems(key, ..)
+        | EstimatedLayerSizes::AllReference(key, ..)
+        | EstimatedLayerSizes::AllItemsWithSumItem(key, ..)
+        | EstimatedLayerSizes::AllReferencesWithSumItem(key, ..) => u32::from(*key),
+        EstimatedLayerSizes::Mix {
+            subtrees_size,
+            items_size,
+            references_size,
+            items_with_sum_item_size,
+            references_with_sum_item_size,
+        } => [
+            subtrees_size.map(|(key, .., weight)| (key, weight)),
+            items_size.map(|(key, .., weight)| (key, weight)),
+            references_size.map(|(key, .., weight)| (key, weight)),
+            items_with_sum_item_size.map(|(key, .., weight)| (key, weight)),
+            references_with_sum_item_size.map(|(key, .., weight)| (key, weight)),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|(_, weight)| *weight > 0)
+        .map(|(key, _)| key)
+        .max()
+        .map_or(0, u32::from),
+    }
+}
+
 impl GroveDb {
-    /// Add average case for getting a merk tree
+    /// The estimate of [`Self::add_average_case_get_merk_at_path_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
@@ -41,33 +81,13 @@ impl GroveDb {
         in_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        check_grovedb_v0!(
-            "add_average_case_get_merk_at_path",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .add_average_case_get_merk_at_path
-        );
-
-        cost.seek_count += 1;
-        // If the merk is not empty we load the tree
-        if !merk_should_be_empty {
-            cost.seek_count += 1;
-        }
-        match path.last() {
-            None => {}
-            Some(key) => {
-                cost.storage_loaded_bytes += TreeNode::average_case_encoded_tree_size(
-                    key.max_length() as u32,
-                    HASH_LENGTH as u32,
-                    in_tree_type.inner_node_type(),
-                ) as u64;
-            }
-        }
-        *cost += S::get_storage_context_cost(path.as_vec());
-
-        Ok(())
+        Self::add_average_case_get_merk_at_path_engine_free(
+            cost,
+            path,
+            merk_should_be_empty,
+            in_tree_type,
+            grove_version,
+        )
     }
 
     /// Add average case for insertion into merk
@@ -224,101 +244,6 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Add average case for insertion into merk
-    pub fn average_case_merk_delete_tree(
-        key: &KeyInfo,
-        tree_type: TreeType,
-        estimated_layer_information: &EstimatedLayerInformation,
-        propagate: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_delete_tree",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_delete_tree
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        let flags_size = cost_return_on_error_no_add!(
-            cost,
-            estimated_layer_information
-                .estimated_layer_sizes
-                .layered_flags_size()
-                .map_err(Error::MerkError)
-        )
-        .map(|f| f + f.required_space() as u32)
-        .unwrap_or_default();
-        let tree_cost_size = tree_type.cost_size();
-        let layer_extra_size = tree_cost_size + flags_size;
-        add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
-        if propagate {
-            add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add average case for patching an element in merk
-    /// This only propagates on 1 level
-    /// As higher level propagation is done in batching
-    pub fn average_case_merk_patch_element(
-        key: &KeyInfo,
-        value: &Element,
-        change_in_bytes: i32,
-        in_tree_type: TreeType,
-        propagate_for_level: Option<&EstimatedLayerInformation>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_patch_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_patch_element
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        match value {
-            Element::Item(_, flags) => {
-                let flags_len = flags.as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                // Items need to be always the same serialized size for this to work
-                let item_cost_size =
-                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                        as u32;
-                let value_len = item_cost_size + flags_len;
-                add_cost_case_merk_patch(
-                    &mut cost,
-                    key_len,
-                    value_len,
-                    change_in_bytes,
-                    in_tree_type,
-                )
-            }
-            _ => {
-                return Err(Error::InvalidParameter("patching can only be on Items"))
-                    .wrap_with_cost(cost);
-            }
-        };
-        if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level, grove_version)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
     /// Add average case for deletion into Merk
     /// Largest average key size described by a layer, used to derive a
     /// secondary index layer's key sizes from its primary's.
@@ -344,156 +269,6 @@ impl GroveDb {
             .max()
             .unwrap_or(0) as u32,
         }
-    }
-
-    /// Average-case cost of mirroring one primary-entry change into an
-    /// indexed tree's per-axis secondary Merks.
-    ///
-    /// The secondary Merks are NOT described by the caller's
-    /// `EstimatedLayerInformation` map — they live at derived prefixes
-    /// (`Blake3(primary_prefix ‖ axis_tag)`) that are not GroveDB paths. But
-    /// every input is derivable from the PRIMARY's layer information:
-    ///
-    /// - **Entry count** is the primary's, because the mirror is 1:1 — every
-    ///   primary entry has exactly one row per axis (the indexed trees do no
-    ///   sparse or conditional indexing).
-    /// - **Key size** is the primary's key size plus the axis sort-key width
-    ///   (8 bytes for count/sum, 16 for avg).
-    /// - **Value size** is the canonical reference row's own serialized
-    ///   size. Unlike the fixed-shape placeholder rows this replaced, a
-    ///   reference row carries the primary key it points at, so its size
-    ///   scales with the primary's key size — it is derived from the real
-    ///   row rather than pinned to a constant.
-    /// - **Tree type** is fixed per axis.
-    ///
-    /// Each axis is charged one Merk open, one delete of the old row and one
-    /// insert of the new row, each propagating — which is what
-    /// `mirror_*_to_secondary` actually performs.
-    ///
-    /// **Reference refresh is charged unconditionally.** A canonical row
-    /// binds the primary node's commitment, so a value-only primary update
-    /// — one that moves neither count nor sum — still rewrites every
-    /// configured axis. The estimate must reflect that: it is an admission
-    /// bound replayed against historical blocks, and an estimate that
-    /// assumed "aggregates unchanged ⇒ no secondary write" would come in
-    /// under actual `added_bytes`.
-    pub fn average_case_indexed_secondary_mirror(
-        primary_path: &KeyInfoPath,
-        primary_layer_information: &EstimatedLayerInformation,
-        axes: &[grovedb_element::indexed::IndexAxis],
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        use crate::operations::indexed_tree::{axis_secondary_tree_type, axis_sort_key_len};
-
-        let mut cost = OperationCost::default();
-        let primary_key_size =
-            Self::average_case_layer_key_size(&primary_layer_information.estimated_layer_sizes);
-        let secondary_should_be_empty = primary_layer_information
-            .estimated_layer_count
-            .estimated_to_be_empty();
-
-        for axis in axes {
-            let secondary_key_size =
-                (primary_key_size + axis_sort_key_len(*axis) as u32).min(u8::MAX as u32) as u8;
-            // The worst-case canonical row for this axis, sized against a
-            // primary key of the estimated width. Built through THE row
-            // function the mirror writes with, so the estimate cannot drift
-            // from the write path: sum values are charged at their fixed
-            // worst-case varint width, so `i64::MAX` is an upper bound rather
-            // than an average (and is inside `count_value_as_sum`'s domain,
-            // so the conversion cannot fail here).
-            let worst_case_row = cost_return_on_error_no_add!(
-                cost,
-                crate::operations::indexed_tree::axis_row_reference(
-                    *axis,
-                    &vec![0u8; primary_key_size as usize],
-                    i64::MAX as u64,
-                    i64::MAX,
-                )
-            );
-            let row_value_size = cost_return_on_error_no_add!(
-                cost,
-                worst_case_row
-                    .serialized_size(grove_version)
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "sizing the worst-case indexed secondary row: {e}"
-                    )))
-            )
-            .min(u32::MAX as usize) as u32;
-            let secondary_layer = EstimatedLayerInformation {
-                tree_type: axis_secondary_tree_type(*axis),
-                // 1:1 with the primary.
-                estimated_layer_count: primary_layer_information.estimated_layer_count,
-                // The row shape's OWN variant, not `AllItems`: the two
-                // carry different element overheads (+15 vs +3), and a
-                // secondary row is a `ReferenceWithSumItem`. Describing it
-                // as an item under-charged every row by 12 bytes — and
-                // `added_bytes` is the one dimension a storage-fee
-                // reservation must never come in under.
-                estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(
-                    secondary_key_size,
-                    row_value_size,
-                    None,
-                ),
-            };
-            // Opening the secondary Merk.
-            cost_return_on_error_no_add!(
-                cost,
-                Self::add_average_case_get_merk_at_path::<RocksDbStorage>(
-                    &mut cost,
-                    primary_path,
-                    secondary_should_be_empty,
-                    secondary_layer.tree_type,
-                    grove_version,
-                )
-            );
-            // Deriving the secondary prefix costs one extra hash beyond the
-            // primary prefix the open above accounted for.
-            cost.hash_node_calls += 1;
-
-            let secondary_key = KeyInfo::MaxKeySize {
-                unique_id: primary_path.to_path().concat(),
-                max_size: secondary_key_size,
-            };
-            // The mirror is delete-old-row then insert-new-row, each of which
-            // rebalances and re-roots the secondary. (The ACTUAL commit
-            // accounting rebills a moved pair's churn out of added/removed
-            // into replaced; this estimate deliberately keeps the raw
-            // delete+insert shape, over-reserving `added_bytes` by up to
-            // the churn rather than ever coming in under.)
-            //
-            // The inserted row must be sized with the AXIS's real row shape:
-            // `average_case_merk_insert_element` charges non-tree elements by
-            // their own serialized size, and under-sizing put the PCPSIT
-            // estimate ~25 bytes per key UNDER actual `added_bytes` — the one
-            // dimension a storage-fee reservation cannot come in under.
-            //
-            // Writing the row is one extra hash beyond a plain put: a
-            // combined reference commits
-            // `combine_hash(H(row bytes), target hash)`, so the value hash is
-            // hashed twice rather than once.
-            cost.hash_node_calls += 1;
-            cost_return_on_error!(
-                &mut cost,
-                Self::average_case_merk_delete_element(
-                    &secondary_key,
-                    &secondary_layer,
-                    true,
-                    grove_version,
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                Self::average_case_merk_insert_element(
-                    &secondary_key,
-                    &worst_case_row,
-                    secondary_layer.tree_type,
-                    Some(&secondary_layer),
-                    grove_version,
-                )
-            );
-        }
-        Ok(()).wrap_with_cost(cost)
     }
 
     /// Add average case cost for deleting an element from a merk.
@@ -531,8 +306,29 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Adds the average case of checking to see if a raw value exists
+    /// The estimate of [`Self::add_average_case_has_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_has_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_has_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Adds the average case of checking to see if a raw value exists
+    pub fn add_average_case_has_raw_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -556,12 +352,35 @@ impl GroveDb {
         );
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size as u64;
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 
-    /// Adds the average case of checking to see if a tree exists
+    /// The estimate of [`Self::add_average_case_has_raw_tree_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_has_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_flags_size: u32,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_has_raw_tree_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_flags_size,
+            tree_type,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Adds the average case of checking to see if a tree exists
+    pub fn add_average_case_has_raw_tree_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -580,7 +399,28 @@ impl GroveDb {
         );
 
         let estimated_element_size = tree_type.cost_size() + estimated_flags_size;
-        Self::add_average_case_has_raw_cost::<S>(
+        Self::add_average_case_has_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// The estimate of [`Self::add_average_case_get_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_raw_cost_engine_free(
             cost,
             path,
             key,
@@ -591,7 +431,7 @@ impl GroveDb {
     }
 
     /// Add average case to get raw cost into merk
-    pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_raw_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -618,8 +458,31 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
-    /// adds the average cost of getting a tree
+    /// The estimate of [`Self::add_average_case_get_raw_tree_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_flags_size: u32,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_raw_tree_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_flags_size,
+            tree_type,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// adds the average cost of getting a tree
+    pub fn add_average_case_get_raw_tree_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -648,9 +511,32 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
+    /// The estimate of [`Self::add_average_case_get_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        estimated_element_size: u32,
+        estimated_references_sizes: Vec<u32>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_cost_engine_free(
+            cost,
+            path,
+            key,
+            in_parent_tree_type,
+            estimated_element_size,
+            estimated_references_sizes,
+            grove_version,
+        )
+    }
+
     /// adds the average cost of getting an element knowing there can be
     /// intermediate references
-    pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -680,12 +566,12 @@ impl GroveDb {
                 .iter()
                 .map(|x| *x as u64)
                 .sum::<u64>();
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
         Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full", grovedb_test_engine))]
 mod test {
     use std::option::Option::None;
 
@@ -694,31 +580,28 @@ mod test {
         estimated_costs::average_case_costs::add_average_case_get_merk_node,
         test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk,
     };
-    use grovedb_storage::{
-        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
-    };
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength};
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::{common::EMPTY_PATH, TEST_LEAF},
-        Element, GroveDb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb, SuiteBatch, TEST_LEAF},
+        Element, Engine, GroveDb,
     };
 
     #[test]
     fn test_get_merk_node_average_case() {
         let grove_version = GroveVersion::latest();
         // Open a merk and insert 10 elements.
-        let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let batch = StorageBatch::new();
+        let db = make_empty_grovedb();
+        let storage = db.engine();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(EMPTY_PATH, Some(&batch), &transaction)
+                .subtree(EMPTY_PATH, Some(&batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -732,16 +615,11 @@ mod test {
             .unwrap();
 
         // this consumes the batch so storage contexts and merks will be dropped
-        storage
-            .commit_multi_context_batch(batch, Some(&transaction))
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
         let merk = Merk::open_base(
-            storage
-                .get_transactional_storage_context(EMPTY_PATH, None, &transaction)
-                .unwrap(),
+            storage.subtree(EMPTY_PATH, None, &transaction).unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,

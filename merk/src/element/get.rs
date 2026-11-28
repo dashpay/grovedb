@@ -6,14 +6,13 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::{reference_path::util::path_as_slices_hex_to_ascii, Element};
-use grovedb_storage::StorageContext;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use integer_encoding::VarInt;
 
+use crate::store::NodeStore;
 use crate::{
-    ed::Decode,
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
     merk::NodeType,
     tree::{kv::KV, TreeNodeInner},
@@ -21,11 +20,22 @@ use crate::{
     CryptoHash, Error, Merk,
 };
 
+/// How a direct element read reports a node it cannot read: a read that
+/// failed in storage keeps its type, so that a caller can tell it from a key
+/// that is not there; a record that does not decode is corrupted data.
+fn unreadable_node(e: Error) -> Error {
+    match e {
+        Error::StorageError(_) => e,
+        Error::EdError(e) => Error::CorruptedData(e.to_string()),
+        e => Error::CorruptedData(e.to_string()),
+    }
+}
+
 /// Extension trait for fetching elements from Merk storage.
 pub trait ElementFetchFromStorageExtensions {
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -34,7 +44,7 @@ pub trait ElementFetchFromStorageExtensions {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -44,7 +54,7 @@ pub trait ElementFetchFromStorageExtensions {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     /// Errors if element doesn't exist
-    fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_from_storage<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -52,7 +62,7 @@ pub trait ElementFetchFromStorageExtensions {
 
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -60,7 +70,7 @@ pub trait ElementFetchFromStorageExtensions {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         path: &[&[u8]],
         key: K,
@@ -70,7 +80,7 @@ pub trait ElementFetchFromStorageExtensions {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         path: &[&[u8]],
         key: K,
@@ -79,7 +89,7 @@ pub trait ElementFetchFromStorageExtensions {
     ) -> CostResult<Option<Element>, Error>;
 
     /// Get an element's value hash from Merk under a key
-    fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_value_hash<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -87,7 +97,7 @@ pub trait ElementFetchFromStorageExtensions {
     ) -> CostResult<Option<CryptoHash>, Error>;
 
     /// Get an element and its value hash from Merk under a key
-    fn get_with_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_with_value_hash<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -108,7 +118,7 @@ fn merk_read_error(error: Error) -> Error {
 trait ElementFetchFromStoragePrivateExtensions {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    fn get_optional_from_storage_v0<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_from_storage_v0<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -116,7 +126,7 @@ trait ElementFetchFromStoragePrivateExtensions {
 
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    fn get_optional_from_storage_v1<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_from_storage_v1<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -126,7 +136,7 @@ trait ElementFetchFromStoragePrivateExtensions {
 impl ElementFetchFromStorageExtensions for Element {
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -156,7 +166,7 @@ impl ElementFetchFromStorageExtensions for Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -195,7 +205,7 @@ impl ElementFetchFromStorageExtensions for Element {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     /// Errors if element doesn't exist
-    fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_from_storage<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -217,7 +227,7 @@ impl ElementFetchFromStorageExtensions for Element {
 
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -242,7 +252,7 @@ impl ElementFetchFromStorageExtensions for Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         path: &[&[u8]],
         key: K,
@@ -276,7 +286,7 @@ impl ElementFetchFromStorageExtensions for Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         path: &[&[u8]],
         key: K,
@@ -313,7 +323,7 @@ impl ElementFetchFromStorageExtensions for Element {
     }
 
     /// Get an element's value hash from Merk under a key
-    fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_value_hash<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -340,7 +350,7 @@ impl ElementFetchFromStorageExtensions for Element {
     }
 
     /// Get an element and its value hash from Merk under a key
-    fn get_with_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_with_value_hash<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -383,27 +393,16 @@ impl ElementFetchFromStorageExtensions for Element {
 impl ElementFetchFromStoragePrivateExtensions for Element {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    fn get_optional_from_storage_v0<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_from_storage_v0<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let key_ref = key.as_ref();
-        let node_value_opt = cost_return_on_error!(
+        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error!(
             &mut cost,
-            // A failed read keeps its type: the caller must be able to tell
-            // it from a key that is not there.
-            storage.get(key_ref).map_err(Error::StorageError)
-        );
-        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
-            cost,
-            node_value_opt
-                .map(|node_value| {
-                    Decode::decode(node_value.as_slice())
-                        .map_err(|e| Error::CorruptedData(e.to_string()))
-                })
-                .transpose()
+            storage.get_node_for_read(key_ref).map_err(unreadable_node)
         );
 
         let value = maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned());
@@ -518,27 +517,16 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
 
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    fn get_optional_from_storage_v1<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn get_optional_from_storage_v1<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let key_ref = key.as_ref();
-        let node_value_opt = cost_return_on_error!(
+        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error!(
             &mut cost,
-            // A failed read keeps its type: the caller must be able to tell
-            // it from a key that is not there.
-            storage.get(key_ref).map_err(Error::StorageError)
-        );
-        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
-            cost,
-            node_value_opt
-                .map(|node_value| {
-                    Decode::decode(node_value.as_slice())
-                        .map_err(|e| Error::CorruptedData(e.to_string()))
-                })
-                .transpose()
+            storage.get_node_for_read(key_ref).map_err(unreadable_node)
         );
 
         let Some((value, tree_feature_type)) =
@@ -644,23 +632,47 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
-    use crate::{element::insert::ElementInsertToStorageExtensions, tree_type::TreeType};
+    use crate::{
+        element::insert::ElementInsertToStorageExtensions,
+        test_utils::{SuiteBatch, TempEngine, TestEngine},
+        tree_type::TreeType,
+    };
+
+    #[test]
+    fn a_failed_read_keeps_its_type_and_any_other_unreadable_node_is_corrupted_data() {
+        let storage_error = grovedb_storage::Error::StorageError("disk".to_string());
+        assert!(matches!(
+            unreadable_node(Error::StorageError(storage_error)),
+            Error::StorageError(grovedb_storage::Error::StorageError(text)) if text == "disk"
+        ));
+
+        let decode_text = ed::Error::UnexpectedByte(7).to_string();
+        assert!(matches!(
+            unreadable_node(Error::EdError(ed::Error::UnexpectedByte(7))),
+            Error::CorruptedData(text) if text == decode_text
+        ));
+
+        let other_text = Error::InvalidOperation("refused").to_string();
+        assert!(matches!(
+            unreadable_node(Error::InvalidOperation("refused")),
+            Error::CorruptedData(text) if text == other_text
+        ));
+    }
 
     #[test]
     fn test_cache_changes_cost() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
+        let storage = TempEngine::new();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
         let ctx = storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
+            .subtree(SubtreePath::empty(), Some(&batch), &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
@@ -679,14 +691,11 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
-        storage
-            .commit_multi_context_batch(batch, Some(&transaction))
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
-        let batch2 = StorageBatch::new();
+        let batch2 = SuiteBatch::default();
         let ctx = storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch2), &transaction)
+            .subtree(SubtreePath::empty(), Some(&batch2), &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,

@@ -155,7 +155,7 @@ impl PositionIntervals {
 
     /// Number of positions covered, saturating at `u64::MAX`. The prover
     /// charges the row limit with this; a verify-only build has no prover.
-    #[cfg_attr(not(feature = "minimal"), allow(dead_code))]
+    #[cfg_attr(not(feature = "engine_generic"), allow(dead_code))]
     pub(crate) fn len(&self) -> u64 {
         self.ranges
             .iter()

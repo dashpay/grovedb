@@ -13,3 +13,8 @@ repository = "https://github.com/dashpay/grovedb"
 thiserror = { workspace = true }
 intmap = { workspace = true }
 integer-encoding = { workspace = true }
+
+[features]
+# Adds up, per thread, every cost the cost model hands out, so that a test
+# can hold an engine to it. For tests only.
+cost-model-ledger = []

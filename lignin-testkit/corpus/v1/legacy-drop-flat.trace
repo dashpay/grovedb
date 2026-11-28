@@ -1,0 +1,75 @@
+lignin-golden-trace 1
+name legacy-drop-flat
+seed 0x0
+grove-version 1
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-drop-flat
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c335dr7ec2
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [104, 111, 115, 116], element: tree: None })
+  cost seeks=5 loaded=150 added=115 replaced=77 removed=- hashes=9 sinsemilla=0
+  root c40fa070e930122a93dd69d6a17928a600f705c4abeafe15bb9d6d04fe410aee
+c5633r9586
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] })
+  cost seeks=8 loaded=303 added=144 replaced=155 removed=- hashes=15 sinsemilla=0
+  root 0acf112a7003029c1bb9abceec2c75bf93a446f1385c1409f425a90cbde5d998
+c4467rd7e5
+  step 3
+  # Write(Insert { path: [[116, 111, 112], [104, 111, 115, 116]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] })
+  cost seeks=10 loaded=378 added=144 replaced=264 removed=- hashes=17 sinsemilla=0
+  root de9dc7c3f9e22029a71525f1490eca26c1b5a6db74e416cd8533623dfb392e99
+cb7ddrd7e5
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root de9dc7c3f9e22029a71525f1490eca26c1b5a6db74e416cd8533623dfb392e99
+c7e42rfeb6
+  step 5
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 105, 98, 108, 105, 110, 103], element: item: [hex: 7374617973, str: stays] })
+  cost seeks=7 loaded=228 added=157 replaced=155 removed=- hashes=10 sinsemilla=0
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+cb7ddrfeb6
+  step 6
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+cb7dde02b4rfeb6
+  step 7
+  # Write(DropFlat { path: [[116, 111, 112]], key: [104, 111, 115, 116] })
+  # failed: grove unknown version on drop_flat_subtree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+cb7ddrfeb6
+  step 8
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+cb7ddvdf42rfeb6
+  step 9
+  # FlushPendingDrops
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  result reclaimed
+  reclaimed 0
+  skipped-live 0
+  unresolved 0
+  root 69ca3cef9fa567115963da60882caed4bd5d7e85c430f2a053c0b4683dde31b0
+c8054v7fd9q6a7ep8793
+  step 10
+  # Read(Query(Query { path: [[116, 111, 112]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  cost seeks=5 loaded=779 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 2
+  row 746f70 686f7374 020102723000
+  row 746f70 7369626c696e67 0005737461797300
+  prove-cost seeks=5 loaded=346 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 123 002f0403746f700008020104686f7374007b548923bea438e5c859003ae761931df8af291e4cf0de52024b82c9ffe4dc130103746f70420404686f73740006020102723000e70701e113fd03e95e721787abe6bf6a032596a44f0f81213a7a2b6c0e25f0da03077369626c696e6700080005737461797300110001
+  verification verified
+stream 11 091e60d659df383420ac495eb6c3ad9842e813cbe8064315bcde11091320315a
+tally failed=1 unproved=0 unverified=0
+end 11 94498be6c36095e47f18f9e526c0ea39afe8869a02b42f2994ac9590312ead8c

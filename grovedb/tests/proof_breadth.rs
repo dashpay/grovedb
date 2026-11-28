@@ -1,5 +1,5 @@
 //! Producer/consumer coverage for shallow V1 proofs with many child layers.
-#![cfg(any(feature = "minimal", feature = "verify"))]
+#![cfg(any(feature = "engine_generic", feature = "verify"))]
 
 use std::collections::BTreeMap;
 
@@ -163,7 +163,7 @@ fn v1_depth_limit_is_unchanged_in_all_decode_modes() {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 mod generation {
     use grovedb::{
         operations::proof::MAX_PROOF_CHILDREN, Element, GroveDb, PathQuery, Query, SizedQuery,

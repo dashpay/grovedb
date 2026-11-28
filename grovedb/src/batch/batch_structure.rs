@@ -1,28 +1,28 @@
 //! Batch structure
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     fmt,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use intmap::IntMap;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{
         filled_tree_insert_checks::{
@@ -36,17 +36,17 @@ use crate::{
 };
 
 /// Mapping from path to operations keyed by key info.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 /// Level, path, key, op
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
 
 /// Whether a batch that inserts trees of different tree types at one key is
 /// refused, as `grovedb_versions.apply_batch.same_key_tree_type_conflict`
 /// selects: `0` (V1..V4) applies it, `1` (V5) refuses it. A slot value it
 /// does not know is an error.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn refuses_same_key_tree_type_conflict(grove_version: &GroveVersion) -> Result<bool, Error> {
     match grove_version
         .grovedb_versions
@@ -70,7 +70,7 @@ fn refuses_same_key_tree_type_conflict(grove_version: &GroveVersion) -> Result<b
 /// while the 8-byte big-endian op-index prefix in `unique_id` keeps several
 /// appends to the same tree from collapsing into a single `BTreeMap` entry
 /// (each append must be charged). [`keyless_op_tree_key`] is the inverse.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn keyless_op_synthetic_key(op_index: usize, tree_key: &KeyInfo) -> KeyInfo {
     let mut unique_id = (op_index as u64).to_be_bytes().to_vec();
     unique_id.extend_from_slice(tree_key.as_slice());
@@ -85,7 +85,8 @@ pub(in crate::batch) fn keyless_op_synthetic_key(op_index: usize, tree_key: &Key
 /// Only meaningful for keys of ops that arrive keyless (the append-only tree
 /// ops) — a user-supplied `MaxKeySize` key on a keyed op has no such
 /// structure, so callers must check the op type before trusting the result.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
+#[cfg_attr(not(feature = "estimated_costs"), allow(dead_code))]
 pub(in crate::batch) fn keyless_op_tree_key(key: &KeyInfo) -> Option<&[u8]> {
     match key {
         KeyInfo::MaxKeySize { unique_id, .. } => unique_id.get(8..),
@@ -94,7 +95,7 @@ pub(in crate::batch) fn keyless_op_tree_key(key: &KeyInfo) -> Option<&[u8]> {
 }
 
 /// Batch structure
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(super) struct BatchStructure<C, F, SR> {
     /// Operations by level path
     pub(super) ops_by_level_paths: OpsByLevelPath,
@@ -112,7 +113,7 @@ pub(super) struct BatchStructure<C, F, SR> {
     pub(super) last_level: u32,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut fmt_int_map = IntMap::default();
@@ -138,7 +139,7 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<C, F, SR> BatchStructure<C, F, SR>
 where
     C: TreeCache<F, SR>,
@@ -476,7 +477,7 @@ where
 /// consistency check is disabled; with the check enabled the entry point
 /// refuses such cross-segment duplicates before the continuation is built
 /// (`GroveOp::is_pending_ancestor_update`).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(super) fn merge_add_on_op_over_pending(
     pending: &GroveOp,
     add_on: GroveOp,
@@ -589,7 +590,7 @@ pub(super) fn merge_add_on_op_over_pending(
     }
 }
 
-#[cfg(all(test, feature = "minimal"))]
+#[cfg(all(test, feature = "engine_generic"))]
 mod tests {
     use grovedb_merk::tree::AggregateData;
 

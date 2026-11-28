@@ -1,0 +1,72 @@
+lignin-golden-trace 1
+name legacy-filled-tree
+seed 0x0
+grove-version 1
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-filled-tree
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c8c12re483
+  step 1
+  # Batch([InsertOnly { path: [[116, 111, 112]], key: [102, 105, 108, 108, 101, 100], element: tree: None }])
+  cost seeks=6 loaded=150 added=119 replaced=77 removed=- hashes=12 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+cb7ddre483
+  step 2
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+c06b9r59ef
+  step 3
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [97, 108, 111, 110, 101], element: sum_tree: None 0 }])
+  cost seeks=9 loaded=307 added=126 replaced=157 removed=- hashes=19 sinsemilla=0
+  root 69f08878684a4ddbb2eb8b751e9fdd8ec5eb03b8b529e9a891e974acfb41fba8
+cb7ddr59ef
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 69f08878684a4ddbb2eb8b751e9fdd8ec5eb03b8b529e9a891e974acfb41fba8
+cf524vd900
+  step 5
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=3 loaded=507 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564 616c6f6e65 04000000
+  skipped 0
+cea94rbacb
+  step 6
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [116, 114, 101, 101], element: sum_tree: None 0 }, InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], key: [101, 110, 116, 114, 121], element: sum_item: 5 }])
+  cost seeks=12 loaded=384 added=296 replaced=245 removed=- hashes=25 sinsemilla=0
+  root e0a12bbe1bdd4fca905ac613f90e36df3f1aea8f97df3e73472bc05a64dbbcb3
+cb7ddrbacb
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root e0a12bbe1bdd4fca905ac613f90e36df3f1aea8f97df3e73472bc05a64dbbcb3
+c1f9ev3235
+  step 8
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=5 loaded=768 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 2
+  row 746f70/66696c6c6564 616c6f6e65 04000000
+  row 746f70/66696c6c6564 74726565 040105656e7472790a00
+  skipped 0
+cf524vf1afq4f04p8f40
+  step 9
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit… (441 characters)
+  cost seeks=3 loaded=507 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564/74726565 656e747279 030a00
+  skipped 0
+  prove-cost seeks=9 loaded=659 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 222 00310403746f70000a02010666696c6c65640096832a1a4199b7bab25e0a89b99985342d4fefc7d0d21a775cd7313669cdd1860103746f7033040666696c6c65640009020105616c6f6e6500f7d174c27effa95df3c40de46ec5cb83456a7495306e5a18a71c0e0dbd3b12f7010666696c6c65645402fcfeffb96246bbe7127aa45400009466f905c98de66a27753089944bfc605b22040474726565000a040105656e7472790a00ebaa6340c4a7d3680bf29749463c322b949453f742c3de9bddfdbed9b8e6036b110104747265650c0305656e7472790003030a000001
+  verification verified
+stream 10 948653895f0b22f1a6740452764db5feb7487da93d5a07bd4e422cd120b8fd11
+tally failed=0 unproved=0 unverified=0
+end 10 9c1a8f7822f8e473e3cfcd0b2cf24a83b6061d98097e492effb9ba30687eb2bf

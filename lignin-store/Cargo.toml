@@ -1,0 +1,32 @@
+[package]
+name = "lignin-store"
+description = "LigninDB page store: buffer pool, write-ahead log, segments, page table, recovery and cleaner"
+version = "7.0.0"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[features]
+# The file layer's direct I/O path on Linux, for whoever opens a store on it
+# and for the measurement of `examples/cold_read.rs`. Nothing of the store
+# itself is built differently with it.
+direct_io = ["lignin-io/direct_io"]
+
+[[example]]
+name = "cold_read"
+required-features = ["direct_io"]
+
+[dependencies]
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

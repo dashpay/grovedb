@@ -11,12 +11,14 @@
 //! The caller is responsible for ensuring `new_combined_root` actually
 //! matches the subtree's underlying storage state. Intended pattern:
 //!
-//! 1. Ingest the subtree's raw storage out-of-band (typically via
-//!    [`grovedb_storage::rocksdb_storage::RocksDbStorage::ingest_subtree_sst`]).
-//! 2. Open a `StorageContext` at the subtree path and reconstruct the
-//!    appropriate typed tree (CommitmentTree / Mmr / BulkAppend / Dense).
-//! 3. Compute the post-ingest combined root via that tree's own root fn.
-//! 4. Call [`GroveDb::replace_subtree_root`] with the verified hash and a
+//! 1. Load the subtree's records with [`GroveDb::load_subtree`], on any
+//!    engine. (On the RocksDB engine alone they can also be ingested
+//!    out-of-band, with `RocksDbStorage::ingest_subtree_sst`.)
+//! 2. Compute the post-load combined root with
+//!    [`GroveDb::subtree_root_as`], which reads the subtree as the typed
+//!    tree of the element given (a Merk, or an append-only tree:
+//!    CommitmentTree / Mmr / BulkAppend / Dense / PrivateDocumentStore).
+//! 3. Call [`GroveDb::replace_subtree_root`] with the verified hash and a
 //!    correctly-constructed [`Element`] (e.g. `Element::new_commitment_tree`).
 //!
 //! Mismatches between `new_combined_root` and what re-reading the subtree
@@ -36,22 +38,21 @@ use grovedb_merk::element::{
     tree_type::ElementTreeTypeExtensions,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
+use crate::{util::TxRef, Element, Engine, Error, GroveDb, TransactionArg};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Replace the child hash + element data of a subtree leaf in its parent
     /// Merk with caller-provided values. See the
     /// [module-level docs](self) for the safety contract.
-    pub fn replace_subtree_root<'b, B, P>(
-        &self,
+    pub fn replace_subtree_root<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         new_element: Element,
         new_combined_root: [u8; 32],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -72,7 +73,7 @@ impl GroveDb {
 
         let path: SubtreePath<B> = path.into();
         let tx = TxRef::new(&self.db, transaction);
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
@@ -97,7 +98,7 @@ impl GroveDb {
         );
         let old_indexed_state = cost_return_on_error!(
             &mut cost,
-            GroveDb::capture_indexed_entry_state(&parent_merk, key, &old_element, grove_version)
+            crate::capture_indexed_entry_state(&parent_merk, key, &old_element, grove_version)
         );
 
         cost_return_on_error_into!(
@@ -129,9 +130,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)

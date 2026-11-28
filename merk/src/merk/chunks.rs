@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 
 use ed::Encode;
 use grovedb_costs::CostsExt;
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{
     error::Error,
     proofs::{
@@ -115,12 +115,12 @@ pub struct ChunkProducer<'db, S> {
     merk: &'db Merk<S>,
 }
 
-impl<'db, S> ChunkProducer<'db, S>
+impl<'m, 'db, S> ChunkProducer<'m, S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance
-    pub fn new(merk: &'db Merk<S>) -> Result<Self, Error> {
+    pub fn new(merk: &'m Merk<S>) -> Result<Self, Error> {
         let tree_height = merk
             .height()
             .ok_or(Error::ChunkingError(ChunkError::EmptyTree(
@@ -205,13 +205,19 @@ where
         let chunk = self
             .merk
             .walk(|maybe_walker| match maybe_walker {
-                Some(mut walker) => walker.traverse_and_build_chunk_with_features(
-                    &traversal_instructions,
-                    chunk_height,
-                    tree_type,
-                    true,
-                    grove_version,
-                ),
+                Some(mut walker) => {
+                    // Only the values a chunk emits are read: the nodes on
+                    // the way to it are not in it, and the nodes below its
+                    // depth give a hash.
+                    walker.values_on_demand();
+                    walker.traverse_and_build_chunk_with_features(
+                        &traversal_instructions,
+                        chunk_height,
+                        tree_type,
+                        true,
+                        grove_version,
+                    )
+                }
                 None => Err(Error::ChunkingError(ChunkError::EmptyTree(
                     "cannot create chunk producer for empty Merk",
                 )))
@@ -453,9 +459,9 @@ where
 }
 
 /// Iterate over each chunk, returning `None` after last chunk
-impl<'db, S> ChunkProducer<'db, S>
+impl<'db, S> ChunkProducer<'_, S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Returns the next chunk in iteration order, or `None` if all chunks
     /// have been yielded.
@@ -469,16 +475,16 @@ where
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&'db self) -> Result<ChunkProducer<'db, S>, Error> {
+    pub fn chunks(&self) -> Result<ChunkProducer<'_, S>, Error> {
         ChunkProducer::new(self)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod test {
     use super::*;
     use crate::{

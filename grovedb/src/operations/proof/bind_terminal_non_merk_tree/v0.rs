@@ -19,16 +19,16 @@
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::Node;
 
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// `bind_terminal_non_merk_tree` v0 — see the module documentation.
-    pub(crate) fn bind_terminal_non_merk_tree_v0(
-        &self,
+    pub(crate) fn bind_terminal_non_merk_tree_v0<'db>(
+        &'db self,
         _node: &mut Node,
         _element: &Element,
         _parent_path: &[&[u8]],
-        _tx: &Transaction,
+        _tx: &Transaction<'db, E>,
     ) -> CostResult<(), Error> {
         Ok(()).wrap_with_cost(OperationCost::default())
     }

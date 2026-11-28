@@ -1,21 +1,21 @@
 //! Worst case costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     add_worst_case_get_merk_node, add_worst_case_merk_has_value, worst_case_merk_propagate,
     WorstCaseLayerInformation, MERK_BIGGEST_KEY_SIZE, MERK_BIGGEST_VALUE_SIZE,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::{
     add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
@@ -23,15 +23,13 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use itertools::Itertools;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -41,7 +39,7 @@ use crate::{
 };
 use crate::{BackwardsReferences, Element};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveOp {
     fn worst_case_cost(
         &self,
@@ -702,7 +700,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Charge the derived backward-references fan-out at its worst (see the
 /// model in `super`): each rewrite is a biggest-node load plus a same-size
 /// biggest-node rewrite with the family's hash calls, each resolution a
@@ -799,7 +797,7 @@ fn add_worst_case_backward_references_fan_out(
     Ok(())
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -807,7 +805,7 @@ pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     cached_merks: HashSet<KeyInfoPath>,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl WorstCaseTreeCacheKnownPaths {
     /// Updates the cache with the default settings and the given paths
     pub(in crate::batch) fn new_with_worst_case_layer_information(
@@ -820,14 +818,14 @@ impl WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn insert(
         &mut self,
@@ -876,7 +874,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         if !self.cached_merks.contains(path) {
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_worst_case_get_merk_at_path_engine_free(
                     &mut cost,
                     path,
                     TreeType::NormalTree,
@@ -938,7 +936,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             // Then we have to get the tree
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_worst_case_get_merk_at_path_engine_free(
                     &mut cost,
                     &base_path,
                     TreeType::NormalTree,
@@ -951,7 +949,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[cfg(test)]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
@@ -975,16 +973,18 @@ mod tests {
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
 
+    #[cfg(grovedb_test_engine)]
+    use crate::tests::{common::EMPTY_PATH, make_empty_grovedb};
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo, GroveOp,
             KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp, SubelementsDeletionBehavior,
         },
         reference_path::ReferencePathType,
-        tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,
     };
 
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_batch_root_one_tree_insert_op_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1041,6 +1041,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_batch_root_one_tree_with_flags_insert_op_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1097,6 +1098,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_batch_root_one_item_insert_op_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1153,6 +1155,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_batch_root_one_tree_insert_op_under_element_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1220,6 +1223,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_batch_root_one_tree_insert_op_in_sub_tree_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1285,6 +1289,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_batch_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -2204,6 +2209,7 @@ mod tests {
         .expect("expected to get worst case costs")
     }
 
+    #[cfg(grovedb_test_engine)]
     /// The worst-case and applied costs of inserting `element` at the root of
     /// an empty db, a normal tree.
     fn root_insert_costs(
@@ -2225,6 +2231,7 @@ mod tests {
         (worst_case, applied)
     }
 
+    #[cfg(grovedb_test_engine)]
     /// The worst-case and applied costs of a batch writing `element` as the
     /// only child `k1` of a count-sum tree `agg`: inserting it into the empty
     /// tree, or, with `replace`, replacing it with itself.
@@ -2276,6 +2283,7 @@ mod tests {
         cost.storage_cost.added_bytes as i64 + cost.storage_cost.replaced_bytes as i64
     }
 
+    #[cfg(grovedb_test_engine)]
     /// The apply writes a sum-bearing item with its specialized cost, which
     /// charges the sum value at its fixed 9-byte width. From V4 the worst
     /// case sizes it the same way, so inserting one into a normal tree is
@@ -2301,6 +2309,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine)]
     /// The worst-case batch charges every op as if its parent were a normal
     /// tree, so under a count-sum tree its totals are short of the applied
     /// ones whatever the element; the element's own sizing is what can be
@@ -2339,6 +2348,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine)]
     /// Replay guarantee: before V4 a sum-bearing item is sized by its
     /// serialized size on insert, an `ItemWithSumItem` that way on replace and
     /// a wrapped `SumItem` without its wrapper byte, as historical admission

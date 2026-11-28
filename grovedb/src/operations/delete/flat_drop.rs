@@ -76,6 +76,7 @@
 //! a corrupted-reference error rather than incorrect data. Reference
 //! lifecycle is the caller's responsibility.
 
+use crate::engine::SubtreeHandle;
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
 use crate::BackwardsReferences;
 use std::collections::HashMap;
@@ -92,16 +93,13 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::{
-        pending_prefix_drops_namespace, PendingPrefixDropRecord, PrefixedRocksDbTransactionContext,
-        RocksDbStorage,
-    },
-    Storage, StorageBatch, StorageContext,
+    flat::{pending_prefix_drops_namespace, stage_pending_prefix_drop, PendingPrefixDropRecord},
+    prefix::{build_prefix, secondary_prefix_for},
 };
 use grovedb_version::version::{FeatureVersion, GroveVersion};
 use grovedb_visualize::DebugByteVectors;
 
-use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
+use crate::{util::TxRef, Element, Engine, Error, GroveDb, TransactionArg};
 
 /// Reject a flat-drop entry point whose capability slot is not active.
 ///
@@ -123,15 +121,12 @@ pub(crate) fn doomed_prefixes_for_drop<B: AsRef<[u8]>>(
     is_indexed_primary: bool,
     cost: &mut OperationCost,
 ) -> Vec<[u8; 32]> {
-    let primary_prefix = RocksDbStorage::build_prefix(subtree_path).unwrap_add_cost(cost);
+    let primary_prefix = build_prefix(subtree_path).unwrap_add_cost(cost);
     let mut doomed = Vec::with_capacity(if is_indexed_primary { 4 } else { 1 });
     doomed.push(primary_prefix);
     if is_indexed_primary {
         for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
-            doomed.push(
-                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                    .unwrap_add_cost(cost),
-            );
+            doomed.push(secondary_prefix_for(&primary_prefix, axis.tag()).unwrap_add_cost(cost));
         }
     }
     doomed
@@ -210,7 +205,7 @@ pub struct PendingPrefixDropsReport {
     pub first_unresolved_error: Option<String>,
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Drop the subtree element at `path`/`key` in O(1), without opening
     /// or sweeping its contents, and stage its storage prefixes for
     /// reclamation. See the [module documentation](self) for the full
@@ -223,12 +218,12 @@ impl GroveDb {
     /// propagation, and the redo record's bytes — a deterministic function
     /// of the element, key, parent shape, and path, independent of the
     /// subtree's contents. Reclamation itself is unmetered.
-    pub fn drop_flat_subtree<'b, B, P>(
-        &self,
+    pub fn drop_flat_subtree<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         backwards_references: BackwardsReferences,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -257,7 +252,7 @@ impl GroveDb {
         }
 
         let tx = TxRef::new(&self.db, transaction);
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let element = cost_return_on_error!(
             &mut cost,
@@ -305,21 +300,13 @@ impl GroveDb {
             },
             doomed_prefixes,
         };
-        let record_value =
-            cost_return_on_error_no_add!(cost, record.encode().map_err(Error::StorageError));
         let namespace_ctx = self
             .db
-            .get_transactional_storage_context_by_subtree_prefix(
-                *pending_prefix_drops_namespace(),
-                Some(&batch),
-                tx.as_ref(),
-            )
+            .subtree_by_prefix(*pending_prefix_drops_namespace(), Some(&batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
         cost_return_on_error!(
             &mut cost,
-            namespace_ctx
-                .put_meta(record.primary_prefix, &record_value, None)
-                .map_err(Error::StorageError)
+            stage_pending_prefix_drop(&namespace_ctx.meta(), &record).map_err(Error::StorageError)
         );
 
         // The O(1) detach: an ordinary layered delete from the parent Merk.
@@ -344,8 +331,7 @@ impl GroveDb {
             )
         );
 
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::default();
         merk_cache.insert(path.clone(), parent_merk);
         cost_return_on_error!(
             &mut cost,
@@ -358,11 +344,10 @@ impl GroveDb {
             )
         );
 
+        drop(namespace_ctx);
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         let owns_tx = tx.is_owned();
