@@ -9,7 +9,7 @@
 
 use super::{
     report::{Cause, Sample, Stats},
-    tree::{ChangeSet, Grove, MerkId, NodeId},
+    tree::{ChangeSet, Event, Grove, MerkId, NodeId},
 };
 
 /// The bytes a cell and a page spend besides keys, values and Merk's own
@@ -120,6 +120,14 @@ pub struct Config {
     /// Whether a node that takes the place of a deleted node of another
     /// page is carried to that page.
     pub carry_on_delete: bool,
+    /// Whether the largest size is measured in the fragments a write
+    /// changed alone (L4), which is proposed. A node whose record changes
+    /// while its cell keeps its size, its children and the roots it hosts
+    /// then brings no fragment to that rule: the write leaves its fragment
+    /// as large as it found it. Without it the fragment of every node of a
+    /// write is measured. Every other rule is for every node of the write
+    /// either way (`lignin_tree::fragment::Upkeep`).
+    pub upkeep_of_what_changed: bool,
     /// The byte costs of the assumed cell layout.
     pub costs: CellCosts,
 }
@@ -149,6 +157,7 @@ impl Config {
             colocate: true,
             carry_on_rotation: false,
             carry_on_delete: true,
+            upkeep_of_what_changed: true,
             costs: CellCosts::default(),
         }
     }
@@ -192,6 +201,26 @@ impl Config {
     /// Whether a value of `value_len` bytes is stored outside its cell.
     pub fn is_out_of_line(&self, value_len: u32) -> bool {
         value_len > self.inline_max
+    }
+
+    /// The parts of the cell of `node` whose length can change while the
+    /// node keeps its key and its children: the length of the value as the
+    /// cell holds it (the value, or a pointer to it), the length of the
+    /// feature type with the aggregate data of both links, and how many
+    /// Merks the node hosts, with a root or without one: a tree page has a
+    /// pointer for each, which [`Self::cell_bytes`] counts only where it
+    /// names a root.
+    pub fn cell_parts(&self, grove: &Grove, node: NodeId) -> (u32, u32, u32) {
+        let entry = grove.node(node);
+        let value = match self.is_out_of_line(entry.value_len) {
+            true => self.costs.value_pointer,
+            false => entry.value_len,
+        };
+        let meta = match self.costs.fixed_width_aggregates {
+            true => entry.meta_fixed_len,
+            false => entry.meta_len,
+        };
+        (value, meta, entry.hosted.len() as u32)
     }
 
     /// The bytes the cell of `node` takes in its page, slot entry included.
@@ -270,6 +299,18 @@ pub struct Model {
     /// The nodes the current write holds: the ones it changed and the roots
     /// of what it moved.
     held: Vec<NodeId>,
+    /// For each node, the transition whose write rewrote its cell in place
+    /// last, where the largest size is for what a write changed.
+    in_place_in: Vec<u64>,
+    /// For each node, the parts of its cell whose length a write can
+    /// change while the cell keeps its children: the value as the cell
+    /// holds it, the feature with the aggregate data of the links, and
+    /// how many Merks it hosts ([`Config::cell_parts`]).
+    parts_of: Vec<(u32, u32, u32)>,
+    /// For each node, the roots of the Merks it hosted when it was written
+    /// last, position by position: what the hosted-root pointers of its
+    /// cell name.
+    roots_of: Vec<Vec<Option<NodeId>>>,
     /// The cells the current write placed or carried: the page each was in
     /// before the write, zero for a new cell, and the rule that carried it
     /// last.
@@ -328,6 +369,9 @@ impl Model {
             block: 1,
             queue: Vec::new(),
             held: Vec::new(),
+            in_place_in: Vec::new(),
+            parts_of: Vec::new(),
+            roots_of: Vec::new(),
             carried: Vec::new(),
             carry_slot: Vec::new(),
             directory: Vec::new(),
@@ -427,6 +471,11 @@ impl Model {
         self.page_of.resize(grove.node_slots(), 0);
         self.cell_of.resize(grove.node_slots(), 0);
         self.carry_slot.resize(grove.node_slots(), 0);
+        self.parts_of.resize(grove.node_slots(), (0, 0, 0));
+        self.roots_of.resize(grove.node_slots(), Vec::new());
+        if self.config.upkeep_of_what_changed {
+            self.in_place_in.resize(grove.node_slots(), 0);
+        }
 
         let inherited: Vec<(NodeId, u32, Cause)> = changes
             .takes_place_of
@@ -470,6 +519,15 @@ impl Model {
         for event in &changes.events {
             let node = event.node;
             let bytes = self.config.cell_bytes(grove, node);
+            let parts = self.config.cell_parts(grove, node);
+            if self.config.upkeep_of_what_changed && self.rewritten_in_place(grove, event, parts) {
+                debug_assert_eq!(self.cell_of[node.index()], bytes);
+                self.in_place_in[node.index()] = self.transition;
+            }
+            self.parts_of[node.index()] = parts;
+            let roots = &mut self.roots_of[node.index()];
+            roots.clear();
+            roots.extend(Self::hosted_roots(grove, node));
             self.held.push(node);
             if self.page_of[node.index()] == 0 {
                 let page = reserved
@@ -601,6 +659,32 @@ impl Model {
             used_bytes: self.used_bytes,
             fill: self.fill(),
         }
+    }
+
+    /// A count of the fragments that L1 limits, which are those whose root
+    /// has a parent: how many there are, how many of them are above the
+    /// largest size, and the bytes of the largest of those.
+    pub fn fragments_above_the_largest_size(&self, grove: &Grove) -> (u64, u64, u32) {
+        let (mut limited, mut above, mut most) = (0u64, 0u64, 0u32);
+        for (node, entry) in grove.nodes() {
+            let page = self.page_of.get(node.index()).copied().unwrap_or(0);
+            if !entry.live || page == 0 {
+                continue;
+            }
+            let Some(parent) = self.parent(grove, node) else {
+                continue;
+            };
+            if self.page_of[parent.index()] == page {
+                continue;
+            }
+            limited += 1;
+            let bytes = self.fragment_bytes(grove, node, u32::MAX);
+            if bytes > self.largest {
+                above += 1;
+                most = most.max(bytes);
+            }
+        }
+        (limited, above, most)
     }
 
     /// Checks the model's bookkeeping against a recount from the grove:
@@ -743,6 +827,42 @@ impl Model {
         }
     }
 
+    /// Whether the current write rewrote the cell of `node` in place and
+    /// has not carried it since.
+    fn is_in_place(&self, node: NodeId) -> bool {
+        self.config.upkeep_of_what_changed
+            && self.in_place_in[node.index()] == self.transition
+            && self.carry_slot[node.index()] == 0
+    }
+
+    /// The roots of the Merks that `node` hosts, position by position.
+    fn hosted_roots(grove: &Grove, node: NodeId) -> impl Iterator<Item = Option<NodeId>> + '_ {
+        let hosted = grove.node(node).hosted.iter();
+        hosted.map(|merk| grove.merk(*merk).root)
+    }
+
+    /// Whether the cell of the node of `event` is rewritten in place: it
+    /// had a cell, each of `parts` is as it was, and the cell names the
+    /// children and the hosted roots it named, position by position. A
+    /// cell that takes the bytes it took with one part longer and another
+    /// shorter is not rewritten in place, and neither is one that hosts
+    /// fewer Merks or more, such as a tree that a rollback made an item
+    /// again. A tree that becomes a tree of another type and hosts what it
+    /// hosted, each Merk where it was, is.
+    ///
+    /// The mirror has the feature and the aggregate data of both links as
+    /// one length, so it does not see a write that makes one of those
+    /// longer and another as much shorter, which the planner sees.
+    fn rewritten_in_place(&self, grove: &Grove, event: &Event, parts: (u32, u32, u32)) -> bool {
+        let entry = grove.node(event.node);
+        let roots = self.roots_of[event.node.index()].iter().copied();
+        !event.created
+            && self.page_of[event.node.index()] != 0
+            && self.parts_of[event.node.index()] == parts
+            && (entry.left, entry.right) == (event.old_left, event.old_right)
+            && roots.eq(Self::hosted_roots(grove, event.node))
+    }
+
     fn hold(&mut self, page: u32, node: NodeId) {
         let entry = &mut self.pages[page as usize];
         entry.held = Some(node);
@@ -868,6 +988,12 @@ impl Model {
         let mut rewritten: Vec<NodeId> = Vec::new();
         for index in 0..self.carried.len() {
             let (node, from, cause) = self.carried[index];
+            // A cell that a rule took up is not rewritten in place, after
+            // the write as during it. The marks are kept only where the
+            // largest size is for what a write changed.
+            if let Some(mark) = self.in_place_in.get_mut(node.index()) {
+                *mark = 0;
+            }
             self.carry_slot[node.index()] = 0;
             if from == 0 || from == self.page_of[node.index()] {
                 continue;
@@ -1112,6 +1238,11 @@ impl Model {
     /// Splits where it is every fragment the write holds that is above the
     /// largest size: its root goes up to the page of its parent, and what
     /// hung below it stays as fragments of its own.
+    ///
+    /// Each node the write holds has one turn. Where the largest size is
+    /// for what a write changed, the turn of a node whose cell the write
+    /// rewrote in place and no rule carried is passed over, and nothing is
+    /// done in its place.
     fn cap_fragments(&mut self, grove: &Grove) {
         if self.largest >= self.capacity {
             return;
@@ -1121,7 +1252,7 @@ impl Model {
             let node = self.held[next];
             next += 1;
             let page = self.page_of[node.index()];
-            if page == 0 {
+            if page == 0 || self.is_in_place(node) {
                 continue;
             }
             let root = self.fragment_root(grove, node);
@@ -1785,6 +1916,397 @@ mod tests {
         assert_eq!(model.stats().absorbed, 1);
         assert_eq!(model.stats().pages_freed, 1);
         assert_eq!(model.stats().moves[Cause::Merge as usize].cells, 1);
+    }
+
+    #[test]
+    fn a_cell_rewritten_in_place_has_its_fragment_measured_only_where_every_fragment_is() {
+        for changed_alone in [false, true] {
+            // Three cells are above the largest size, and no fragment is
+            // small.
+            let mut model = Model::new(Config {
+                upkeep_of_what_changed: changed_alone,
+                largest_fragment_percent: 30,
+                ..nothing_small()
+            });
+            let (mut hand, [x, y, a, b, _]) = two_pages(&mut model);
+            let bottom = model.page_of(y);
+            let below: u32 = [y, a, b]
+                .iter()
+                .map(|node| model.cell_of[node.index()])
+                .sum();
+            assert!(below > model.largest, "{below} of {}", model.largest);
+
+            // The path of `a` written again as it is: the write holds its
+            // nodes either way, and the fragment under `y` is counted only
+            // where every node of a write brings its fragment.
+            hand.touch_path(a);
+            let changes = step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+            assert_eq!(changes.events.len(), 3);
+            let in_place = |model: &Model| {
+                let nodes = changes.events.iter().map(|event| event.node);
+                nodes.filter(|node| model.is_in_place(*node)).count()
+            };
+            let census = model.fragments_above_the_largest_size(&hand.grove);
+            match changed_alone {
+                true => {
+                    assert_eq!(model.held.len(), 3, "{:?}", model.held);
+                    assert_eq!((in_place(&model), model.stats().capped), (3, 0));
+                    assert_eq!(model.page_of(y), bottom);
+                    assert_eq!(census, (1, 1, below), "the one under `y` is above it");
+                }
+                false => {
+                    assert_eq!((in_place(&model), model.stats().capped), (0, 1));
+                    assert_eq!(model.page_of(y), model.page_of(x));
+                    assert_eq!(census, (2, 0, 0), "`a` and `b` are fragments of their own");
+                }
+            }
+
+            // A child for `a`: the write changes the fragment, which is
+            // counted under either setting.
+            let leaf = hand.add(MerkId::ROOT, &key(5), 32);
+            hand.link(a, Side::Left, Some(leaf));
+            hand.touch_path(leaf);
+            step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+            assert_eq!(model.stats().capped, 1);
+            assert_eq!(model.page_of(y), model.page_of(x));
+            let census = model.fragments_above_the_largest_size(&hand.grove);
+            assert_eq!((census.1, census.2), (0, 0));
+        }
+    }
+
+    #[test]
+    fn what_is_left_below_a_root_that_went_up_is_cut_by_the_turns_that_are_not_passed_over() {
+        // Two pages: `x` in one, and in the other its child `y` over `a`
+        // over `leaf`, a chain within the largest size. `leaf` gets a value
+        // long enough for `a` and `leaf` together to be above it, and the
+        // nodes above are rewritten as they are. `y` goes up for the size,
+        // and what is left is still above it. Under the upkeep of every
+        // node `a` has its turn and goes up too. Where the largest size is
+        // for what a write changed, the turn of `a` is passed over and `a`
+        // over `leaf` stays above the size, as the planner leaves it
+        // (`what_is_left_below_a_root_that_went_up_is_cut_by_the_turns_that_are_not_passed_over`
+        // of its tests).
+        for changed_alone in [false, true] {
+            let mut model = Model::new(Config {
+                upkeep_of_what_changed: changed_alone,
+                largest_fragment_percent: 45,
+                ..nothing_small()
+            });
+            let (mut hand, [x, y, a, b, _]) = two_pages(&mut model);
+            let top = model.page_of(x).expect("placed");
+            carry_by_hand(&mut model, &hand.grove, &[b], top);
+            let leaf = hand.add(MerkId::ROOT, &key(5), 32);
+            hand.link(a, Side::Left, Some(leaf));
+            hand.touch_path(leaf);
+            step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+            let bytes = |model: &Model, node: NodeId| model.cell_of[node.index()];
+            let chain = [y, a, leaf].map(|node| model.page_of(node));
+            assert_eq!(chain, [model.page_of(y); 3], "one fragment under `y`");
+            assert_ne!(model.page_of(y), Some(top));
+            let before = model.stats().clone();
+            assert_eq!(before.capped, 0);
+
+            let longer = 32 + model.largest - bytes(&model, a) - bytes(&model, leaf) + 8;
+            hand.set_value_len(leaf, longer);
+            hand.touch_path(leaf);
+            let changes = step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+            assert_eq!(changes.events.len(), 4);
+            assert_eq!(bytes(&model, a) + bytes(&model, leaf), model.largest + 8);
+            assert!(bytes(&model, leaf) <= model.largest);
+            let capped = model.stats().since(&before).capped;
+            let census = model.fragments_above_the_largest_size(&hand.grove);
+            assert_eq!(model.page_of(y), Some(top));
+            assert_ne!(model.page_of(leaf), Some(top));
+            if changed_alone {
+                assert_eq!(capped, 1);
+                assert_eq!(model.page_of(a), model.page_of(leaf));
+                assert_eq!(census, (1, 1, model.largest + 8), "`a` over `leaf`");
+            } else {
+                assert_eq!(capped, 2);
+                assert_eq!(model.page_of(a), Some(top));
+                assert_eq!(census, (1, 0, 0), "the fragment of `leaf`, within the size");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cell_that_keeps_its_bytes_with_two_parts_changed_is_not_rewritten_in_place() {
+        // A value that gets shorter by what the feature and the aggregate
+        // data get longer leaves the cell as long as it was, and is a
+        // change of the cell all the same.
+        let mut hand = Hand::new();
+        let mut model = Model::new(Config {
+            upkeep_of_what_changed: true,
+            page_size: 8192,
+            ..config()
+        });
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 3);
+        let node = nodes[0];
+        let bytes = model.cell_of[node.index()];
+
+        hand.touch_path(node);
+        let changes = step(&mut hand, &mut model);
+        let mut written = changes.events.iter().map(|event| event.node);
+        assert!(written.all(|node| model.is_in_place(node)));
+
+        hand.set_value_len(node, 32 - 8);
+        hand.grow_meta(node, 8);
+        hand.touch_path(node);
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(model.cell_of[node.index()], bytes, "as long as it was");
+        assert!(!model.is_in_place(node));
+        assert!(model.is_in_place(nodes[1]), "the node above it is");
+    }
+
+    #[test]
+    fn a_cell_that_hosts_one_root_fewer_is_not_rewritten_in_place() {
+        // A tree element with a Merk of one node under it. The element is
+        // made an item again, as a rollback to a savepoint makes it: the
+        // Merk goes, the node keeps its children, its value and its
+        // feature are as long as they were, and its cell has one pointer
+        // fewer.
+        let mut hand = Hand::new();
+        let mut model = Model::new(Config {
+            upkeep_of_what_changed: true,
+            page_size: 8192,
+            ..config()
+        });
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 3);
+        let node = nodes[0];
+        let hosted = hand.host(node);
+        let inner = hand.add(hosted, b"inner", 8);
+        hand.set_root(hosted, Some(inner));
+        hand.touch_path(inner);
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        let with_a_root = model.cell_of[node.index()];
+
+        hand.touch_path(node);
+        step(&mut hand, &mut model);
+        assert!(model.is_in_place(node), "written again as it is");
+
+        hand.unhost(node);
+        hand.touch_path(node);
+        let changes = step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert!(changes.retyped.is_empty());
+        assert!(model.cell_of[node.index()] < with_a_root);
+        assert!(!model.is_in_place(node));
+        assert!(model.is_in_place(nodes[1]), "the node above it is");
+    }
+
+    #[test]
+    fn a_cell_that_hosts_an_empty_merk_no_more_is_not_rewritten_in_place() {
+        // As above, with a Merk that has no node: the tree element is
+        // made an item again. The model sizes the cell alike with and
+        // without the empty Merk, and the cell is changed all the same:
+        // in a tree page it has one pointer fewer.
+        let mut hand = Hand::new();
+        let mut model = Model::new(Config {
+            upkeep_of_what_changed: true,
+            page_size: 8192,
+            ..config()
+        });
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 3);
+        let node = nodes[0];
+        hand.host(node);
+        hand.touch_path(node);
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        let hosting = model.cell_of[node.index()];
+
+        hand.touch_path(node);
+        step(&mut hand, &mut model);
+        assert!(model.is_in_place(node), "written again as it is");
+
+        hand.unhost(node);
+        hand.touch_path(node);
+        let changes = step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert!(changes.retyped.is_empty());
+        assert_eq!(model.cell_of[node.index()], hosting, "sized alike");
+        assert!(!model.is_in_place(node));
+    }
+
+    #[test]
+    fn a_tree_of_another_type_is_rewritten_in_place_where_it_hosts_each_merk_where_it_did() {
+        // A tree element that hosts two Merks, the first with a node and
+        // the second empty. Its element becomes a tree of another type
+        // with the same two Merks: every part of the cell is as long as it
+        // was and both pointers are as they were, so the cell is rewritten
+        // in place. Then it becomes a tree of another type again, and the
+        // two Merks change places: the cell is sized alike, and the first
+        // pointer names nothing where it named a root.
+        let mut hand = Hand::new();
+        let mut model = Model::new(Config {
+            upkeep_of_what_changed: true,
+            page_size: 8192,
+            ..config()
+        });
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 3);
+        let node = nodes[0];
+        let (first, second) = (hand.host(node), hand.host(node));
+        let inner = hand.add(first, &key(1), 32);
+        hand.set_root(first, Some(inner));
+        hand.touch_path(inner);
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        let bytes = model.cell_of[node.index()];
+
+        hand.retype(node, vec![first, second]);
+        hand.touch_path(node);
+        let changes = step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(changes.retyped, [node]);
+        assert!(model.is_in_place(node));
+
+        hand.retype(node, vec![second, first]);
+        hand.touch_path(node);
+        let changes = step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(changes.retyped, [node]);
+        assert_eq!(model.cell_of[node.index()], bytes, "sized alike");
+        assert!(!model.is_in_place(node));
+        assert!(model.is_in_place(nodes[1]), "the node above it is");
+    }
+
+    #[test]
+    fn a_cell_whose_second_hosted_root_is_another_node_is_not_rewritten_in_place() {
+        // A tree element that hosts two Merks, each with a node. The
+        // second Merk gets another root: the cell is sized alike, its
+        // first pointer is as it was, and its second names another cell.
+        let mut hand = Hand::new();
+        let mut model = Model::new(Config {
+            upkeep_of_what_changed: true,
+            page_size: 8192,
+            ..config()
+        });
+        let nodes = grow(&mut hand, &mut model, MerkId::ROOT, 3);
+        let node = nodes[0];
+        let (first, second) = (hand.host(node), hand.host(node));
+        let [a, b] = [(first, 1), (second, 2)].map(|(merk, index)| {
+            let root = hand.add(merk, &key(index), 32);
+            hand.set_root(merk, Some(root));
+            hand.touch_path(root);
+            root
+        });
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        let bytes = model.cell_of[node.index()];
+
+        hand.touch_path(a);
+        step(&mut hand, &mut model);
+        assert!(model.is_in_place(node), "written again as it is");
+
+        // `c` takes the place of `b` at the root of the second Merk.
+        let c = hand.add(second, &key(3), 32);
+        hand.link(c, Side::Left, Some(b));
+        hand.set_root(second, Some(c));
+        hand.touch_path(c);
+        step(&mut hand, &mut model);
+        model.check(&hand.grove).expect("consistent");
+        assert_eq!(model.cell_of[node.index()], bytes, "sized alike");
+        assert!(!model.is_in_place(node));
+        assert!(model.is_in_place(nodes[1]), "the node above it is");
+    }
+
+    #[test]
+    fn a_node_that_the_rule_carried_is_looked_at_once_under_either_upkeep() {
+        // Three pages: `t`; `p` over `b`; and `r` over `a`, a chain. `r`
+        // gets a longer value and the nodes above it are rewritten as
+        // they are. `r` goes up to the page of `b`, and `p` up out of it.
+        // What is left, `b` over `r`, is above the largest size and stays
+        // so under either upkeep: `r` was carried by the rule.
+        for changed_alone in [false, true] {
+            let mut hand = Hand::new();
+            let mut model = Model::new(Config {
+                upkeep_of_what_changed: changed_alone,
+                largest_fragment_percent: 30,
+                ..nothing_small()
+            });
+            let t = hand.add(MerkId::ROOT, &key(50), 32);
+            hand.set_root(MerkId::ROOT, Some(t));
+            let mut chain = vec![t];
+            for index in [40, 30, 20, 10] {
+                let node = hand.add(MerkId::ROOT, &key(index), 32);
+                hand.link(*chain.last().expect("a node"), Side::Left, Some(node));
+                chain.push(node);
+            }
+            step(&mut hand, &mut model);
+            let [t, p, b, r, a] = chain[..] else {
+                panic!("five nodes");
+            };
+            let top = model.page_of(t).expect("placed");
+            let (mid, low) = (model.allocate(), model.allocate());
+            carry_by_hand(&mut model, &hand.grove, &[p, b], mid);
+            carry_by_hand(&mut model, &hand.grove, &[r, a], low);
+            model.check(&hand.grove).expect("consistent");
+            let bytes = |model: &Model, nodes: &[NodeId]| -> u32 {
+                nodes.iter().map(|node| model.cell_of[node.index()]).sum()
+            };
+            assert!(bytes(&model, &[p, b]) <= model.largest);
+            assert!(bytes(&model, &[r, a]) <= model.largest);
+            let before = model.stats().clone();
+
+            let longer = 32 + model.largest - bytes(&model, &[r, a]) + 8;
+            hand.set_value_len(r, longer);
+            hand.touch_path(r);
+            step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+            assert!(bytes(&model, &[b, r]) > model.largest);
+            assert_eq!(
+                model.stats().since(&before).capped,
+                2,
+                "upkeep of what changed: {changed_alone}"
+            );
+            assert_eq!(model.page_of(p), Some(top));
+            assert_eq!((model.page_of(b), model.page_of(r)), (Some(mid), Some(mid)));
+            assert_eq!(model.page_of(a), Some(low));
+            let census = model.fragments_above_the_largest_size(&hand.grove);
+            assert_eq!(census, (2, 1, bytes(&model, &[b, r])));
+        }
+    }
+
+    #[test]
+    fn the_proposed_upkeep_is_the_one_the_planner_proposes() {
+        use lignin_tree::fragment::Upkeep;
+        assert_eq!(
+            Config::proposed().upkeep_of_what_changed,
+            Upkeep::PROPOSED == Upkeep::Changed
+        );
+    }
+
+    #[test]
+    fn a_small_fragment_rewritten_in_place_moves_into_its_parents_page_under_either_upkeep() {
+        for changed_alone in [false, true] {
+            let mut model = Model::new(Config {
+                upkeep_of_what_changed: changed_alone,
+                small_fragment_divisor: 4,
+                ..config()
+            });
+            let (mut hand, [x, y, a, b, _]) = two_pages(&mut model);
+            let top = model.page_of(x).expect("placed");
+            // `a` and `b` go back by hand: `y` is alone in its page, a
+            // fragment below the small size beside a page that has room.
+            carry_by_hand(&mut model, &hand.grove, &[a, b], top);
+            assert!(model.cell_of[y.index()] < model.small);
+
+            // The path of `y` written again as it is.
+            let before = model.stats().clone();
+            hand.touch_path(y);
+            step(&mut hand, &mut model);
+            model.check(&hand.grove).expect("consistent");
+            assert_eq!(model.page_of(y), Some(top), "{changed_alone}");
+            assert_eq!(model.stats().since(&before).absorbed, 1);
+            // `y` was carried, and `x` was not.
+            assert!(!model.is_in_place(y));
+            assert_eq!(model.is_in_place(x), changed_alone);
+        }
     }
 
     #[test]

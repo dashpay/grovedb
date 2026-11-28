@@ -541,6 +541,22 @@ pub(crate) mod hand {
             node
         }
 
+        /// Gives `node` a value of `value_len` bytes.
+        pub(crate) fn set_value_len(&mut self, node: NodeId, value_len: u32) {
+            self.touch(node);
+            self.grove.node_mut(node).value_len = value_len;
+            self.touched.get_mut(&node).expect("touched").value_changed = true;
+        }
+
+        /// Makes the feature type and aggregate data of `node` longer by
+        /// `by` bytes, in Merk's record and in a tree page.
+        pub(crate) fn grow_meta(&mut self, node: NodeId, by: u32) {
+            self.touch(node);
+            let entry = self.grove.node_mut(node);
+            entry.meta_len += by;
+            entry.meta_fixed_len += by;
+        }
+
         /// Makes `child` the child of `parent` on `side`.
         pub(crate) fn link(&mut self, parent: NodeId, side: Side, child: Option<NodeId>) {
             self.touch(parent);
@@ -593,6 +609,32 @@ pub(crate) mod hand {
             self.grove.node_mut(node).hosted.push(merk);
             self.changes.merks_created.push(merk);
             merk
+        }
+
+        /// Makes the element of `node` a tree of another type that hosts
+        /// the Merks it hosted, in the order of `hosted`.
+        pub(crate) fn retype(&mut self, node: NodeId, hosted: Vec<MerkId>) {
+            self.touch(node);
+            let entry = self.grove.node_mut(node);
+            let sorted = |merks: &[MerkId]| {
+                let mut merks = merks.to_vec();
+                merks.sort_unstable();
+                merks
+            };
+            assert_eq!(sorted(&entry.hosted), sorted(&hosted), "the same Merks");
+            entry.hosted = hosted;
+            self.changes.retyped.push(node);
+        }
+
+        /// Makes the element of `node` an item again, as a rollback does:
+        /// the Merks it hosts are dropped, and the node is told as written
+        /// and not as one whose element has another type.
+        pub(crate) fn unhost(&mut self, node: NodeId) {
+            self.touch(node);
+            let hosted = std::mem::take(&mut self.grove.node_mut(node).hosted);
+            for merk in hosted {
+                self.grove.drop_merk(merk, true, &mut self.changes);
+            }
         }
 
         /// Deletes `node`, which the caller has already unlinked.

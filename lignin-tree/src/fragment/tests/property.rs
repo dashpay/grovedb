@@ -22,9 +22,15 @@ struct Run {
 }
 
 impl Run {
+    /// A run on pages of `size`. Each of its writes is planned under the
+    /// other upkeep as well, on the same pages, and no write is refused
+    /// for room under the upkeep of what a write changed that the upkeep
+    /// of every node takes ([`Grove::both`]).
     fn new(size: PageSize, seed: u64) -> Self {
+        let mut grove = Grove::new(Layout::proposed(size), seed);
+        grove.both = true;
         Self {
-            grove: Grove::new(Layout::proposed(size), seed),
+            grove,
             keys: Vec::new(),
             merks: vec![0],
             next_key: 0,
@@ -153,6 +159,7 @@ fn layouts(size: PageSize) -> [Layout; 5] {
             small_fragment_divisor: small,
             seed_limit_percent: seed,
             merge_below_percent: merge,
+            upkeep: Upkeep::Written,
         };
         Layout::new(size, params).expect("a layout")
     };
@@ -220,6 +227,7 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
 fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
     let (mut stopped, mut finalized, mut checked) = (0, 0, 0);
     let (mut carried_behind, mut refused, mut renamed) = (0, 0, 0);
+    let (mut planned_under_both, mut refused_under_both) = (0, 0);
     for seed in 1..=4 {
         let size = [PageSize::MIN, PageSize::new(16_384).expect("a page size")][seed as usize % 2];
         let mut run = Run::new(size, 70 + seed);
@@ -287,7 +295,18 @@ fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
         }
         carried_behind += run.grove.carried_behind;
         refused += run.grove.refused;
+        planned_under_both += run.grove.planned_under_both;
+        refused_under_both += run.grove.refused_under_both;
     }
+    println!(
+        "{planned_under_both} writes planned under both upkeeps, {refused_under_both} of them \
+         refused for room under both"
+    );
+    // These runs are laid out for what a write changed, and each of their
+    // writes is planned for every node of it as well ([`Grove::both`]).
+    // A write that is refused for room here is refused under both.
+    assert!(planned_under_both > 4000);
+    assert_eq!(refused_under_both, refused);
     println!(
         "{stopped} writes stopped below a host, {refused} of them refused for room and made \
          again with the host, {finalized} hosts written after them, {renamed} nodes moved to \
@@ -324,6 +343,89 @@ fn a_tree_that_only_grows_fills_its_pages_as_the_layout_says() {
     );
     assert_eq!(counters.carries[Cause::Delete].cells, 0);
     assert_eq!(counters.created, 6000);
+}
+
+#[test]
+fn any_sequence_of_writes_keeps_the_tree_under_either_upkeep() {
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let mut pages = 0;
+        let mut carried = 0;
+        for seed in 1..=4 {
+            let sizes = [PageSize::MIN, PageSize::new(16_384).expect("a page size")];
+            let size = sizes[seed as usize % 2];
+            let mut run = Run::new(size, 40 + seed);
+            run.grove.restate = seed == 3;
+            let layout = Layout::proposed_under(size, upkeep);
+            run.grove.fragments.set_layout(layout);
+            for step in 0..2600 {
+                run.step();
+                if step % 4 == 0 {
+                    run.grove.check();
+                }
+            }
+            run.grove.check();
+            // Nodes written again as they are: the logical tree is what
+            // it was. Where the largest size is measured in what a write
+            // changed, no fragment is split for its size by such a write,
+            // so what it carries is a small fragment that its parent's
+            // page has room for (M1).
+            let before = run.grove.logical();
+            for _ in 0..300 {
+                let Some((merk, key)) = run.key() else { break };
+                let report = run.grove.touch(merk, &key);
+                let mut causes = report.carried.iter().map(|cell| cell.cause);
+                assert!(
+                    upkeep == Upkeep::Written || causes.all(|cause| cause == Cause::Merge),
+                    "{:?}",
+                    report.carried
+                );
+            }
+            run.grove.check();
+            assert!(
+                before == run.grove.logical(),
+                "the logical tree is what it was"
+            );
+            pages += run.grove.mem.frames.len();
+            carried += run.carried();
+        }
+        println!("{upkeep:?}: {pages} pages, {carried} cells carried");
+        assert!(
+            pages > 40 && carried > 400,
+            "{upkeep:?}: {pages} pages, {carried} cells carried"
+        );
+    }
+}
+
+#[test]
+fn a_tree_that_only_grows_fills_its_pages_alike_under_either_upkeep() {
+    // The inserts of a tree that only grows change the fragment they
+    // arrive in, which either upkeep measures. The other fragments on the
+    // way to the root are measured only where every fragment is.
+    let grown = |upkeep| {
+        let mut run = Run::new(PageSize::MIN, 11);
+        let layout = Layout::proposed_under(PageSize::MIN, upkeep);
+        run.grove.fragments.set_layout(layout);
+        for _ in 0..6000 {
+            run.insert();
+        }
+        run.grove.check();
+        let counters = *run.grove.fragments.counters();
+        let carried = counters.carries.total().cells;
+        (run.grove.mem.frames.len(), run.grove.fill(), carried)
+    };
+    let (written, changed) = (grown(Upkeep::Written), grown(Upkeep::Changed));
+    println!("every node held: {written:?}; what changed: {changed:?}");
+    assert!(changed.1 > 0.60, "fill is {}", changed.1);
+    assert!(
+        (changed.2 as f64) < 1.6 * 6000.0,
+        "{} cells carried",
+        changed.2
+    );
+    // Within a twentieth of each other in pages.
+    assert!(
+        changed.0.abs_diff(written.0) * 20 <= written.0,
+        "{written:?} against {changed:?}"
+    );
 }
 
 /// Where the pages have every cell: each page with its cells by their
@@ -372,6 +474,12 @@ fn placement(mem: &Mem) -> (usize, usize, usize, String) {
 /// runs fails it, and whoever makes it decides the new layout and writes
 /// its digests here.
 ///
+/// The runs are held under each upkeep (L4). Those of
+/// [`Upkeep::Written`] are the digests this test held before the upkeep
+/// was a setting: under it the planner leaves every cell where it did.
+/// Those of [`Upkeep::Changed`], which is proposed, were written when it
+/// was decided.
+///
 /// The pages are those of the test, in memory: nothing but a run's own
 /// steps changes them. The runs are of three page sizes, the size of a
 /// store's pages among them, and in two of them a written node whose
@@ -380,12 +488,14 @@ fn placement(mem: &Mem) -> (usize, usize, usize, String) {
 fn seeded_runs_leave_every_cell_where_the_layout_was_decided() {
     // The seed, the page size, the steps and whether a value that waits
     // is stated again; then the pages, the cells, the hosted roots and
-    // the digest.
+    // the digest. Under the two upkeeps the first two runs end on the
+    // same pages with the same cells and place some of them otherwise,
+    // and the other three place every cell alike.
     type Held = (
         (u64, usize, usize, bool),
         (usize, usize, usize, &'static str),
     );
-    const HELD: [Held; 5] = [
+    const WRITTEN: [Held; 5] = [
         (
             (20_261_124, 8192, 4000, false),
             (
@@ -432,34 +542,88 @@ fn seeded_runs_leave_every_cell_where_the_layout_was_decided() {
             ),
         ),
     ];
-    let mut found = Vec::new();
-    for ((seed, size, steps, restate), _) in HELD {
-        let size = PageSize::new(size).expect("a page size");
-        let mut run = Run::new(size, seed);
-        run.grove.restate = restate;
-        for step in 0..steps {
-            run.step();
-            if step % 1000 == 999 {
-                run.grove.check();
+    const CHANGED: [Held; 5] = [
+        (
+            (20_261_124, 8192, 4000, false),
+            (
+                50,
+                1162,
+                46,
+                "8244edc0b866c45726186a9b07903f80b572b5b170f01a28ee2737081e376e77",
+            ),
+        ),
+        (
+            (20_261_125, 16_384, 6000, false),
+            (
+                35,
+                1743,
+                83,
+                "a62ec48715d685525e28ee830af608a471f8dbb3998410d9ef068d9a745b8858",
+            ),
+        ),
+        (
+            (20_261_126, 32_768, 9000, false),
+            (
+                25,
+                2523,
+                119,
+                "799de81d7fbbb12d10118d43b522e70201c5d7e018d9b55a38be0faa72174304",
+            ),
+        ),
+        (
+            (20_261_127, 8192, 4000, true),
+            (
+                46,
+                1201,
+                65,
+                "b48948b21bdb0ab1d30f1fcd79aa03efa6e5a1e943c8c788489f6b8f1924939e",
+            ),
+        ),
+        (
+            (20_261_128, 16_384, 6000, true),
+            (
+                35,
+                1720,
+                62,
+                "bdd8e7a55fe274ce47cff6a84397e3b8aa354647b805819f87a39bf00fcbb052",
+            ),
+        ),
+    ];
+    for (upkeep, held) in [(Upkeep::Written, WRITTEN), (Upkeep::Changed, CHANGED)] {
+        let mut found = Vec::new();
+        for ((seed, size, steps, restate), _) in held {
+            let size = PageSize::new(size).expect("a page size");
+            let mut run = Run::new(size, seed);
+            run.grove.restate = restate;
+            let layout = Layout::proposed_under(size, upkeep);
+            run.grove.fragments.set_layout(layout);
+            for step in 0..steps {
+                run.step();
+                if step % 1000 == 999 {
+                    run.grove.check();
+                }
             }
+            run.grove.check();
+            let (pages, cells, hosted, digest) = placement(&run.grove.mem);
+            assert!(
+                pages > 12 && cells > 600 && hosted > 20,
+                "the run of {seed} spans pages and hosts Merks: {pages} pages, {cells} cells, \
+                 {hosted} hosted roots"
+            );
+            found.push((
+                (seed, size.get(), steps, restate),
+                (pages, cells, hosted, digest),
+            ));
         }
-        run.grove.check();
-        let (pages, cells, hosted, digest) = placement(&run.grove.mem);
-        assert!(
-            pages > 12 && cells > 600 && hosted > 20,
-            "the run of {seed} spans pages and hosts Merks: {pages} pages, {cells} cells, \
-             {hosted} hosted roots"
+        let found: Vec<_> = (found.iter())
+            .map(|(run, (pages, cells, hosted, digest))| {
+                (*run, (*pages, *cells, *hosted, &digest[..]))
+            })
+            .collect();
+        assert_eq!(
+            found, held,
+            "the layout of the tree pages under {upkeep:?} is not the one that was decided"
         );
-        found.push((
-            (seed, size.get(), steps, restate),
-            (pages, cells, hosted, digest),
-        ));
     }
-    let found: Vec<_> = (found.iter())
-        .map(|(run, (pages, cells, hosted, digest))| (*run, (*pages, *cells, *hosted, &digest[..])))
-        .collect();
-    assert_eq!(
-        found, HELD,
-        "the layout of the tree pages is not the one that was decided"
-    );
+    assert_eq!(Upkeep::PROPOSED, Upkeep::Changed, "the proposed upkeep");
 }

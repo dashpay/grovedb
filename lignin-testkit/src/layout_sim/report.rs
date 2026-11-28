@@ -380,7 +380,7 @@ impl fmt::Display for Report {
         writeln!(
             f,
             "{}: page {} B, inline up to {} B, fragments {} to {} B, seed limit {}%, merge below \
-             {}%, colocate {}, carry on rotation {}, on delete {}",
+             {}%, colocate {}, carry on rotation {}, on delete {}, upkeep of {}",
             self.workload,
             self.config.page_size,
             self.config.inline_max,
@@ -391,6 +391,10 @@ impl fmt::Display for Report {
             self.config.colocate,
             self.config.carry_on_rotation,
             self.config.carry_on_delete,
+            match self.config.upkeep_of_what_changed {
+                true => "what a write changed",
+                false => "every node of a write",
+            },
         )?;
         writeln!(
             f,

@@ -517,6 +517,7 @@ pub(super) fn open_store(
         vfs: options.vfs.clone(),
         dir: dir.to_path_buf(),
         page_size,
+        upkeep: options.upkeep,
         pool: recovered.pool,
         table: recovered.table,
         segments: recovered.segments,

@@ -555,7 +555,8 @@ fn print_samples(report: &Report) {
         let transitions = interval.transitions.max(1) as f64;
         println!(
             "    at {:>8} transitions: {:>8} nodes, {:>7} pages, {:.1} nodes per page, fill \
-             {:.1}%; in the interval {:.2} pages dirtied, {:.1} records, {:.3} cells carried",
+             {:.1}%; in the interval {:.2} pages dirtied, {:.1} records, {:.3} cells carried \
+             ({} in all)",
             sample.stats.transitions,
             sample.cells,
             sample.pages,
@@ -564,6 +565,7 @@ fn print_samples(report: &Report) {
             interval.dirty_per_transition(),
             interval.records as f64 / transitions,
             interval.moved().cells as f64 / transitions,
+            interval.moved().cells,
         );
         before = Some(sample.stats.clone());
     }
@@ -592,8 +594,8 @@ fn configs_from_env() -> Vec<Config> {
         return vec![Config::proposed()];
     };
     // "page:largest fragment %:seed limit %:merge below %:inline:small
-    // divisor:colocate:rotation:delete", comma separated; later fields
-    // optional.
+    // divisor:colocate:rotation:delete:upkeep of what changed", comma
+    // separated; later fields optional.
     spec.split(',')
         .map(|entry| {
             let mut fields = entry.split(':');
@@ -622,6 +624,9 @@ fn configs_from_env() -> Vec<Config> {
             }
             if let Some(carry) = fields.next() {
                 config.carry_on_delete = carry.parse().expect("bool");
+            }
+            if let Some(changed) = fields.next() {
+                config.upkeep_of_what_changed = changed.parse().expect("bool");
             }
             config
         })
@@ -656,11 +661,18 @@ fn run_big(
                     started.elapsed().as_secs_f64(),
                 );
                 for model in models {
+                    let (fragments, above, most) =
+                        model.fragments_above_the_largest_size(observer.grove());
                     eprintln!(
-                        "    page {:>5}/{}/{}: {:>7} pages, fill {:.1}%, dirtied {:.2}",
+                        "    page {:>5}/{}/{}{}: {:>7} pages, fill {:.1}%, dirtied {:.2}; of {fragments} \
+                         fragments that L1 limits, {above} above the largest size (the largest {most} B)",
                         model.config().page_size,
                         model.config().largest_fragment_percent,
                         model.config().seed_limit_percent,
+                        match model.config().upkeep_of_what_changed {
+                            true => "",
+                            false => " (largest size for every node of a write)",
+                        },
                         model.pages(),
                         model.fill() * 100.0,
                         model.stats().dirty_per_transition(),
@@ -871,6 +883,174 @@ fn sweep_churn() {
         churn(keys, rounds, value_len),
         &configs_from_env(),
         sample_every,
+    ) {
+        println!("{report}");
+        print_samples(&report);
+    }
+}
+
+/// A tree that grows, is thinned, and is then only written in place:
+/// `keys` items are inserted, every second one is deleted in a random
+/// order, and each one that is left is written again `rounds` times with
+/// another value of the same length. The last phase changes no cell's size
+/// and no link, so it shows what a layout does with writes that only
+/// rewrite: which pages it writes for them, and whether it still moves
+/// cells.
+fn updates_after_deletes(
+    keys: u64,
+    rounds: u64,
+    value_len: u32,
+) -> impl Iterator<Item = Op> + Send {
+    let path = vec![b"updates".to_vec()];
+    let mut rng = Rng::derive(SEED, 0xC4_03, 0);
+    let mut live: Vec<[u8; 32]> = Vec::new();
+    let mut ops = vec![Op::Write(Write::Insert {
+        path: Vec::new(),
+        key: b"updates".to_vec(),
+        element: Element::empty_tree(),
+    })];
+    let mut written = 0u64;
+    let mut write = |ops: &mut Vec<Op>, write: Write| {
+        ops.push(Op::Write(write));
+        written += 1;
+        if written.is_multiple_of(20) {
+            ops.push(Op::Commit);
+        }
+    };
+    for _ in 0..keys {
+        let key = rng.id();
+        live.push(key);
+        let element = Element::new_item(rng.bytes(value_len));
+        let (path, key) = (path.clone(), key.to_vec());
+        write(&mut ops, Write::Insert { path, key, element });
+    }
+    for _ in 0..keys / 2 {
+        let victim = live.swap_remove(rng.below(live.len() as u64) as usize);
+        let (path, key) = (path.clone(), victim.to_vec());
+        write(&mut ops, Write::Delete { path, key });
+    }
+    for _ in 0..rounds {
+        for key in &live {
+            let element = Element::new_item(rng.bytes(value_len));
+            let (path, key) = (path.clone(), key.to_vec());
+            write(&mut ops, Write::Insert { path, key, element });
+        }
+    }
+    ops.push(Op::Commit);
+    ops.into_iter()
+}
+
+/// A tree written to leave fragments above the largest size, and to keep
+/// them there. `keys` items are inserted. Then the items of every second
+/// stripe of the key space (a stripe is the keys that share their first
+/// `bits` bits) are taken together, and `percent` of a hundred of them are
+/// deleted, in a random order. So a stripe of those loses about that share
+/// and not exactly it: what is left of it is small fragments beside pages
+/// that no delete touched, and M1 sends them into those pages, on top of
+/// the fragments there. Then each item that is left is written again
+/// `rounds` times with another value of the same length, which rewrites
+/// cells in place and changes none. At the end `keys / 4` items are
+/// inserted.
+///
+/// Where the largest size is for what a write changed (L4), the rounds
+/// leave a fragment that M1 took above the largest size as it is. So this
+/// is the workload of someone who wants as many such fragments as the
+/// rules allow, for as long as they allow it.
+fn stripes(
+    keys: u64,
+    rounds: u64,
+    bits: u32,
+    percent: u64,
+    value_len: u32,
+) -> impl Iterator<Item = Op> + Send {
+    let path = vec![b"stripes".to_vec()];
+    let mut rng = Rng::derive(SEED, 0xC4_04, 0);
+    let mut live: Vec<[u8; 32]> = Vec::new();
+    let mut ops = vec![Op::Write(Write::Insert {
+        path: Vec::new(),
+        key: b"stripes".to_vec(),
+        element: Element::empty_tree(),
+    })];
+    let mut written = 0u64;
+    let mut write = |ops: &mut Vec<Op>, write: Write| {
+        ops.push(Op::Write(write));
+        written += 1;
+        if written.is_multiple_of(20) {
+            ops.push(Op::Commit);
+        }
+    };
+    for _ in 0..keys {
+        let key = rng.id();
+        live.push(key);
+        let element = Element::new_item(rng.bytes(value_len));
+        let (path, key) = (path.clone(), key.to_vec());
+        write(&mut ops, Write::Insert { path, key, element });
+    }
+    let stripe = |key: &[u8; 32]| u16::from_be_bytes([key[0], key[1]]) >> (16 - bits);
+    let (mut thinned, mut kept): (Vec<_>, Vec<_>) =
+        live.into_iter().partition(|key| stripe(key) % 2 == 1);
+    for _ in 0..thinned.len() as u64 * percent / 100 {
+        let victim = thinned.swap_remove(rng.below(thinned.len() as u64) as usize);
+        let (path, key) = (path.clone(), victim.to_vec());
+        write(&mut ops, Write::Delete { path, key });
+    }
+    kept.append(&mut thinned);
+    for _ in 0..rounds {
+        for key in &kept {
+            let element = Element::new_item(rng.bytes(value_len));
+            let (path, key) = (path.clone(), key.to_vec());
+            write(&mut ops, Write::Insert { path, key, element });
+        }
+    }
+    for _ in 0..keys / 4 {
+        let element = Element::new_item(rng.bytes(value_len));
+        let (path, key) = (path.clone(), rng.id().to_vec());
+        write(&mut ops, Write::Insert { path, key, element });
+    }
+    ops.push(Op::Commit);
+    ops.into_iter()
+}
+
+/// The workload of [`stripes`], sized by `LAYOUT_SIM_KEYS` and
+/// `LAYOUT_SIM_ROUNDS`, with stripes of `LAYOUT_SIM_STRIPE_BITS` bits that
+/// lose `LAYOUT_SIM_STRIPE_PERCENT` of a hundred, under the layouts of
+/// `LAYOUT_SIM_CONFIGS`.
+#[test]
+#[ignore = "a growth, deletes by stripes, rounds of updates in place and a second growth"]
+fn sweep_stripes() {
+    let keys = number_from_env("LAYOUT_SIM_KEYS").unwrap_or(50_000);
+    let rounds = number_from_env("LAYOUT_SIM_ROUNDS").unwrap_or(2);
+    let bits = number_from_env("LAYOUT_SIM_STRIPE_BITS").unwrap_or(8) as u32;
+    let percent = number_from_env("LAYOUT_SIM_STRIPE_PERCENT").unwrap_or(90);
+    assert!((1..=16).contains(&bits) && percent <= 100);
+    for report in run_big(
+        "stripes",
+        stripes(keys, rounds, bits, percent, 400),
+        &configs_from_env(),
+        keys / 10,
+    ) {
+        println!("{report}");
+        print_samples(&report);
+    }
+}
+
+/// The workload of [`updates_after_deletes`], sized by `LAYOUT_SIM_KEYS`,
+/// under the layouts of `LAYOUT_SIM_CONFIGS`. A sample is taken every
+/// `LAYOUT_SIM_KEYS / 2` transitions. The tree is made by a transition of
+/// its own, so where `LAYOUT_SIM_KEYS` is even and at least four a sample
+/// falls one write before the end of the growth, of the thinning and of
+/// each round of updates, and the first interval of the updates has the
+/// last delete in it.
+#[test]
+#[ignore = "a growth, a thinning and rounds of updates in place"]
+fn sweep_updates() {
+    let keys = number_from_env("LAYOUT_SIM_KEYS").unwrap_or(50_000);
+    let rounds = number_from_env("LAYOUT_SIM_ROUNDS").unwrap_or(4);
+    for report in run_big(
+        "updates",
+        updates_after_deletes(keys, rounds, 400),
+        &configs_from_env(),
+        keys / 2,
     ) {
         println!("{report}");
         print_samples(&report);

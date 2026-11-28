@@ -962,6 +962,85 @@ fn an_open_of_lignindb_is_given_the_options_of_the_choice() {
 }
 
 #[test]
+fn a_grove_of_lignindb_is_the_same_grove_under_either_upkeep() {
+    use lignindb::options::Upkeep;
+
+    // The upkeep of the choice reaches the engine, and decides where cells
+    // go and nothing a reader is given: the same writes under each leave
+    // the same root hash, and a grove written under one is read and
+    // written under the other.
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    let key = |n: u32| n.to_be_bytes();
+    let value = |n: u32, round: u8| Element::new_item(vec![n as u8 ^ round; 200]);
+    let open = |path: &Path, upkeep: Upkeep| {
+        let chosen = EngineChoice::Lignin(Options {
+            upkeep,
+            ..Options::default()
+        });
+        let engine = EitherEngine::open_with(path, &chosen).expect("a database");
+        let said = engine.lignin().expect("LigninDB is held").database();
+        assert_eq!(said.upkeep(), upkeep);
+        GroveDb::from_engine(engine)
+    };
+    let mut roots = Vec::new();
+    for (upkeep, other) in [
+        (Upkeep::Written, Upkeep::Changed),
+        (Upkeep::Changed, Upkeep::Written),
+    ] {
+        let path = dir.path().join(format!("{upkeep:?}"));
+        let db = open(&path, upkeep);
+        (db.insert(ROOT, b"tree", Element::empty_tree(), None, None, v)
+            .unwrap())
+        .expect("a tree");
+        // Items for several pages. Then every third is written again with
+        // a value as long as it had, which rewrites its cell and the cells
+        // above it in place, and every fifth is deleted.
+        for n in 0..600 {
+            (db.insert(TREE, &key(n), value(n, 0), None, None, v)
+                .unwrap())
+            .expect("an item");
+        }
+        for n in (0..600).step_by(3) {
+            (db.insert(TREE, &key(n), value(n, 1), None, None, v)
+                .unwrap())
+            .expect("an item");
+        }
+        for n in (0..600).step_by(5) {
+            (db.delete(TREE, &key(n), None, None, v).unwrap()).expect("a delete");
+        }
+        let root = db.root_hash(None, v).unwrap().expect("a root hash");
+        drop(db);
+
+        // Under the other upkeep: the same grove, and writes in place and
+        // a new item are taken.
+        let db = open(&path, other);
+        assert_eq!(db.root_hash(None, v).unwrap().expect("a root hash"), root);
+        for n in (1..600).step_by(7).filter(|n| n % 5 != 0) {
+            (db.insert(TREE, &key(n), value(n, 2), None, None, v)
+                .unwrap())
+            .expect("an item");
+        }
+        (db.insert(TREE, &key(600), value(600, 0), None, None, v)
+            .unwrap())
+        .expect("an item");
+        for n in [1u32, 2, 3, 8, 600] {
+            let round = match n {
+                1 | 8 => 2,
+                3 => 1,
+                _ => 0,
+            };
+            let got = db.get(TREE, &key(n), None, v).unwrap().expect("the item");
+            assert_eq!(got, value(n, round), "item {n}");
+        }
+        assert!(db.get(TREE, &key(5), None, v).unwrap().is_err());
+        roots.push((root, db.root_hash(None, v).unwrap().expect("a root hash")));
+    }
+    assert_eq!(roots[0], roots[1]);
+    assert_ne!(roots[0].0, roots[0].1);
+}
+
+#[test]
 fn an_open_that_names_no_engine_goes_by_what_the_directory_holds() {
     let v = GroveVersion::latest();
     // RocksDB makes the database where there is none, as for a `GroveDb`

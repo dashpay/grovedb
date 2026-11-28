@@ -56,7 +56,8 @@ pub struct Run {
 /// where the transaction is committed. Reads are skipped, in the block, of
 /// committed state or through a snapshot, which is not opened: they change
 /// no node. `progress` is called after every sample with the number of
-/// transitions so far.
+/// transitions so far, and once more at the end of a run that samples and
+/// did not end on a sample.
 ///
 /// A rollback, of the whole transaction or to a savepoint, and a
 /// transaction dropped for a new one take the nodes back to what they
@@ -172,6 +173,11 @@ pub fn simulate(
         if let Err(problem) = model.check(observer.grove()) {
             panic!("{name} at the end: {problem}");
         }
+    }
+    // The end of a run is told as a sample is, unless the last sample was
+    // the end.
+    if run.sample_every > 0 && !transitions.is_multiple_of(run.sample_every) {
+        progress(transitions, &observer, &models);
     }
     models
         .iter()

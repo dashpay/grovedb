@@ -15,7 +15,10 @@ use lignin_io::{
 use lignin_store::segment::ManifestStore;
 
 use super::*;
-use crate::db::{DbError, OpenError, WriteError};
+use crate::{
+    db::{DbError, OpenError, WriteError},
+    options::Upkeep,
+};
 
 fn version(raw: u64) -> CommitVersion {
     CommitVersion::new(raw).expect("a version")
@@ -95,6 +98,52 @@ fn a_database_that_was_not_closed_is_recovered_from_its_log() {
     let operation = snapshot.operation();
     assert_eq!(seen(&operation, subtree(1), b"k"), Some((30, vec![])));
     assert_eq!(seen(&operation, subtree(2), b"k"), Some((30, vec![])));
+}
+
+#[test]
+fn a_database_is_opened_under_either_upkeep_whichever_it_was_written_under() {
+    // Which fragments a write measures against the largest size is no
+    // part of the format: a session says it, and the next one may say the
+    // other. A session that says nothing measures those it changed.
+    assert_eq!(options().upkeep, Upkeep::Changed);
+    let dir = temp();
+    let written = Options {
+        upkeep: Upkeep::Written,
+        ..options()
+    };
+    let db = Db::open(dir.path(), &written).expect("a new database");
+    assert_eq!(db.upkeep(), Upkeep::Written);
+    assert_eq!(db.shared.store.layout().upkeep(), Upkeep::Written);
+    plant(&db, subtree(1), Merk::sized(b'k', 60, 300));
+    db.close().expect("the session ends");
+
+    // Opened for what a write changed: the session's writes are laid out
+    // under it, it reads what the session before wrote, and what it
+    // writes is a sound store.
+    let db = Db::open(dir.path(), &options()).expect("opened under the other upkeep");
+    assert!(!db.created());
+    assert_eq!(db.upkeep(), Upkeep::Changed);
+    assert_eq!(db.shared.store.layout().upkeep(), Upkeep::Changed);
+    let nodes = |db: &Db, name: u8| {
+        let snapshot = db.snapshot();
+        seen(&snapshot.operation(), subtree(name), b"k").map(|(nodes, _)| nodes)
+    };
+    assert_eq!(nodes(&db, 1), Some(60));
+    plant(&db, subtree(2), Merk::sized(b'k', 40, 20));
+    halt_background(&db);
+    let report = checked(&db);
+    assert!(report.findings.is_empty(), "{report}");
+    db.close().expect("the session ends");
+
+    // And back.
+    let db = Db::open(dir.path(), &written).expect("opened under the first value again");
+    assert_eq!(db.upkeep(), Upkeep::Written);
+    assert_eq!((nodes(&db, 1), nodes(&db, 2)), (Some(60), Some(40)));
+    plant(&db, subtree(3), Merk::sized(b'k', 20, 20));
+    halt_background(&db);
+    let report = checked(&db);
+    assert!(report.findings.is_empty(), "{report}");
+    db.close().expect("the session ends");
 }
 
 #[test]

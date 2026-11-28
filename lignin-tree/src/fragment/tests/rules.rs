@@ -9,7 +9,7 @@ use super::{
     *,
 };
 use crate::fragment::plan::{
-    counted,
+    self, counted,
     held::{walks, Walks},
 };
 
@@ -19,6 +19,7 @@ fn params(largest: u32, small: u32, seed: u32, merge: u32) -> LayoutParams {
         small_fragment_divisor: small,
         seed_limit_percent: seed,
         merge_below_percent: merge,
+        upkeep: Upkeep::Written,
     }
 }
 
@@ -29,6 +30,7 @@ const HALVING: LayoutParams = LayoutParams {
     small_fragment_divisor: 8,
     seed_limit_percent: 0,
     merge_below_percent: 0,
+    upkeep: Upkeep::Written,
 };
 
 fn grove(params: LayoutParams) -> Grove {
@@ -211,18 +213,25 @@ fn a_full_page_sends_a_part_of_its_fragment_to_a_fresh_page() {
 #[test]
 fn a_fragment_that_leaves_goes_to_a_page_beside_it_that_has_room() {
     // Pages of 32 KiB, so that a fragment is some sixty cells and not a
-    // dozen.
-    let halved = grown_of(PageSize::DEFAULT, params(50, 16, 0, 0), 8000, 60);
-    let seeded = grown_of(PageSize::DEFAULT, LayoutParams::PROPOSED, 8000, 60);
-    println!(
-        "seed limit 0: {} pages, fill {:.1}%; seed limit 75: {} pages, fill {:.1}%",
-        halved.mem.frames.len(),
-        halved.fill() * 100.0,
-        seeded.mem.frames.len(),
-        seeded.fill() * 100.0
-    );
-    assert!(seeded.mem.frames.len() < halved.mem.frames.len());
-    assert!(seeded.fill() > halved.fill() + 0.02);
+    // dozen. The two layouts differ by the seed limit alone, under each
+    // upkeep.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let with = |seed| LayoutParams {
+            upkeep,
+            ..params(50, 16, seed, 0)
+        };
+        let halved = grown_of(PageSize::DEFAULT, with(0), 8000, 60);
+        let seeded = grown_of(PageSize::DEFAULT, with(75), 8000, 60);
+        println!(
+            "{upkeep:?}: seed limit 0: {} pages, fill {:.1}%; seed limit 75: {} pages, fill {:.1}%",
+            halved.mem.frames.len(),
+            halved.fill() * 100.0,
+            seeded.mem.frames.len(),
+            seeded.fill() * 100.0
+        );
+        assert!(seeded.mem.frames.len() < halved.mem.frames.len());
+        assert!(seeded.fill() > halved.fill() + 0.02);
+    }
 }
 
 /// The pages `grove` read or changed in its last write that the write
@@ -298,18 +307,25 @@ fn a_wrong_hint_costs_a_read_and_nothing_else() {
 
 #[test]
 fn a_fragment_above_the_largest_size_is_split_where_it_is() {
-    let capped = grown(LayoutParams::PROPOSED, 2000, 100);
-    let free = grown(params(100, 16, 75, 35), 2000, 100);
-    let layout = capped.fragments.layout();
-    let bound = layout.largest_fragment() + layout.small_fragment() + 400;
-    println!(
-        "the largest fragment: {} bytes with a limit of {}, {} without one",
-        capped.largest_fragment(),
-        layout.largest_fragment(),
-        free.largest_fragment()
-    );
-    assert!(capped.largest_fragment() <= bound);
-    assert!(free.largest_fragment() > bound);
+    // The two layouts differ by the largest size alone, under each upkeep.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let with = |largest| LayoutParams {
+            upkeep,
+            ..params(largest, 16, 75, 35)
+        };
+        let capped = grown(with(50), 2000, 100);
+        let free = grown(with(100), 2000, 100);
+        let layout = capped.fragments.layout();
+        let bound = layout.largest_fragment() + layout.small_fragment() + 400;
+        println!(
+            "{upkeep:?}: the largest fragment: {} bytes with a limit of {}, {} without one",
+            capped.largest_fragment(),
+            layout.largest_fragment(),
+            free.largest_fragment()
+        );
+        assert!(capped.largest_fragment() <= bound);
+        assert!(free.largest_fragment() > bound);
+    }
 }
 
 /// What the walks that count a fragment's bytes were held to on this
@@ -326,11 +342,16 @@ fn walks_since(before: Walks) -> Walks {
 
 #[test]
 fn the_cells_of_a_fragment_are_counted_in_one_step_on_their_page() {
-    // A Merk whose fragments hold tens of cells. A write that rewrites one
-    // node counts the fragment the node is in, and the pages are asked for
-    // far fewer steps than the walks read cells: a walk reads the cells
-    // of its fragment in the step it read the first of them in.
-    let mut grove = grown_of(PageSize::DEFAULT, LayoutParams::PROPOSED, 6000, 60);
+    // A Merk whose fragments hold tens of cells. Under the upkeep of every
+    // node, a write that rewrites one node counts the fragment the node is
+    // in up to the largest size, and the pages are asked for far fewer
+    // steps than the walks read cells: a walk reads the cells of its
+    // fragment in the step it read the first of them in.
+    let every_node = LayoutParams {
+        upkeep: Upkeep::Written,
+        ..LayoutParams::PROPOSED
+    };
+    let mut grove = grown_of(PageSize::DEFAULT, every_node, 6000, 60);
     let before = walks();
     grove.mem.touched.clear();
     for index in 0..200 {
@@ -1006,9 +1027,21 @@ fn a_rotation_across_two_pages_carries_no_cell_and_no_value() {
 
 #[test]
 fn a_fragment_that_a_rotation_leaves_small_joins_its_parent_by_the_merge_rule() {
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        a_rotation_leaves_a_small_fragment(upkeep);
+    }
+}
+
+/// The body of the test above, under `upkeep`: the rotation changes the
+/// cell of `b`, which loses a link, so either upkeep brings it to M1.
+fn a_rotation_leaves_a_small_fragment(upkeep: Upkeep) {
     // The same two pages under a layout in which a fragment below 512
     // bytes is small. With `c` gone, `b` is alone in its page.
-    let (mut grove, [a, b]) = across_two_pages(params(100, 16, 75, 35));
+    let params = LayoutParams {
+        upkeep,
+        ..params(100, 16, 75, 35)
+    };
+    let (mut grove, [a, b]) = across_two_pages(params);
     grove.delete(0, b"c");
     assert_eq!(grove.node(0, b"b").at, Some(b), "a root stays where it is");
     let held = pointer_of(&grove, b).expect("the value is in the value log");
@@ -1344,6 +1377,28 @@ fn a_pointer_back_to_a_cell_above_is_refused_with_that_cells_address() {
         let error = refused(counted(&layout, &mut mem, &write, m, limit));
         assert_eq!(error, WriteError::TwoPointers { address: Some(m) });
     }
+
+    // The cells that lead to the reader are gone through to the last. A
+    // third page: `m` over `c` and `x`, `c` over `d`, `d` over `e`, and
+    // the left link of `e` names `m`, three cells above it.
+    let mut mem = Mem::new(SIZE);
+    let page = mem.create().expect("a page");
+    let above = CellAddress::new(page, slot(5));
+    let e = stored_cell(&mut mem, page, b"e", 23, [Some(above), None], false);
+    let d = stored_cell(&mut mem, page, b"d", 11, [Some(e), None], false);
+    let c = stored_cell(&mut mem, page, b"c", 47, [Some(d), None], false);
+    let x = stored_cell(&mut mem, page, b"x", 95, [None, None], false);
+    let m = stored_cell(&mut mem, page, b"m", 5, [Some(c), Some(x)], true);
+    assert_eq!(m, above);
+    let mut nodes = Vec::new();
+    let write = kept(m, b"m", &mut nodes);
+    let limit = taken(&mem, &[m, x, c, d]);
+    let (bytes, cells) = counted(&layout, &mut mem, &write, m, limit).expect("a count");
+    assert_eq!((bytes, cells), (limit, vec![m, x, c, d]));
+    for limit in [taken(&mem, &[m, x, c, d, e]) + 1, usize::MAX] {
+        let error = refused(counted(&layout, &mut mem, &write, m, limit));
+        assert_eq!(error, WriteError::TwoPointers { address: Some(m) });
+    }
 }
 
 #[test]
@@ -1377,6 +1432,1362 @@ fn a_cell_that_leads_to_a_written_node_is_taken_as_its_parent() {
     assert_eq!(cells, [g, p, a, l]);
     assert_eq!(bytes, taken(&mem, &[g, p, a, l]));
     assert_eq!(mem.touched, [page, page, page]);
+}
+
+/// The proposed layout with the largest size measured in what a write
+/// changed, whichever upkeep is proposed.
+fn of_what_changed() -> LayoutParams {
+    LayoutParams {
+        upkeep: Upkeep::Changed,
+        ..LayoutParams::PROPOSED
+    }
+}
+
+#[test]
+fn a_cell_rewritten_in_place_has_its_fragment_measured_only_where_every_fragment_is() {
+    // The same Merk, grown the same way under each setting, and then 200
+    // writes that each rewrite one node and the nodes above it as they
+    // are. Where every node of a write brings its fragment, each fragment
+    // on the way is counted twice: up to the largest size (L1), and up to
+    // the small size (M1). Where the largest size is for what a write
+    // changed, the second count is the only one, and it ends at the small
+    // size.
+    let mut written = Walks::default();
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let mut grove = grown_of(PageSize::DEFAULT, params, 6000, 60);
+        assert_eq!(grove.fragments.layout().upkeep(), upkeep);
+        let before = walks();
+        let mut carried = 0;
+        for index in 0..200 {
+            carried += grove.touch(0, &key(index * 7)).carried.len();
+        }
+        grove.check();
+        let held = walks_since(before);
+        println!("{upkeep:?}: {held:?}, {carried} cells carried");
+        assert_eq!(carried, 0);
+        match upkeep {
+            Upkeep::Written => {
+                assert!(held.walks >= 400, "{held:?}");
+                written = held;
+            }
+            Upkeep::Changed => {
+                assert_eq!(held.walks * 2, written.walks, "{held:?}");
+                assert_eq!(held.walks, held.ended_at_limit, "{held:?}");
+                assert!(held.read_along * 4 < written.read_along, "{held:?}");
+            }
+        }
+    }
+}
+
+/// Two pages, as earlier writes can leave them: `t` in one, and its child
+/// `u` in the other with `a` and `b` below it, whose values make the
+/// fragment under `u` larger than the largest size of `layout`. Returns
+/// the pages and where `t`, `u`, `a` and `b` are.
+fn above_the_largest_size(layout: &Layout) -> (Mem, [CellAddress; 4]) {
+    let mut mem = Mem::new(SIZE);
+    let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+    let half = layout.largest_fragment() / 2;
+    let a = stored_cell(&mut mem, below, b"a", half, [None, None], false);
+    let b = stored_cell(&mut mem, below, b"b", half, [None, None], false);
+    let u = stored_cell(&mut mem, below, b"u", 10, [Some(a), Some(b)], true);
+    let t = stored_cell(&mut mem, top, b"t", 10, [Some(u), None], true);
+    assert!(taken(&mem, &[u, a, b]) > layout.largest_fragment());
+    assert!(mem.used(below) <= layout.capacity());
+    (mem, [t, u, a, b])
+}
+
+/// A write of `t`, `u` and `a` as they are: every link kept, and nothing
+/// in the write points at `t`.
+fn rewritten<'a>(t: CellAddress, u: CellAddress, a: CellAddress) -> [NodeWrite<'a>; 3] {
+    [
+        NodeWrite {
+            left: link(Target::Kept),
+            ..node(Some(t), b"t")
+        },
+        NodeWrite {
+            left: link(Target::Kept),
+            right: link(Target::Kept),
+            ..node(Some(u), b"u")
+        },
+        node(Some(a), b"a"),
+    ]
+}
+
+#[test]
+fn a_fragment_above_the_largest_size_waits_for_a_write_that_changes_it() {
+    // The fragment of every node of a write measured: a write that
+    // rewrites `a` in place has the fragment counted, and its root goes up
+    // to the page of `t` (L1).
+    let layout = Layout::proposed_under(SIZE, Upkeep::Written);
+    let (mut mem, [t, u, a, _]) = above_the_largest_size(&layout);
+    let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+    let nodes = rewritten(t, u, a);
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+    let report = fragments
+        .apply(&mut mem, &mut log, &write)
+        .expect("applied");
+    let split: Vec<_> = report
+        .carried
+        .iter()
+        .map(|cell| (cell.from, cell.cause))
+        .collect();
+    assert_eq!(split, [(u, Cause::Split)]);
+    assert_eq!(report.carried[0].to.address().page(), t.page());
+
+    // The largest size for what a write changed alone: the same write
+    // carries nothing. It counts the fragment once, for M1, and that count
+    // ends at the small size.
+    let layout = Layout::new(SIZE, of_what_changed()).expect("a layout");
+    let (mut mem, [t, u, a, _]) = above_the_largest_size(&layout);
+    let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+    let nodes = rewritten(t, u, a);
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+    let before = walks();
+    let report = fragments
+        .apply(&mut mem, &mut log, &write)
+        .expect("applied");
+    assert!(report.carried.is_empty(), "{:?}", report.carried);
+    let counted = walks_since(before);
+    assert_eq!((counted.walks, counted.ended_at_limit), (1, 1));
+
+    // A write that gives `a` a child changes the fragment: `a` has one
+    // link more and a cell arrives. Now the fragment is counted, and its
+    // root goes up.
+    let mut nodes = rewritten(t, u, a).to_vec();
+    nodes[2].left = link(Target::Node(3));
+    nodes.push(node(None, b"0"));
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+    let report = fragments
+        .apply(&mut mem, &mut log, &write)
+        .expect("applied");
+    let split: Vec<_> = report
+        .carried
+        .iter()
+        .map(|cell| (cell.from, cell.cause))
+        .collect();
+    assert!(split.contains(&(u, Cause::Split)), "{split:?}");
+}
+
+#[test]
+fn a_cell_whose_feature_gets_longer_is_not_rewritten_in_place() {
+    // The pages of the test above, and the same write, except that it
+    // gives `a` a feature of three bytes where it had one. Every pointer
+    // is as it was and no value changes, and the cell of `a` is longer:
+    // the fragment is counted, and its root goes up, under either upkeep.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let (mut mem, [t, u, a, _]) = above_the_largest_size(&layout);
+        let before = taken(&mem, &[a]);
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let mut nodes = rewritten(t, u, a);
+        nodes[2].feature = &[1, 2, 3];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let split: Vec<_> = report
+            .carried
+            .iter()
+            .map(|cell| (cell.from, cell.cause))
+            .collect();
+        assert_eq!(split, [(u, Cause::Split)], "{upkeep:?}");
+        let view = mem.view(a.page());
+        let stored = view.node(a.slot()).expect("`a` stays where it is");
+        assert_eq!(stored.feature(), [1, 2, 3]);
+        assert_eq!(taken(&mem, &[a]), before + 2);
+    }
+}
+
+#[test]
+fn a_cell_that_keeps_its_bytes_with_two_parts_changed_is_not_rewritten_in_place() {
+    // The same pages again. The write gives `a` a feature that is two
+    // bytes longer and a value that is two bytes shorter: the cell takes
+    // the bytes it took, and two of its parts have another length. It is
+    // a changed cell, so the fragment is counted and its root goes up,
+    // under either upkeep.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let (mut mem, [t, u, a, _]) = above_the_largest_size(&layout);
+        let before = taken(&mem, &[a]);
+        let shorter = vec![b'a'; layout.largest_fragment() / 2 - 2];
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let mut nodes = rewritten(t, u, a);
+        nodes[2].feature = &[1, 2, 3];
+        nodes[2].value = ValueWrite::Inline(&shorter);
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let split: Vec<_> = report
+            .carried
+            .iter()
+            .map(|cell| (cell.from, cell.cause))
+            .collect();
+        assert_eq!(split, [(u, Cause::Split)], "{upkeep:?}");
+        let view = mem.view(a.page());
+        let stored = view.node(a.slot()).expect("`a` stays where it is");
+        assert_eq!(stored.feature(), [1, 2, 3]);
+        assert_eq!(taken(&mem, &[a]), before, "as long as it was");
+    }
+}
+
+#[test]
+fn what_is_left_below_a_root_that_went_up_is_cut_by_the_turns_that_are_not_passed_over() {
+    // `t` in one page. In the other its child `r` over `b` over `c` over
+    // `a`, a chain within the largest size. The write gives `a` a longer
+    // value and rewrites the four cells above it as they are. The
+    // fragment is above the largest size then.
+    //
+    // Under the upkeep of every node each of `r`, `b` and `c` has a turn,
+    // and each goes up: what is left after the first two is still above
+    // the size. Where the largest size is for what a write changed, their
+    // turns are passed over and `a` has the one turn there is: `r` goes
+    // up, and `b` over `c` over `a` stays above the size, for a later
+    // write that changes a cell of it.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let largest = layout.largest_fragment();
+        let mut mem = Mem::new(SIZE);
+        let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+        let a = stored_cell(&mut mem, below, b"a", 1500, [None, None], false);
+        let c = stored_cell(&mut mem, below, b"c", 700, [Some(a), None], false);
+        let b = stored_cell(&mut mem, below, b"b", 700, [Some(c), None], false);
+        let r = stored_cell(&mut mem, below, b"r", 10, [Some(b), None], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(r), None], true);
+        assert!(taken(&mem, &[r, b, c, a]) <= largest);
+        assert!(taken(&mem, &[c, a]) + 2000 > largest && taken(&mem, &[a]) + 2000 <= largest);
+        let longer = value(1500 + 2000, 7);
+        let keeps_left = |at: CellAddress, key: &'static [u8]| NodeWrite {
+            left: link(Target::Kept),
+            ..node(Some(at), key)
+        };
+        let nodes = [
+            keeps_left(t, b"t"),
+            keeps_left(r, b"r"),
+            keeps_left(b, b"b"),
+            keeps_left(c, b"c"),
+            NodeWrite {
+                value: ValueWrite::Inline(&longer),
+                ..node(Some(a), b"a")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let mut carried: Vec<_> = (report.carried.iter())
+            .map(|cell| (cell.from, cell.cause, cell.to.address().page()))
+            .collect();
+        carried.sort_by_key(|(from, ..)| from.slot());
+        let went_up: &[CellAddress] = match upkeep {
+            Upkeep::Written => &[r, b, c],
+            Upkeep::Changed => &[r],
+        };
+        let mut expected: Vec<_> = (went_up.iter())
+            .map(|from| (*from, Cause::Split, top))
+            .collect();
+        expected.sort_by_key(|(from, ..)| from.slot());
+        assert_eq!(carried, expected, "{upkeep:?}");
+        assert_eq!(report.nodes[4].address(), a, "`a` stays where it is");
+        let left: Vec<_> = report.nodes[2..]
+            .iter()
+            .map(|node| node.address())
+            .collect();
+        match upkeep {
+            Upkeep::Written => assert!(taken(&mem, &[a]) <= largest),
+            Upkeep::Changed => {
+                assert_eq!(left, [b, c, a], "what is left stays where it is");
+                assert!(taken(&mem, &left) > largest);
+                assert!(mem.used(below) <= layout.capacity());
+            }
+        }
+    }
+}
+
+#[test]
+fn a_root_that_went_up_is_looked_at_once_under_either_upkeep() {
+    // Three pages: `t`; below it `p` over `b`; and below `b` its child `r`
+    // over `a`. The write gives `r` a longer value and rewrites `b`, `p`
+    // and `t` as they are. `r` and `a` are above the largest size then, so
+    // `r` goes up to the page of `b`. There `p`, `b` and `r` are one
+    // fragment above the size, so `p` goes up. What is left, `b` over `r`,
+    // is still above it, and stays so under either upkeep, for a later
+    // write: `r` is a cell that the rule carried, which is looked at once
+    // where it arrived, and the turn of `b` was before `r` arrived, or is
+    // passed over.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let largest = layout.largest_fragment();
+        let mut mem = Mem::new(SIZE);
+        let [top, mid, low] = [(); 3].map(|()| mem.create().expect("a page"));
+        let a = stored_cell(&mut mem, low, b"a", 1800, [None, None], false);
+        let r = stored_cell(&mut mem, low, b"r", 1500, [Some(a), None], true);
+        let b = stored_cell(&mut mem, mid, b"b", 1800, [Some(r), None], false);
+        let p = stored_cell(&mut mem, mid, b"p", 10, [Some(b), None], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(p), None], true);
+        let more = 900;
+        assert!(taken(&mem, &[r, a]) <= largest && taken(&mem, &[p, b]) <= largest);
+        assert!(taken(&mem, &[r, a]) + more > largest);
+        assert!(taken(&mem, &[b, r]) + more > largest);
+        let small = layout.small_fragment();
+        for cell in [a, r, b] {
+            assert!((small..=largest - more).contains(&taken(&mem, &[cell])));
+        }
+        let longer = value(1500 + more, 7);
+        let keeps_left = |at: CellAddress, key: &'static [u8]| NodeWrite {
+            left: link(Target::Kept),
+            ..node(Some(at), key)
+        };
+        let nodes = [
+            keeps_left(t, b"t"),
+            keeps_left(p, b"p"),
+            keeps_left(b, b"b"),
+            NodeWrite {
+                left: link(Target::Kept),
+                value: ValueWrite::Inline(&longer),
+                ..node(Some(r), b"r")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let mut carried: Vec<_> = (report.carried.iter())
+            .map(|cell| (cell.from, cell.cause, cell.to.address().page()))
+            .collect();
+        carried.sort_by_key(|(from, ..)| (from.page(), from.slot()));
+        let mut expected = [(r, Cause::Split, mid), (p, Cause::Split, top)];
+        expected.sort_by_key(|(from, ..)| (from.page(), from.slot()));
+        assert_eq!(carried, expected, "{upkeep:?}");
+        let (b_now, r_now) = (report.nodes[2].address(), report.nodes[3].address());
+        assert_eq!((b_now, r_now.page()), (b, mid), "{upkeep:?}");
+        assert!(taken(&mem, &[b_now, r_now]) > largest, "{upkeep:?}");
+    }
+}
+
+#[test]
+fn a_page_that_a_root_went_up_into_is_settled_alike_under_either_upkeep() {
+    // The three pages again, with more in the middle one. `b` has a second
+    // child there, `s`, which the write does not name. Beside them are
+    // `x`, a node that nothing in the write points at, and two cells that
+    // the write does not hold. The write gives `r` and `x` longer values
+    // and rewrites `b`, `p` and `t` as they are.
+    //
+    // `r` goes up into the middle page and `p` up out of it (L1), and the
+    // page is above its capacity. What can leave it is the fragment under
+    // `b`, the one cell there that the write holds above `s`: it is split,
+    // `b` goes up, and `r` and `s` leave (6.2). Had L1 sent `b` up for its
+    // size first, `s` would be a fragment the write does not hold, `x`
+    // cannot leave, and the write would be refused. So a root that the
+    // rule carried is looked at once under either upkeep, and both settle
+    // the page alike.
+    let mut carried_under = Vec::new();
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let (largest, capacity) = (layout.largest_fragment(), layout.capacity());
+        let mut mem = Mem::new(SIZE);
+        let [top, mid, low] = [(); 3].map(|()| mem.create().expect("a page"));
+        let a = stored_cell(&mut mem, low, b"a", 2100, [None, None], false);
+        let r = stored_cell(&mut mem, low, b"r", 1500, [Some(a), None], true);
+        let s = stored_cell(&mut mem, mid, b"s", 1900, [None, None], false);
+        let b = stored_cell(&mut mem, mid, b"b", 500, [Some(r), Some(s)], false);
+        let p = stored_cell(&mut mem, mid, b"p", 100, [Some(b), None], true);
+        let x = stored_cell(&mut mem, mid, b"x", 200, [None, None], true);
+        let others =
+            [b"1", b"2"].map(|key| stored_cell(&mut mem, mid, key, 2200, [None, None], true));
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(p), None], true);
+        let (r_more, x_more) = (1000, 1900);
+        assert!(taken(&mem, &[r, a]) <= largest && taken(&mem, &[p, b, s]) <= largest);
+        assert!(taken(&mem, &[r, a]) + r_more > largest);
+        assert!(taken(&mem, &[b, r, s]) + r_more > largest);
+        assert!((taken(&mem, &[b, r, s]) + r_more) * 2 >= capacity);
+        assert!(mem.used(mid) <= capacity);
+        // With `b`, `p` and `r` gone and `s` left, the page would hold more
+        // than its capacity.
+        let stays = taken(&mem, &[s, x, others[0], others[1]]) + x_more;
+        assert!(stays > capacity && stays - taken(&mem, &[s]) <= capacity);
+        let (longer_r, longer_x) = (value(1500 + r_more, 7), value(200 + x_more, 9));
+        let keeps = |at: CellAddress, key: &'static [u8], right: bool| NodeWrite {
+            left: link(Target::Kept),
+            right: right.then(|| link(Target::Kept)).flatten(),
+            ..node(Some(at), key)
+        };
+        let nodes = [
+            keeps(t, b"t", false),
+            keeps(p, b"p", false),
+            keeps(b, b"b", true),
+            NodeWrite {
+                left: link(Target::Kept),
+                value: ValueWrite::Inline(&longer_r),
+                ..node(Some(r), b"r")
+            },
+            NodeWrite {
+                value: ValueWrite::Inline(&longer_x),
+                ..node(Some(x), b"x")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .unwrap_or_else(|error| panic!("{upkeep:?}: {error}"));
+        let mut carried: Vec<_> = (report.carried.iter())
+            .map(|cell| (cell.from, cell.cause, cell.to.address().page()))
+            .collect();
+        carried.sort_by_key(|(from, ..)| (from.page(), from.slot()));
+        let from: Vec<_> = carried.iter().map(|(from, ..)| *from).collect();
+        for cell in [p, b, r, s] {
+            assert!(from.contains(&cell), "{upkeep:?}: {carried:?}");
+        }
+        assert_eq!(report.nodes[4].address(), x, "`x` stays where it is");
+        assert!(mem.used(mid) <= capacity, "{upkeep:?}");
+        for id in [top, mid, low] {
+            let view = mem.view(id);
+            view.tree_page().check(SIZE).expect("a valid page");
+        }
+        carried_under.push(carried);
+    }
+    assert_eq!(carried_under[0], carried_under[1]);
+}
+
+#[test]
+fn a_page_with_two_changed_cells_below_one_root_is_settled_alike_under_either_upkeep() {
+    // Three pages. `t`; below it a chain `p` over `k` over `b`, where `b`
+    // has two children: `j`, with the children `r` (in the third page,
+    // over `a`) and `d`, and `s`, which the write does not name. Beside
+    // them in the middle page are `x`, a node that nothing in the write
+    // points at, and two cells that the write does not hold. The write
+    // gives `r`, `d` and `x` longer values and rewrites `j`, `b`, `k`, `p`
+    // and `t` as they are.
+    //
+    // `r` goes up into the middle page, which makes the fragment under
+    // `p` too large after the turns of `p`, `k`, `b` and `j`. The turn of
+    // `d` sends `p` up, and that of `r`, where it arrived, `k`. `b` stays:
+    // it is the one cell the write holds above `s`, and the page, which
+    // is above its capacity, is settled by a split of its fragment. Had
+    // the turn of `d` gone on to send `k` and `b` up, as it would to
+    // bring what is left within the size, `s` could not leave, and the
+    // write would be refused. Both upkeeps send the same cells up and
+    // settle the page alike.
+    let mut carried_under = Vec::new();
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let (largest, capacity) = (layout.largest_fragment(), layout.capacity());
+        let mut mem = Mem::new(SIZE);
+        let [top, mid, low] = [(); 3].map(|()| mem.create().expect("a page"));
+        let a = stored_cell(&mut mem, low, b"a", 1980, [None, None], false);
+        let r = stored_cell(&mut mem, low, b"r", 1500, [Some(a), None], true);
+        let d = stored_cell(&mut mem, mid, b"d", 20, [None, None], false);
+        let s = stored_cell(&mut mem, mid, b"s", 1780, [None, None], false);
+        let j = stored_cell(&mut mem, mid, b"j", 50, [Some(r), Some(d)], false);
+        let b = stored_cell(&mut mem, mid, b"b", 100, [Some(j), Some(s)], false);
+        let k = stored_cell(&mut mem, mid, b"k", 50, [Some(b), None], false);
+        let p = stored_cell(&mut mem, mid, b"p", 50, [Some(k), None], true);
+        let x = stored_cell(&mut mem, mid, b"x", 150, [None, None], true);
+        let others =
+            [b"1", b"2"].map(|key| stored_cell(&mut mem, mid, key, 2080, [None, None], true));
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(p), None], true);
+        let (r_more, x_more) = (1000, 1800);
+        let chain = [p, k, b, j, d, s];
+        assert!(taken(&mem, &chain) <= largest && taken(&mem, &[r, a]) <= largest);
+        assert!(taken(&mem, &[r, a]) + r_more > largest);
+        // With `r` in it, the fragment is above the size under `p`, under
+        // `k` and under `b`.
+        assert!(taken(&mem, &[b, j, d, s, r]) + r_more > largest);
+        assert!(mem.used(mid) <= capacity);
+        // Without a held cell above it, `s` stays, and the page with it
+        // would hold more than its capacity.
+        let stays = taken(&mem, &[s, x, others[0], others[1]]) + x_more;
+        assert!(stays > capacity && stays - taken(&mem, &[s]) <= capacity);
+        let (longer_r, longer_x) = (value(1500 + r_more, 7), value(150 + x_more, 9));
+        let longer_d = value(21, 3);
+        let keeps = |at: CellAddress, key: &'static [u8], right: bool| NodeWrite {
+            left: link(Target::Kept),
+            right: right.then(|| link(Target::Kept)).flatten(),
+            ..node(Some(at), key)
+        };
+        let nodes = [
+            keeps(t, b"t", false),
+            keeps(p, b"p", false),
+            keeps(k, b"k", false),
+            keeps(b, b"b", true),
+            keeps(j, b"j", true),
+            NodeWrite {
+                left: link(Target::Kept),
+                value: ValueWrite::Inline(&longer_r),
+                ..node(Some(r), b"r")
+            },
+            NodeWrite {
+                value: ValueWrite::Inline(&longer_d),
+                ..node(Some(d), b"d")
+            },
+            NodeWrite {
+                value: ValueWrite::Inline(&longer_x),
+                ..node(Some(x), b"x")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .unwrap_or_else(|error| panic!("{upkeep:?}: {error}"));
+        let mut carried: Vec<_> = (report.carried.iter())
+            .map(|cell| (cell.from, cell.cause, cell.to.address().page()))
+            .collect();
+        carried.sort_by_key(|(from, ..)| (from.page(), from.slot()));
+        let from: Vec<_> = carried.iter().map(|(from, ..)| *from).collect();
+        for cell in [p, k, b, r] {
+            assert!(from.contains(&cell), "{upkeep:?}: {carried:?}");
+        }
+        assert_eq!(report.nodes[7].address(), x, "`x` stays where it is");
+        assert!(mem.used(mid) <= capacity, "{upkeep:?}");
+        for id in [top, mid, low] {
+            let view = mem.view(id);
+            view.tree_page().check(SIZE).expect("a valid page");
+        }
+        carried_under.push(carried);
+    }
+    assert_eq!(carried_under[0], carried_under[1]);
+}
+
+/// Two pages with a pointer from the first into the second and back, and
+/// one write on them.
+///
+/// In the first page: `x`, a node that nothing in the write points at,
+/// `s`, and cells the write does not hold, which leave `free` bytes of the
+/// page. In the second: the children of `x`, `k` and `y`, and a Merk of
+/// `hosted` cells that `k` hosts. `s` is the child of `k`. The write gives
+/// `x` a value that is longer by `x_more` and `k` one that is longer by
+/// `k_more`, which is nothing where `k` is rewritten in place.
+struct PointerBack {
+    mem: Mem,
+    pages: [PageId; 2],
+    x: CellAddress,
+    k: CellAddress,
+    s: CellAddress,
+    /// `k` with the Merk it hosts.
+    host: Vec<CellAddress>,
+    value_of_x: Vec<u8>,
+    value_of_k: Vec<u8>,
+}
+
+impl PointerBack {
+    fn new(layout: &Layout, hosted: usize, free: usize, [x_more, k_more]: [usize; 2]) -> Self {
+        let capacity = layout.capacity();
+        let mut mem = Mem::new(SIZE);
+        let pages = [(); 2].map(|()| mem.create().expect("a page"));
+        let [first, second] = pages;
+        let mut below = None;
+        let mut host = Vec::new();
+        for key in b"ABCDEFGHIJKLMNOPQRSTUVWX".iter().take(hosted) {
+            let cell = stored_cell(&mut mem, second, &[*key], 130, [below, None], false);
+            host.push(cell);
+            below = Some(cell);
+        }
+        let s = stored_cell(&mut mem, first, b"s", 130, [None, None], true);
+        let y = stored_cell(&mut mem, second, b"y", 10, [None, None], true);
+        let k = stored_host(&mut mem, second, b"k", 60, [Some(s), None], &[below], true);
+        host.push(k);
+        let x = stored_cell(&mut mem, first, b"x", 80, [Some(k), Some(y)], true);
+        for key in [&b"1"[..], b"2", b"3", b"4", b"5"] {
+            let room = capacity.saturating_sub(mem.used(first) + free);
+            if room < 200 {
+                break;
+            }
+            stored_cell(
+                &mut mem,
+                first,
+                key,
+                room.min(2200) - 120,
+                [None, None],
+                true,
+            );
+        }
+        assert!(mem.used(first) <= capacity && mem.used(second) <= capacity);
+        Self {
+            mem,
+            pages,
+            x,
+            k,
+            s,
+            host,
+            value_of_x: value(80 + x_more, 9),
+            value_of_k: value(60 + k_more, 4),
+        }
+    }
+
+    /// The nodes of the write, and the pages to make it on.
+    fn write(&mut self) -> ([NodeWrite<'_>; 2], &mut Mem) {
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::Kept),
+                value: ValueWrite::Inline(&self.value_of_x),
+                ..node(Some(self.x), b"x")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                value: ValueWrite::Inline(&self.value_of_k),
+                ..node(Some(self.k), b"k")
+            },
+        ];
+        (nodes, &mut self.mem)
+    }
+}
+
+#[test]
+fn a_write_that_finds_no_room_for_what_changed_alone_is_planned_for_every_node() {
+    // The pages of [`PointerBack`], where `k` with the Merk it hosts is
+    // above the largest size and the longer value of `x` takes the first
+    // page above its capacity.
+    //
+    // Nothing that the write holds in that page can make room: `x` stays
+    // where it is (T3) and has no cell below it there. Under the upkeep of
+    // every node `k` has a turn at L1 and goes up into the page, and with
+    // `k` above it `s` can leave: the page is settled by sending `k` and
+    // `s` down to the second page. Where the largest size is for what a
+    // write changed, the turn of `k` is passed over, and the plan finds no
+    // room. The write is then planned for every node, and is taken as it
+    // is under that upkeep.
+    let mut left_under = Vec::new();
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let (largest, capacity) = (layout.largest_fragment(), layout.capacity());
+        let mut pages = PointerBack::new(&layout, 16, 30, [100, 0]);
+        let [first, second] = pages.pages;
+        assert!(taken(&pages.mem, &pages.host) > largest);
+        assert!(pages.mem.used(first) + 100 > capacity);
+        let (x, k, s) = (pages.x, pages.k, pages.s);
+        let (nodes, mem) = pages.write();
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+
+        // The plan under this upkeep and no other.
+        let alone = plan::plan_once(&layout, fragments.hints(), mem, &write);
+        match upkeep {
+            Upkeep::Written => assert!(alone.is_ok()),
+            Upkeep::Changed => assert!(
+                matches!(alone, Err(FragmentError::NoRoom { page: Some(page) }) if page == first),
+                "{:?}",
+                alone.err()
+            ),
+        }
+
+        let report = fragments
+            .apply(mem, &mut log, &write)
+            .unwrap_or_else(|error| panic!("{upkeep:?}: {error}"));
+        assert_eq!(report.nodes[0].address(), x, "`x` stays where it is");
+        let mut carried: Vec<_> = (report.carried.iter())
+            .map(|cell| (cell.from, cell.cause, cell.to.address().page()))
+            .collect();
+        carried.sort_by_key(|(from, ..)| (from.page(), from.slot()));
+        // `k` went up and came down again with `s`: it is where it was,
+        // and `s` is the one cell in another page than before.
+        assert_eq!(carried, [(s, Cause::Split, second)], "{upkeep:?}");
+        assert_eq!(report.nodes[1].address().page(), second);
+        let _ = k;
+        for id in [first, second] {
+            assert!(mem.used(id) <= capacity, "{upkeep:?}");
+            mem.view(id).tree_page().check(SIZE).expect("a valid page");
+        }
+        left_under.push((carried, mem.used(first), mem.used(second)));
+    }
+    assert_eq!(left_under[0], left_under[1]);
+}
+
+#[test]
+fn a_write_is_planned_once_more_under_the_layout_it_has() {
+    // The pages of the test above under a layout whose largest size is
+    // the whole page. No fragment is above it, so `k` stays below under
+    // either upkeep, nothing in the first page can leave, and the write
+    // is refused for room under both. A second plan under the proposed
+    // parameters, and not under the write's own with the other upkeep,
+    // would send `k` up and take the write.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            largest_fragment_percent: 100,
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut pages = PointerBack::new(&layout, 16, 30, [100, 0]);
+        let first = pages.pages[0];
+        let (nodes, mem) = pages.write();
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let no_room = |error: Option<FragmentError>| matches!(error, Some(FragmentError::NoRoom { page: Some(page) }) if page == first);
+        let alone = plan::plan_once(&layout, fragments.hints(), mem, &write);
+        assert!(no_room(alone.err()), "{upkeep:?}");
+        let applied = fragments.apply(mem, &mut log, &write);
+        assert!(no_room(applied.err()), "{upkeep:?}");
+    }
+}
+
+/// Whether a write was taken, or refused for room: as a write is applied
+/// ([`Fragments::apply`]), and by the plan under its layout and no other
+/// ([`plan::plan_once`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Taken {
+    applied: bool,
+    alone: bool,
+}
+
+/// Plans `write` on `mem` under `layout` and no other, and then applies it.
+fn taken_on(layout: Layout, mem: &mut Mem, write: &Write<'_>, pages: &[PageId]) -> Taken {
+    let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+    let room = |outcome: Result<(), FragmentError>| match outcome {
+        Ok(()) => true,
+        Err(FragmentError::NoRoom { .. }) => false,
+        Err(error) => panic!("{:?}: {error}", layout.upkeep()),
+    };
+    let alone = room(plan::plan_once(&layout, fragments.hints(), mem, write).map(drop));
+    let applied = room(fragments.apply(mem, &mut log, write).map(drop));
+    if applied {
+        for id in pages {
+            assert!(mem.used(*id) <= layout.capacity(), "{:?}", layout.upkeep());
+            mem.view(*id).tree_page().check(SIZE).expect("a valid page");
+        }
+    }
+    Taken { applied, alone }
+}
+
+/// One write on the pages of [`PointerBack`], made from `seed`, under
+/// `upkeep`. The seed says how many cells the Merk has that `k` hosts,
+/// which decides whether `k` is above the largest size with it, how much
+/// of the first page is free, and by how much `x` and `k` grow.
+fn pointer_back_write(seed: u64, upkeep: Upkeep) -> Taken {
+    let mut rng = Rng(seed);
+    let mut between = |low: usize, high: usize| low + rng.below(high - low);
+    let layout = Layout::proposed_under(SIZE, upkeep);
+    let (hosted, free) = (between(4, 25), between(0, 700));
+    let more = [between(0, 9) * 100, [0, 0, 0, 40][between(0, 4)]];
+    let mut pages = PointerBack::new(&layout, hosted, free, more);
+    let ids = pages.pages;
+    let (nodes, mem) = pages.write();
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+    taken_on(layout, mem, &write, &ids)
+}
+
+/// One write on three pages that are made from `seed`, under `upkeep`.
+///
+/// The pages are those of the two tests above with their sizes and their
+/// depth drawn from the seed. `t` is alone in the first. The second has a
+/// chain of one to four cells under `t`, whose last, `b`, has two
+/// children there: `j`, which has `r` and `d` below it, and `s`. Beside
+/// them are `x`, a node that nothing in the write points at, and cells
+/// the write does not hold, which fill the page to within what the seed
+/// leaves free. `r` is in the third page, over `a`. The write rewrites
+/// the chain, `b` and `j` as they are and gives `r`, `d` and `x` values
+/// that are longer by what the seed says, which can be nothing.
+fn crowded_write(seed: u64, upkeep: Upkeep) -> Taken {
+    let mut rng = Rng(seed);
+    let mut between = |low: usize, high: usize| low + rng.below(high - low);
+    let layout = Layout::proposed_under(SIZE, upkeep);
+    let capacity = layout.capacity();
+    let mut mem = Mem::new(SIZE);
+    let [top, mid, low] = [(); 3].map(|()| mem.create().expect("a page"));
+    let a = stored_cell(&mut mem, low, b"a", between(600, 2400), [None, None], false);
+    let r_len = between(600, 2200);
+    let r = stored_cell(&mut mem, low, b"r", r_len, [Some(a), None], true);
+    let d_len = between(10, 200);
+    let d = stored_cell(&mut mem, mid, b"d", d_len, [None, None], false);
+    let s = stored_cell(&mut mem, mid, b"s", between(400, 2200), [None, None], false);
+    let j = stored_cell(
+        &mut mem,
+        mid,
+        b"j",
+        between(20, 300),
+        [Some(r), Some(d)],
+        false,
+    );
+    let depth = between(1, 5);
+    let mut chain = Vec::new();
+    let mut below = stored_cell(
+        &mut mem,
+        mid,
+        b"b",
+        between(50, 400),
+        [Some(j), Some(s)],
+        false,
+    );
+    chain.push((below, &b"b"[..], true));
+    for key in [&b"k"[..], b"l", b"m", b"p"].into_iter().take(depth) {
+        let top_of_chain = chain.len() == depth;
+        let len = between(20, 200);
+        below = stored_cell(&mut mem, mid, key, len, [Some(below), None], top_of_chain);
+        chain.push((below, key, false));
+    }
+    let x_len = between(100, 400);
+    let x = stored_cell(&mut mem, mid, b"x", x_len, [None, None], true);
+    // The cells the write does not hold, up to what the seed leaves free.
+    let free = between(0, 900);
+    for key in [&b"1"[..], b"2", b"3", b"4"] {
+        let room = capacity.saturating_sub(mem.used(mid) + free);
+        if room < 200 {
+            break;
+        }
+        let len = room.min(between(1200, 2400)) - 120;
+        stored_cell(&mut mem, mid, key, len, [None, None], true);
+    }
+    assert!(mem.used(mid) <= capacity && mem.used(low) <= capacity);
+    let t = stored_cell(&mut mem, top, b"t", 10, [Some(below), None], true);
+
+    let grown = |len: usize, by: usize| value(len + by, 5);
+    let (r_more, d_more) = (between(0, 4) * 500, between(0, 3) * between(1, 150));
+    let x_more = between(0, 5) * 500;
+    let (longer_r, longer_d) = (grown(r_len, r_more), grown(d_len, d_more));
+    let longer_x = grown(x_len, x_more);
+    let keeps = |at: CellAddress, key: &'static [u8], right: bool| NodeWrite {
+        left: link(Target::Kept),
+        right: right.then(|| link(Target::Kept)).flatten(),
+        ..node(Some(at), key)
+    };
+    let changed = |at: CellAddress, key: &'static [u8], more: usize, longer| NodeWrite {
+        value: match more {
+            0 => ValueWrite::Keep,
+            _ => ValueWrite::Inline(longer),
+        },
+        ..node(Some(at), key)
+    };
+    let mut nodes = vec![keeps(t, b"t", false)];
+    for (at, key, both) in chain.iter().rev() {
+        let key: &'static [u8] = match *key {
+            b"b" => b"b",
+            b"k" => b"k",
+            b"l" => b"l",
+            b"m" => b"m",
+            _ => b"p",
+        };
+        nodes.push(keeps(*at, key, *both));
+    }
+    nodes.push(keeps(j, b"j", true));
+    nodes.push(NodeWrite {
+        left: link(Target::Kept),
+        ..changed(r, b"r", r_more, &longer_r)
+    });
+    nodes.push(changed(d, b"d", d_more, &longer_d));
+    nodes.push(changed(x, b"x", x_more, &longer_x));
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+    taken_on(layout, &mut mem, &write, &[top, mid, low])
+}
+
+#[test]
+fn no_write_of_a_crowded_page_is_refused_for_room_under_what_changed_alone() {
+    // Two families of writes on crowded pages, four thousand of each, and
+    // each write made under both upkeeps on the same pages. A write that
+    // the upkeep of every node takes is taken where the largest size is
+    // for what a write changed.
+    //
+    // Both families have writes that are refused under both: those in
+    // which the node that nothing points at grows by more than its page
+    // can give. In the first ([`crowded_write`]) some are refused under
+    // the upkeep of every node alone, where L1 has sent up the cells the
+    // write holds in the page and none is left to make room with. In the
+    // second ([`pointer_back_write`]) some are taken because they are
+    // planned again: the plan for what a write changed finds no room, and
+    // the plan for every node of the write does.
+    let families: [fn(u64, Upkeep) -> Taken; 2] = [crowded_write, pointer_back_write];
+    let mut counts = Vec::new();
+    for family in families {
+        let (mut taken, mut refused, mut by_changed_alone, mut again) = (0, 0, 0, 0);
+        for seed in 0..4000 {
+            let written = family(seed, Upkeep::Written);
+            let changed = family(seed, Upkeep::Changed);
+            assert_eq!(written.alone, written.applied, "seed {seed}");
+            assert!(
+                changed.applied || !written.applied,
+                "seed {seed}: refused for room where the largest size is for what a write \
+                 changed, and taken under the upkeep of every node"
+            );
+            match (written.applied, changed.applied) {
+                (true, _) => taken += 1,
+                (false, false) => refused += 1,
+                (false, true) => by_changed_alone += 1,
+            }
+            again += usize::from(changed.applied && !changed.alone);
+        }
+        println!(
+            "{taken} writes taken under both upkeeps ({again} of them planned again), \
+             {refused} refused for room under both, {by_changed_alone} taken where the \
+             largest size is for what a write changed alone"
+        );
+        assert!(taken > 1000 && refused > 50, "{taken}, {refused}");
+        counts.push((by_changed_alone, again));
+    }
+    let [(by_changed_alone, _), (_, again)] = counts[..] else {
+        panic!("two families");
+    };
+    assert!(by_changed_alone > 0 && again > 0);
+}
+
+#[test]
+fn a_host_that_is_behind_and_has_its_pointers_stated_is_not_rewritten_in_place() {
+    // The pages of the tests above, where `u` hosts a Merk and is behind:
+    // its pointer names a slot that holds no cell, and is not followed
+    // (T3). The write states the pointers of `u` as none. What the pointer
+    // held is not known to the plan, so the cell counts as changed: the
+    // fragment under `u` is counted, and its root goes up, under either
+    // upkeep.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let mut mem = Mem::new(SIZE);
+        let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+        let half = layout.largest_fragment() / 2;
+        let gone = CellAddress::new(below, slot(40));
+        let a = stored_cell(&mut mem, below, b"a", half, [None, None], false);
+        let b = stored_cell(&mut mem, below, b"b", half, [None, None], false);
+        let u = stored_host(
+            &mut mem,
+            below,
+            b"u",
+            10,
+            [Some(a), Some(b)],
+            &[Some(gone)],
+            true,
+        );
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(u), None], true);
+        assert!(taken(&mem, &[u, a, b]) > layout.largest_fragment());
+        assert!(mem.view(below).node(gone.slot()).is_none());
+        mem.behind.push(u);
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                ..node(Some(t), b"t")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::Kept),
+                hosted: HostedWrite::Set(&[None]),
+                ..node(Some(u), b"u")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried.map(|cell| (cell.from, cell.cause)).collect();
+        assert_eq!(carried, [(u, Cause::Split)], "{upkeep:?}");
+        let now = report.nodes[1].address();
+        assert_eq!(now.page(), top);
+        let view = mem.view(top);
+        let host = view.node(now.slot()).expect("the host, carried");
+        assert_eq!(host.hosted_roots().collect::<Vec<_>>(), [None]);
+    }
+}
+
+#[test]
+fn a_page_in_which_the_write_holds_a_cell_is_known_to_it_without_a_hint() {
+    // The four pages of `the_first_page_that_is_read_and_has_the_room_is_
+    // taken`, with no hint for any of them. The write gives `y` a longer
+    // value, so `y` leaves its full page, and it rewrites `t`, `u` and `a`
+    // as they are. A page beside `y` is one that the plan knows the room
+    // of. It knows the page of `a`, since the write holds `a` there, and
+    // not the page of `b`, of which it has no hint: `y` goes to the page
+    // of `a`, under either upkeep, and no page is started.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let layout = Layout::proposed_under(SIZE, upkeep);
+        let (mut mem, mut log) = (Mem::new(SIZE), Log::default());
+        let mut fragments = Fragments::new(layout);
+        let [top, of_a, of_b, full] = [(); 4].map(|()| mem.create().expect("a page"));
+        let x1 = stored_cell(&mut mem, full, b"1", 2600, [None, None], true);
+        let x2 = stored_cell(&mut mem, full, b"2", 2600, [None, None], true);
+        let y = stored_cell(&mut mem, full, b"y", 100, [None, None], true);
+        let bare = TreeCell::len_of(1, 1, None, None, 0, 0) + 2;
+        let rest = layout.capacity() - mem.used(full) - bare - 300;
+        let x3 = stored_cell(&mut mem, full, b"3", rest, [None, None], true);
+        let a = stored_cell(&mut mem, of_a, b"a", 800, [Some(x1), Some(x2)], true);
+        let b = stored_cell(&mut mem, of_b, b"b", 2800, [Some(x3), None], true);
+        let u = stored_cell(&mut mem, top, b"u", 10, [Some(a), Some(b)], false);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(u), Some(y)], true);
+        assert!(mem.used(of_a) + 700 < layout.seed_limit());
+        assert!(mem.used(of_b) + 700 < layout.seed_limit());
+        assert_eq!(fragments.hints().used(of_a), None);
+
+        let longer = vec![b'y'; 480];
+        let keeps_both = |at: CellAddress, key: &'static [u8]| NodeWrite {
+            left: link(Target::Kept),
+            right: link(Target::Kept),
+            ..node(Some(at), key)
+        };
+        let nodes = [
+            keeps_both(t, b"t"),
+            keeps_both(u, b"u"),
+            keeps_both(a, b"a"),
+            NodeWrite {
+                value: ValueWrite::Inline(&longer),
+                ..node(Some(y), b"y")
+            },
+        ];
+        mem.touched.clear();
+        let write = Write {
+            nodes: &nodes,
+            roots: &[root(Some(t), Target::Kept)],
+            ..Write::default()
+        };
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("the write is applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried
+            .map(|cell| (cell.from, cell.cause, cell.to.page()))
+            .collect();
+        assert_eq!(carried, [(y, Cause::Split, of_a)], "{upkeep:?}");
+        assert!(report.created.is_empty(), "{upkeep:?}");
+        assert!(!mem.touched.contains(&of_b), "{upkeep:?}: no hint, no read");
+    }
+}
+
+#[test]
+fn a_fragment_that_grows_by_a_pointer_alone_is_brought_to_the_rules_under_either_upkeep() {
+    // `t` in one page, with `u` on its left and `w` on its right, both in
+    // the other. `u` has `v` and `x` below it. The write exchanges `w` and
+    // `x`: no cell gets longer or shorter, and the fragment under `u`
+    // grows above the largest size by what `u` points at alone. Its root
+    // goes up (L1) under either upkeep, since the cell of `u` is changed.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut mem = Mem::new(SIZE);
+        let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+        let half = layout.largest_fragment() / 2;
+        let v = stored_cell(&mut mem, below, b"v", half, [None, None], false);
+        let x = stored_cell(&mut mem, below, b"x", 10, [None, None], false);
+        let w = stored_cell(&mut mem, below, b"w", half, [None, None], true);
+        let u = stored_cell(&mut mem, below, b"u", 10, [Some(v), Some(x)], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(u), Some(w)], true);
+        assert!(taken(&mem, &[u, v, x]) <= layout.largest_fragment());
+        assert!(taken(&mem, &[u, v, w]) > layout.largest_fragment());
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::At(x)),
+                ..node(Some(t), b"t")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::At(w)),
+                ..node(Some(u), b"u")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried.map(|cell| (cell.from, cell.cause)).collect();
+        assert!(
+            carried.contains(&(u, Cause::Split)),
+            "{upkeep:?}: {carried:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fragment_that_grows_by_a_hosted_pointer_alone_is_brought_to_the_rules_under_either_upkeep() {
+    // As above, with a host: `h` has `v` below it and hosts a Merk whose
+    // root is `r`, and `t` has `w` on its right. The write makes `w` the
+    // root of the Merk that `h` hosts and `r` the right child of `t`. No
+    // cell gets longer or shorter, and the fragment under `h` grows above
+    // the largest size by the pointer of `h` alone.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut mem = Mem::new(SIZE);
+        let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+        let half = layout.largest_fragment() / 2;
+        let v = stored_cell(&mut mem, below, b"v", half, [None, None], false);
+        let r = stored_cell(&mut mem, below, b"r", 10, [None, None], false);
+        let w = stored_cell(&mut mem, below, b"w", half, [None, None], true);
+        let h = stored_host(&mut mem, below, b"h", 10, [Some(v), None], &[Some(r)], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(h), Some(w)], true);
+        assert!(taken(&mem, &[h, v, r]) <= layout.largest_fragment());
+        assert!(taken(&mem, &[h, v, w]) > layout.largest_fragment());
+        let hosted = [Some(Target::At(w))];
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::At(r)),
+                ..node(Some(t), b"t")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                hosted: HostedWrite::Set(&hosted),
+                ..node(Some(h), b"h")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried.map(|cell| (cell.from, cell.cause)).collect();
+        assert!(
+            carried.contains(&(h, Cause::Split)),
+            "{upkeep:?}: {carried:?}"
+        );
+    }
+}
+
+#[test]
+fn a_small_fragment_beside_a_page_with_room_joins_it_under_either_upkeep() {
+    // `t` in one page and its child `u` alone in another: a fragment far
+    // below the small size, whose parent's page has room for it (M1).
+    // Whether that page has room is not up to the cells of the fragment,
+    // so a write that rewrites `u` in place brings it to the page of `t`
+    // under either upkeep.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut mem = Mem::new(SIZE);
+        let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+        let u = stored_cell(&mut mem, below, b"u", 10, [None, None], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(u), None], true);
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                ..node(Some(t), b"t")
+            },
+            node(Some(u), b"u"),
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried.map(|cell| (cell.from, cell.cause)).collect();
+        assert_eq!(carried, [(u, Cause::Merge)], "{upkeep:?}");
+        assert_eq!(report.carried[0].to.address().page(), top);
+        assert_eq!(report.freed, [below]);
+    }
+}
+
+#[test]
+fn a_root_that_goes_up_brings_the_fragment_it_joins_to_the_largest_size_under_either_upkeep() {
+    // Three pages: `t`; below it `g` with `p`; below `g` its other child
+    // `r` with `a`. Both fragments are within the largest size, and the
+    // one under `g` would not be with `r` in it. The write gives `a` a
+    // child and rewrites `r`, `g` and `t` as they are. The fragment under
+    // `r` is above the largest size then, so `r` goes up to the page of
+    // `g` (L1). A cell that is carried is not rewritten in place, whatever
+    // the write did to it: it brings the fragment it joins, and `g` goes
+    // up in the same write.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut mem = Mem::new(SIZE);
+        let [top, mid, low] = [(); 3].map(|()| mem.create().expect("a page"));
+        let half = layout.largest_fragment() / 2;
+        let a = stored_cell(&mut mem, low, b"a", half - 600, [None, None], false);
+        let r = stored_cell(&mut mem, low, b"r", half, [Some(a), None], true);
+        let p = stored_cell(&mut mem, mid, b"d", half + 600, [None, None], false);
+        let g = stored_cell(&mut mem, mid, b"g", 10, [Some(p), Some(r)], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(g), None], true);
+        assert!(taken(&mem, &[r, a]) <= layout.largest_fragment());
+        assert!(taken(&mem, &[g, p]) <= layout.largest_fragment());
+        assert!(taken(&mem, &[g, p, r]) > layout.largest_fragment());
+        let more = value(700, 7);
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                ..node(Some(t), b"t")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::Kept),
+                ..node(Some(g), b"g")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                ..node(Some(r), b"r")
+            },
+            NodeWrite {
+                left: link(Target::Node(4)),
+                ..node(Some(a), b"a")
+            },
+            NodeWrite {
+                value: ValueWrite::Inline(&more),
+                ..node(None, b"0")
+            },
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried.map(|cell| (cell.from, cell.cause)).collect();
+        assert_eq!(
+            carried,
+            [(r, Cause::Split), (g, Cause::Split)],
+            "{upkeep:?}"
+        );
+        let to = |index: usize| report.carried[index].to.address().page();
+        assert_eq!((to(0), to(1)), (mid, top), "{upkeep:?}");
+    }
+}
+
+#[test]
+fn the_fragment_that_leaves_a_full_page_is_that_of_the_last_node_of_the_write_in_it() {
+    // No largest size here, so that the page is settled and nothing else.
+    // `t` in one page. In the other its children: `f` with `c` below it,
+    // and `u`. The write gives `f` a longer value, which leaves the page
+    // above its capacity, and rewrites `u` in place. `u` comes after `f`
+    // in the write, so the fragment the write holds in the page is that
+    // of `u`, which leaves (section 6.2), under either upkeep: a cell
+    // that is rewritten in place is held as any other.
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..params(100, 16, 75, 35)
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut mem = Mem::new(SIZE);
+        let [top, below] = [(); 2].map(|()| mem.create().expect("a page"));
+        let c = stored_cell(&mut mem, below, b"c", 1500, [None, None], false);
+        let f = stored_cell(&mut mem, below, b"f", 1000, [Some(c), None], true);
+        let u = stored_cell(&mut mem, below, b"u", 3500, [None, None], true);
+        let t = stored_cell(&mut mem, top, b"t", 10, [Some(f), Some(u)], true);
+        let longer = value(3400, 3);
+        assert!(mem.used(below) + longer.len() - 1000 > layout.capacity());
+        let nodes = [
+            NodeWrite {
+                left: link(Target::Kept),
+                right: link(Target::Kept),
+                ..node(Some(t), b"t")
+            },
+            NodeWrite {
+                left: link(Target::Kept),
+                value: ValueWrite::Inline(&longer),
+                ..node(Some(f), b"f")
+            },
+            node(Some(u), b"u"),
+        ];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        let carried = report.carried.iter();
+        let carried: Vec<_> = carried.map(|cell| (cell.from, cell.cause)).collect();
+        assert_eq!(carried, [(u, Cause::Split)], "{upkeep:?}");
+    }
+}
+
+#[test]
+fn a_page_is_not_read_for_a_cell_rewritten_in_place_where_the_largest_size_is_for_what_changed() {
+    // One cell in one page, and a write that rewrites it as it is. Where
+    // every node of a write brings its fragment, the plan reads how full
+    // the page is. Where the largest size is for what a write changed it
+    // does not: the cell takes the bytes it took.
+    let mut reads = Vec::new();
+    for upkeep in [Upkeep::Written, Upkeep::Changed] {
+        let params = LayoutParams {
+            upkeep,
+            ..LayoutParams::PROPOSED
+        };
+        let layout = Layout::new(SIZE, params).expect("a layout");
+        let mut mem = Mem::new(SIZE);
+        let page = mem.create().expect("a page");
+        let x = stored_cell(&mut mem, page, b"x", 10, [None, None], true);
+        let nodes = [node(Some(x), b"x")];
+        let write = Write {
+            nodes: &nodes,
+            ..Write::default()
+        };
+        let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+        mem.touched.clear();
+        let report = fragments
+            .apply(&mut mem, &mut log, &write)
+            .expect("applied");
+        assert!(report.carried.is_empty());
+        assert!(mem.touched.iter().all(|touched| *touched == page));
+        reads.push(mem.touched.len());
+    }
+    assert_eq!(reads[0], reads[1] + 1, "{reads:?}");
 }
 
 #[test]

@@ -30,7 +30,7 @@ use lignin_tree::{
     directory::{Directory, DirectoryError, Dropped},
     drop::FlatDrops,
     flat::{Committed, FlatConfig, FlatPages, FlatTree, StepLog},
-    fragment::Layout,
+    fragment::{Layout, Upkeep},
     value::InlinePolicy,
 };
 
@@ -346,6 +346,10 @@ pub(super) struct Store {
     pub(super) vfs: Arc<dyn Vfs>,
     pub(super) dir: PathBuf,
     pub(super) page_size: PageSize,
+    /// Which fragments a write measures against the layout's largest
+    /// size, as the session's options say
+    /// ([`Options::upkeep`](crate::Options)).
+    pub(super) upkeep: Upkeep,
     pub(super) pool: BufferPool,
     pub(super) table: PageTable,
     pub(super) segments: SegmentStore,
@@ -389,6 +393,13 @@ pub(super) struct Store {
 }
 
 impl Store {
+    /// The layout the session's writes of tree pages are laid out with:
+    /// the proposed one for the store's page size, under the upkeep of the
+    /// session's options.
+    pub(super) fn layout(&self) -> Layout {
+        Layout::proposed_under(self.page_size, self.upkeep)
+    }
+
     pub(super) fn loader(&self) -> PageLoader<'_> {
         PageLoader::new(&self.pool, &self.table, &self.segments, self.page_size)
             .expect("the pool was made of the store's page size")
@@ -743,7 +754,7 @@ impl Shared {
         WritePath::new(
             parts,
             catalog.keyspaces,
-            Layout::proposed(store.page_size),
+            store.layout(),
             InlinePolicy::DEFAULT,
         )
     }

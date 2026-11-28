@@ -538,7 +538,12 @@
 //!    defaults** ([`Layout::proposed`], [`InlinePolicy::DEFAULT`]) and are
 //!    not in [`Options`]: a database that was written with one cannot be
 //!    read with another, and nothing records which it was written with.
-//!    They become options when they are recorded (PERF-08).
+//!    They become options when they are recorded (PERF-08). One parameter
+//!    of the layout is an option all the same, [`Options::upkeep`]: which
+//!    fragments a write measures against the largest size. It decides
+//!    where cells go from then on and nothing about how a page is read, so
+//!    a database written under one value is read and written under the
+//!    other.
 //! 3. **A wipe finds the subtrees to drop by a walk of the directory's
 //!    entries**, which reads every entry, under the commit lock. A wipe of
 //!    a database in which no subtree is entered is a commit all the same,
@@ -602,6 +607,7 @@ use lignin_store::{
 };
 use lignin_tree::{
     flat::{FlatOwners, FlatTree},
+    fragment::Upkeep,
     hash::{HashRules, Refusal},
     node::NodeRef,
     value::{RegroupPolicy, Regrouping, TreeOwners},
@@ -1528,6 +1534,12 @@ impl Db {
     /// The size of the store's pages.
     pub fn page_size(&self) -> PageSize {
         self.shared.store.page_size
+    }
+
+    /// Which fragments a write of this session measures against the
+    /// layout's largest size: what its options said ([`Options::upkeep`]).
+    pub fn upkeep(&self) -> Upkeep {
+        self.shared.store.upkeep
     }
 
     /// The latest published version. The first commit of a caller is

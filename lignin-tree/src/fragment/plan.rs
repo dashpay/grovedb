@@ -20,7 +20,7 @@ use lignin_format::{
 
 use super::{
     error::{FragmentError, WriteError},
-    layout::Layout,
+    layout::{Layout, Upkeep},
     pages::{used_bytes, Hints, Pages},
     report::Cause,
     write::{HostedWrite, NodeWrite, Target, ValueWrite, Write},
@@ -194,6 +194,13 @@ pub(super) struct Cell {
     pub kids: Kids,
     /// The rule that carried the cell last.
     pub cause: Option<Cause>,
+    /// A node of the write whose cell is rewritten in place: it had a
+    /// cell, every part of the cell keeps its length, and every link and
+    /// hosted pointer names the cell it named. Its cell takes the bytes it
+    /// took, and no rule has carried it. The fragment it is in is as large
+    /// as the write found it unless another cell of that fragment is
+    /// changed ([`Upkeep::Changed`]).
+    pub in_place: bool,
 }
 
 impl Cell {
@@ -277,11 +284,19 @@ struct Stored {
     roots: Vec<Option<CellAddress>>,
     value_len: usize,
     same_key: bool,
+    /// The length of the feature, and of the aggregate of each link, of a
+    /// cell that is read for a node of the write: what
+    /// [`Self::same_lengths`] asks about. A cell that the plan reads on its
+    /// way through a fragment has none.
+    part_lens: Option<(usize, [Option<usize>; 2])>,
+    /// Whether the cell hosts and is behind (T3): `roots` was emptied, and
+    /// what its pointers hold in the page is not known here.
+    behind: bool,
 }
 
 impl Stored {
     /// What `node` holds in its page. `key` is the key the write gives the
-    /// node, where it gives one.
+    /// node, where the cell is read for a node of the write.
     fn of(node: &NodeRef<'_>, key: Option<&[u8]>) -> Self {
         Self {
             len: node.cell().encoded_len(),
@@ -290,6 +305,11 @@ impl Stored {
             roots: node.hosted_roots().collect(),
             value_len: node.value().stored_len(),
             same_key: key.is_none_or(|key| key == node.key()),
+            part_lens: key.map(|_| {
+                let aggregate = |side| node.link(side).map(|link| link.aggregate.len());
+                (node.feature().len(), Side::BOTH.map(aggregate))
+            }),
+            behind: false,
         }
     }
 
@@ -306,6 +326,26 @@ impl Stored {
             Via::Link(side) => self.links[side as usize],
             Via::Hosted(position) => self.roots.get(usize::from(position)).copied().flatten(),
         }
+    }
+
+    /// Whether every part of the cell is as long under `node` as it is
+    /// stored: the feature, the aggregate of each link, the pointers to
+    /// hosted roots as a whole, and the value as the cell holds it. Which
+    /// cells the links and pointers name is not asked here.
+    fn same_lengths(&self, node: &NodeWrite<'_>) -> bool {
+        let aggregates = [node.left, node.right].map(|link| link.map(|link| link.aggregate.len()));
+        let hosted = match node.hosted {
+            HostedWrite::Keep => self.hosted,
+            HostedWrite::Set(roots) => roots.len(),
+        };
+        let value = match node.value {
+            ValueWrite::Keep => self.value_len,
+            ValueWrite::Inline(value) => value.len(),
+            ValueWrite::Pending(_) => TreeCell::VALUE_LOCATION_LEN,
+        };
+        self.part_lens == Some((node.feature.len(), aggregates))
+            && self.hosted == hosted
+            && self.value_len == value
     }
 }
 
@@ -361,6 +401,7 @@ impl Plan<'_> {
             anchored: false,
             kids: Kids::new(),
             cause: None,
+            in_place: false,
         });
         if let Some(address) = origin {
             self.known.insert(address, cell);
@@ -783,7 +824,43 @@ pub(super) fn counted<P: Pages>(
 }
 
 /// Plans `write` on the pages as they are.
+///
+/// Where the largest size is for what a write changed
+/// ([`Upkeep::Changed`]) and the plan finds no room
+/// ([`FragmentError::NoRoom`]), the write is planned once more with the
+/// largest size asked of every node of it ([`Upkeep::Written`]), and that
+/// plan, or its refusal, is the answer. So a write is refused for room
+/// under `Changed` only where the plan of the same write under `Written`
+/// is, with every other parameter of the layout, the pages, the hints and
+/// the hosts that are behind the same. Any other error is the answer of
+/// the plan that met it: the two can read other pages, and a page that
+/// cannot be read, or a write that names what is not there, can be met by
+/// one of them alone.
+///
+/// The two can differ in that. A page that is above its capacity is
+/// settled by what the write holds in it ([`Planner::held_in`]), and a turn
+/// of L1 that is passed over can be the one that brings a cell of the
+/// write into such a page, above cells the write does not hold: with it
+/// they can leave, and without it nothing in the page can. A plan changes
+/// no page and no hint, so a second one finds what the first found. What
+/// the first read stays read: pages that copy a page for the write that
+/// reads it keep the copies of both plans.
 pub(super) fn plan<'w, P: Pages>(
+    layout: &Layout,
+    hints: &Hints,
+    pages: &mut P,
+    write: &'w Write<'w>,
+) -> Result<Plan<'w>, FragmentError> {
+    match plan_once(layout, hints, pages, write) {
+        Err(FragmentError::NoRoom { .. }) if layout.upkeep() == Upkeep::Changed => {
+            plan_once(&layout.under(Upkeep::Written), hints, pages, write)
+        }
+        planned => planned,
+    }
+}
+
+/// Plans `write` on the pages as they are, under `layout` and no other.
+pub(super) fn plan_once<'w, P: Pages>(
     layout: &Layout,
     hints: &Hints,
     pages: &mut P,
@@ -909,6 +986,9 @@ impl<P: Pages> Planner<'_, '_, P> {
         for (index, node) in write.nodes.iter().enumerate() {
             let cell = self.plan.of_node[index];
             let old = olds[index].as_ref();
+            // Whether the cell is rewritten in place: it has every part at
+            // its length, and below, every pointer at the cell it named.
+            let mut in_place = old.is_some_and(|old| old.same_lengths(node));
             for (side, link) in Side::BOTH.into_iter().zip([node.left, node.right]) {
                 let Some(link) = link else { continue };
                 let via = Via::Link(side);
@@ -916,6 +996,7 @@ impl<P: Pages> Planner<'_, '_, P> {
                 let kid = self
                     .target(link.child, kept)?
                     .ok_or(WriteError::NothingKept { node: index })?;
+                in_place &= kept.is_some() && self.plan.cells[kid].origin == kept;
                 self.adopt(cell, kid, via)?;
             }
             match node.hosted {
@@ -929,12 +1010,19 @@ impl<P: Pages> Planner<'_, '_, P> {
                     }
                 }
                 HostedWrite::Set(roots) => {
+                    // The pointers of a host that is behind are not known
+                    // here, so a write that states them may change one.
+                    in_place &= old.is_some_and(|old| !old.behind);
                     for (position, root) in roots.iter().enumerate() {
                         let via = Via::Hosted(position as u8);
                         let kept = old.and_then(|old| old.child(via));
                         let kid = match *root {
                             Some(root) => self.target(root, kept)?,
                             None => None,
+                        };
+                        in_place &= match kid {
+                            Some(kid) => kept.is_some() && self.plan.cells[kid].origin == kept,
+                            None => kept.is_none(),
                         };
                         if let Some(kid) = kid {
                             self.adopt(cell, kid, via)?;
@@ -943,6 +1031,7 @@ impl<P: Pages> Planner<'_, '_, P> {
                     }
                 }
             }
+            self.plan.cells[cell].in_place = in_place;
         }
 
         let mut takes = Vec::new();
@@ -1128,12 +1217,29 @@ impl<P: Pages> Planner<'_, '_, P> {
                 _ => {}
             }
         }
+        let changed_alone = self.layout.upkeep() == Upkeep::Changed;
         for &cell in order {
             let node = self.plan.cells[cell]
                 .node
                 .expect("the order lists nodes of the write");
             self.held.push(cell);
-            if self.plan.cells[cell].page != NOWHERE {
+            let page = self.plan.cells[cell].page;
+            let entry = &self.plan.cells[cell];
+            debug_assert!(
+                !entry.in_place || (entry.len == lens[node] && page != NOWHERE),
+                "a cell that is rewritten in place keeps its length and its page"
+            );
+            // A cell that is rewritten in place takes the bytes it took, so
+            // its page is as full as it was. Where the largest size is for
+            // what a write changed, the page is not read for such a cell:
+            // it is the cell the write holds there, and no more. A rule
+            // that asks how full the page is reads it then (`used`,
+            // `beside`).
+            if changed_alone && self.plan.cells[cell].in_place {
+                self.plan.pages[page].held = Some(cell);
+                continue;
+            }
+            if page != NOWHERE {
                 self.resize(cell, lens[node])?;
                 continue;
             }
@@ -1207,6 +1313,7 @@ impl<P: Pages> Planner<'_, '_, P> {
         if stored.hosted > 0 && self.pages.host_is_behind(address) {
             self.met_behind = true;
             stored.roots.clear();
+            stored.behind = true;
         }
         stored
     }
@@ -1345,12 +1452,15 @@ impl<P: Pages> Planner<'_, '_, P> {
         }
     }
 
-    /// Carries one cell to another page.
+    /// Carries one cell to another page. It is not rewritten in place
+    /// then, whatever the write does to it.
     fn carry(&mut self, cell: usize, to: usize, cause: Cause) -> Result<(), FragmentError> {
         self.read(cell)?;
         self.leave(cell)?;
         self.arrive(cell, to)?;
-        self.plan.cells[cell].cause = Some(cause);
+        let entry = &mut self.plan.cells[cell];
+        entry.cause = Some(cause);
+        entry.in_place = false;
         Ok(())
     }
 
@@ -1517,15 +1627,35 @@ impl<P: Pages> Planner<'_, '_, P> {
     /// L1 and L2: every fragment the write holds that is above the largest
     /// size is split where it is. Its root goes up to the page of its
     /// parent, and what hung below it stays as fragments of its own.
+    ///
+    /// Each cell the write holds has one turn, in the order the write
+    /// took them and then in the order this rule carried them, and a turn
+    /// sends up one root at most.
+    ///
+    /// Where the largest size is for what a write changed
+    /// ([`Upkeep::Changed`]), the turn of a cell that is rewritten in
+    /// place is passed over: the write leaves that cell as long as it was,
+    /// with the cells below it that it had. A fragment the write made
+    /// larger holds a cell that is not rewritten in place, which has its
+    /// turn: one that arrived, got longer or points at another cell.
+    ///
+    /// Nothing is done in the place of a turn that is passed over. So what
+    /// is left below a root that went up can stay above the largest size,
+    /// where the turn of a node of the write between that root and the
+    /// changed cell would have sent the next root up.
     fn cap(&mut self) -> Result<(), FragmentError> {
         let largest = self.layout.largest_fragment();
         if largest >= self.layout.capacity() {
             return Ok(());
         }
+        let changed_alone = self.layout.upkeep() == Upkeep::Changed;
         let mut within = Vec::new();
         let mut next = 0;
         while let Some(&cell) = self.held.get(next) {
             next += 1;
+            if changed_alone && self.plan.cells[cell].in_place {
+                continue;
+            }
             let root = self.fragment_root(cell);
             let Some(parent) = self.up(root) else {
                 continue;
@@ -1633,6 +1763,14 @@ impl<P: Pages> Planner<'_, '_, P> {
                 if page != above && page != from && page != NOWHERE && !beside.contains(&page) {
                     beside.push(page);
                 }
+            }
+        }
+        // A page in which the write holds a cell is known to it as it is,
+        // and not by a hint: also where the cell is rewritten in place
+        // and the page was not read for it ([`Upkeep::Changed`]).
+        for &page in &beside {
+            if self.plan.pages[page].held.is_some() {
+                self.load(page)?;
             }
         }
         loop {

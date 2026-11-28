@@ -35,6 +35,7 @@ fails that test until this chapter says the new one.
 | `Options::log_file_len` | 16 MiB | the length at which a log file is full: the log goes on in it until it is turned to the next one, so a file can be longer by what was committed meanwhile | no reason known for a node |
 | `Options::reserve` | 0 bytes | the room a session keeps in a file of its own, to give back when the device fills ([backup and full disk](backup-and-full-disk.md#the-reserve)) | on a node whose device can fill: the design text's first estimate is one log file and one segment, 80 MiB with the defaults |
 | `Options::idle` | 100 ms | how long the thread that reclaims dropped subtrees sleeps when nobody wakes it | no reason known |
+| `Options::upkeep` | the fragments in which a write changed a cell | how much of a write's path the layout of the tree pages measures as the write passes; see [Upkeep](#upkeep) | no reason known for a node; see [Upkeep](#upkeep) for the two cases the other value is for |
 | `Options::flush` | unset: write-back's defaults for the database's page size | write-back's settings, `FlushConfig` ([write-back](#write-back)) | leave it unset; where it is set, start from `FlushConfig::new` with the database's page size, since its sizes follow the page size |
 | `Options::cleaner` | unset: the cleaner's defaults | the cleaner's settings, `CleanerConfig` ([the cleaner](#the-cleaner)) | leave it unset; where it is set, start from `CleanerConfig::new()` |
 | `Options::vfs` | `StdVfs` | the file layer the database's files are read and written through. On Linux, an application built with the feature `direct_io` of `lignin-io` can give `lignin_io::linux::DirectVfs`, which reads with `O_DIRECT`; on a file system that takes no direct reads the open is then refused (`… cannot be opened for direct reads: …`, [messages](messages.md#the-files-at-an-open)) | leave it: `benchmarks.md` has no run with direct reads |
@@ -92,6 +93,95 @@ after which it can forget them; what a sync adds is the power cut and
 that failure. `EveryCommit` makes each commit wait for its
 sync, which costs what a sync costs on the device; give it where each
 commit must survive a power cut on its own.
+
+### Upkeep
+
+`Options::upkeep` says in which parts of a write's path the layout of the
+tree pages is brought back into shape as the write passes. It has two
+values, `Upkeep::Changed`, the default, and `Upkeep::Written`.
+
+**What it is about.** The database keeps the nodes of its trees in pages.
+In a page, the nodes that hang together are a fragment: a node, and below
+it whatever is reached without leaving the page. The layout keeps a
+fragment within half a page, so that pages fill well and a fragment that
+has to leave a full page finds a page that can take it. A fragment that
+has grown above that has its top node moved to the page above it. To find
+such a fragment, a write counts the nodes of a fragment up to that size.
+
+**What a write touches.** A write that changes one value writes a new hash
+into every node above it, up to the root. Only the bottom of that path
+changes in size or shape. In the nodes above, a hash is replaced by a hash,
+and their fragments are as large after the write as they were before.
+
+- With `Upkeep::Changed`, a write measures the fragments in which it
+  changed something: a node that it added, moved or made longer or shorter,
+  or that now points at another node. It passes over the fragments in which
+  it only replaced hashes.
+- With `Upkeep::Written`, a write measures every fragment on its path.
+
+**What does not depend on it.**
+
+- What the database answers, its root hashes and the costs GroveDB
+  reports: a node holds the same under either value.
+- The format of the files. Nothing records the value. A database is opened
+  with either, whichever it was written with, and a session may say another
+  value than the last one did. Nothing is converted.
+- The other rules of the layout. Under either value a page never holds
+  more than its capacity, and a small fragment is brought back to the page
+  of its parent when that has room.
+
+**What depends on it.** How much work a write does, and where a node is
+put from then on. On the reference workload the two values left the same
+layout within a tenth of a percent in pages, a tenth of a point in how full
+they are, and a hundredth of a page written for each transition. On no
+workload that was measured did `Upkeep::Changed` write more than a
+hundredth of a page more for each transition. A write executed fewer
+instructions with it, most where a value is replaced by one of the same
+length. The measurements are in `docs/lignindb/tree-layout.md`, section
+14.6, with a workload that was written against `Upkeep::Changed`: one that
+tries to leave as many fragments above the size as the rules allow.
+
+**What `Upkeep::Changed` leaves for later.** A fragment that is above the
+size is measured again by a write that changes something in it, or by one
+that is planned a second time (below), and until then it stays as it is.
+With `Upkeep::Written` any write that passes through it measures it. Two
+kinds of fragment wait longer for that:
+
+- The rules that move a fragment into another page run after the
+  measuring, and can join two fragments into one that is above the size.
+- Where the top node of a fragment has been moved up and what is left
+  below it is still above the size, `Upkeep::Written` measures what is
+  left in the same write, if the write passes through it.
+  `Upkeep::Changed` leaves it for a write that changes something there.
+
+Each measuring moves one node up at the most, so under either value it
+can take more than one write to bring a fragment within the size. Such a
+fragment is never larger than its page.
+
+**Where a write finds no room.** A write of one kind can be refused
+because a page is full of nodes it does not hold: a write that changes a
+subtree and not the element that holds it (`tree-layout.md`, T3). Whether
+it finds room is up to where the nodes are, so the two values can differ
+in it. With `Upkeep::Changed`, a write whose first plan finds no room is
+planned a second time, as `Upkeep::Written` plans it, with the pages and
+everything else as they were, and the result of that second plan is the
+answer. In it, a node into which the write only wrote a hash is measured
+like any other. So `Upkeep::Changed` refuses a write for room only where
+`Upkeep::Written` does from the same state, and it takes some writes that
+`Upkeep::Written` refuses. Nothing more is promised: any other error, such
+as a page that cannot be read, can be met under one value and not under
+the other. And two databases that took the same writes under the two
+values can have their nodes in other pages, so that a later write of that
+kind finds room in one and not in the other.
+
+**When to say `Upkeep::Written`.** Two cases are known, and neither is the
+running of a node:
+
+- to compare the two values on a workload;
+- where the size that a fragment is kept within has been lowered in the
+  code (it is no option): `Upkeep::Written` measures each fragment that a
+  write passes through against the new size, `Upkeep::Changed` each
+  fragment that a write changes.
 
 ## Write-back
 
