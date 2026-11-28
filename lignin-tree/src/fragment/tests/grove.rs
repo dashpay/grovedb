@@ -83,6 +83,15 @@ pub(crate) struct Grove {
     pub carried_behind: usize,
     /// How many writes that stopped below a host were refused for room.
     pub refused: usize,
+    /// Plans every write under the other upkeep as well, as a write under
+    /// it is planned, on the pages as they are and before the write is
+    /// applied. Holds that no write is refused where the largest size is
+    /// for what a write changed that the upkeep of every node takes.
+    pub both: bool,
+    /// The writes that were planned under both, and those of them that
+    /// both refused for room.
+    pub planned_under_both: usize,
+    pub refused_under_both: usize,
     /// Drops a Merk without writing the hosts inside it that are behind,
     /// which no caller may do.
     pub unsettled: bool,
@@ -170,6 +179,9 @@ impl Grove {
             stating: BTreeSet::new(),
             carried_behind: 0,
             refused: 0,
+            both: false,
+            planned_under_both: 0,
+            refused_under_both: 0,
             unsettled: false,
             moved_from: None,
             by_address: HashMap::new(),
@@ -825,7 +837,48 @@ impl Grove {
         self.mem.behind.extend(self.moved_from.take());
         let from = self.mem.shadow.records.len();
         let pages_before = self.mem.frames.len();
-        let report = match self.fragments.apply(&mut self.mem, &mut self.log, &write) {
+        // The plan under the other upkeep, of the same write on the same
+        // pages: a plan changes none. What the pages were asked for it is
+        // forgotten again.
+        let other = self.both.then(|| {
+            let this = *self.fragments.layout();
+            let upkeep = match this.upkeep() {
+                Upkeep::Written => Upkeep::Changed,
+                Upkeep::Changed => Upkeep::Written,
+            };
+            let params = LayoutParams {
+                upkeep,
+                ..this.params()
+            };
+            let layout = Layout::new(this.page_size(), params).expect("a layout");
+            let asked = (self.mem.touched.len(), self.mem.asked.len());
+            let said_behind = self.mem.said_behind;
+            let planned = plan::plan(&layout, self.fragments.hints(), &mut self.mem, &write);
+            self.mem.touched.truncate(asked.0);
+            self.mem.asked.truncate(asked.1);
+            self.mem.said_behind = said_behind;
+            (upkeep, planned.map(drop))
+        });
+        let applied = self.fragments.apply(&mut self.mem, &mut self.log, &write);
+        if let Some((upkeep, planned)) = other {
+            // Whatever the refusal is: a write that is taken under the
+            // upkeep of every node is taken under the other.
+            let (of_every_node, of_what_changed) = match upkeep {
+                Upkeep::Written => (planned.is_ok(), applied.is_ok()),
+                Upkeep::Changed => (applied.is_ok(), planned.is_ok()),
+            };
+            assert!(
+                of_what_changed || !of_every_node,
+                "a write is refused where the largest size is for what a write changed, and \
+                 taken under the upkeep of every node: {applied:?}, {planned:?}"
+            );
+            let no_room =
+                |error: Option<&FragmentError>| matches!(error, Some(FragmentError::NoRoom { .. }));
+            let both = no_room(applied.as_ref().err()) && no_room(planned.as_ref().err());
+            self.planned_under_both += 1;
+            self.refused_under_both += usize::from(both);
+        }
+        let report = match applied {
             Ok(report) => report,
             Err(error) => {
                 // A write that is refused leaves everything as it was.

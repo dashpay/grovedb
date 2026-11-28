@@ -221,7 +221,7 @@ mod write;
 pub(crate) mod tests;
 
 pub use error::{FragmentError, LayoutError, WriteError};
-pub use layout::{Layout, LayoutParams};
+pub use layout::{Layout, LayoutParams, Upkeep};
 pub use pages::{Hints, PageMut, Pages, Values};
 pub use report::{Carried, Carries, Cause, Counters, Moves, Report};
 pub use write::{HostedWrite, LinkWrite, NodeWrite, RootWrite, Target, ValueWrite, Write};
@@ -280,6 +280,12 @@ impl Fragments {
     ///
     /// On [`FragmentError::Write`] and [`FragmentError::NoRoom`] no page was
     /// changed. On any other error the pages may hold a part of the write.
+    ///
+    /// Where the largest size is for what a write changed
+    /// ([`Upkeep::Changed`]), a write whose plan finds no room is planned
+    /// once more under [`Upkeep::Written`], and the result of that plan is
+    /// the answer. [`Upkeep`] says what follows from that and what does
+    /// not ("Where a write finds no room").
     pub fn apply<P: Pages, V: Values>(
         &mut self,
         pages: &mut P,
