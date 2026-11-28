@@ -181,8 +181,16 @@ fn a_page_step_of_other_background_work_is_written_as_its_record() {
     assert_eq!(db.chain(page(1))[1].version, born);
     assert_eq!(after.delta_bytes - before.0.delta_bytes, 4 + 19);
     assert_eq!(after.runs_refused, 0);
-    // The page under the run was read from its blocks, under a guard.
+    // The page under the run was read from its blocks, under a guard:
+    // one chain, of its base image alone.
     assert_eq!(db.versions.guards(), before.2 + 1);
+    assert_eq!(
+        (
+            after.chains_read - before.0.chains_read,
+            after.chain_blocks_read - before.0.chain_blocks_read
+        ),
+        (1, 1)
+    );
     db.check_cold();
 
     // The same on a page version that no segment holds yet: the record
@@ -195,6 +203,77 @@ fn a_page_step_of_other_background_work_is_written_as_its_record() {
     assert_eq!(db.stats().delta_bytes - after.delta_bytes, 4 + 35 + 19);
     assert_eq!(db.stats().runs_refused, 0);
     db.check_cold();
+}
+
+/// Write-back names the blocks of a chain to the file layer before it
+/// reads them, as a loader does. It counts a block when its segment gave
+/// it, and a page when the whole of its chain was read.
+#[test]
+fn a_chain_that_write_back_reads_is_named_to_the_file_layer_and_counted_as_it_is_read() {
+    use crate::segment::tests::faulty::{FaultyVfs, Op};
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let vfs = FaultyVfs::new(Arc::new(StdVfs));
+    let db = Db::create(
+        Arc::new(vfs.clone()),
+        dir.path(),
+        FlushConfig::new(Db::SIZE),
+        LogOptions::default(),
+    );
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 2000)),
+        insert((1, 2), b"b", inline(b"v")),
+    ]);
+    db.wb().pass().expect("a pass");
+    let counted = |from: &FlushStats| {
+        let now = db.stats();
+        (
+            now.chains_read - from.chains_read,
+            now.chain_blocks_read - from.chain_blocks_read,
+        )
+    };
+
+    // The run of the first step is checked against a chain of one block,
+    // which is not worth a hint.
+    let before = db.stats();
+    db.move_value(page(1), slot(1), false);
+    vfs.take_hints();
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.shape(page(1)), "Bd");
+    assert_eq!(vfs.take_hints(), []);
+    assert_eq!(counted(&before), (1, 1));
+
+    // The run of the second is checked against the base image and the run
+    // after it: both are named, and no read lies between the two hints.
+    let blocks: Vec<(u64, u64)> = (db.chain(page(1)).iter())
+        .filter_map(Link::location)
+        .map(|location| (location.offset, u64::from(location.len)))
+        .collect();
+    let before = db.stats();
+    db.move_value(page(1), slot(1), false);
+    vfs.take_hints();
+    vfs.take_calls();
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.shape(page(1)), "Bdd");
+    let hints = vfs.take_hints();
+    let named: Vec<(u64, u64)> = hints.iter().map(|hint| (hint.offset, hint.len)).collect();
+    assert_eq!(named, blocks);
+    // Both hints came before the pass read the segment for the first time.
+    let segment = hints[0].name.clone();
+    let first_read = (vfs.take_calls().iter())
+        .position(|(op, name)| *op == Op::Read && *name == segment)
+        .expect("the chain was read");
+    assert!(hints.iter().all(|hint| hint.after_calls <= first_read));
+    assert_eq!(counted(&before), (1, 2));
+
+    // A chain whose second block cannot be read is no page that was built:
+    // the block that was read is counted, and no chain.
+    let before = db.stats();
+    db.move_value(page(1), slot(1), false);
+    vfs.fail_after(1, Op::Read, &hints[0].name);
+    assert!(db.wb().pass().is_err());
+    assert_eq!(vfs.pending_faults(), 0);
+    assert_eq!(counted(&before), (0, 1));
 }
 
 /// A page step whose record did not come through write-back loses

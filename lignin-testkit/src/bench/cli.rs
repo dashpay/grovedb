@@ -3,8 +3,12 @@
 //! ```text
 //! lignin-bench run [options]          measure, write the report as JSON
 //! lignin-bench reads [options]        the warm read rows of a kept database
+//! lignin-bench writes [options]       the write rows over a copy of a kept database
 //! lignin-bench table REPORT           the rows of a report, beside the plan's values
 //! lignin-bench compare FIRST SECOND   how far two runs' rows are apart
+//! lignin-bench latency [options]      the commit of a block at a pace, on each engine
+//! lignin-bench latency-table REPORT.. the rows of latency reports, and their ranges
+//! lignin-bench score REPORT...        the rows of reports scored against the plan's table
 //! ```
 //!
 //! `run` options: `--out FILE` (default: standard output), `--scratch DIR`
@@ -13,7 +17,7 @@
 //! `--set KEY=VALUE` (repeatable; a setting of LigninDB, as
 //! `bench/lignindb.rs` lists them, in a run that measures it),
 //! `--label TEXT`, `--commit SHA`, `--perf`, `--keep`, and the
-//! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--creates`,
+//! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--churn`, `--creates`,
 //! `--updates`, `--deletes`, `--point-reads`, `--reference-reads`,
 //! `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`.
 //! `reads` takes the options of `run` and measures the point gets, the
@@ -21,21 +25,29 @@
 //! `settled`, over the databases that a
 //! `run --keep` with the same `--scratch`, `--seed`, `--documents` and
 //! `--owners` and with `--creates 0 --updates 0 --deletes 0` left there.
-//! `compare` takes `--tolerance FRACTION` (default 0.10).
+//! `writes` takes the options of `run` too, and applies its `--creates`,
+//! `--updates` and `--deletes` to a copy of such a kept database, opened
+//! with its `--set` settings: the rows of the phases `create`, `update`
+//! and `delete`. With `--keep` the copy stays, in `<engine>-writes` beside
+//! the kept database.
+//! `compare` takes `--tolerance FRACTION` (default 0.10). The options of
+//! `latency` are those of [`latency`].
 
 use std::{fmt::Write as _, path::PathBuf};
 
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    compare, reads,
+    compare,
+    latency::{self, LatencyReport},
+    reads,
     report::{self, ratio},
-    run, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
+    run, score, writes, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
-const USAGE: &str =
-    "usage: lignin-bench run [options] | reads [options] | table REPORT | compare FIRST SECOND \
-     [--tolerance F]";
+const USAGE: &str = "usage: lignin-bench run [options] | reads [options] | writes [options] | \
+                     table REPORT | compare FIRST SECOND [--tolerance F] | latency [options] | \
+                     latency-table REPORT... | score REPORT...";
 
 /// Runs the command with `args` (the program name excluded) and returns
 /// what it prints.
@@ -43,11 +55,12 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
     let usage = || BenchError::Check(USAGE.to_string());
     let (command, rest) = args.split_first().ok_or_else(usage)?;
     match command.as_str() {
-        "run" | "reads" => {
+        "run" | "reads" | "writes" => {
             let (options, out) = parse_run(rest)?;
             let report = match command.as_str() {
                 "run" => run(&options)?,
-                _ => reads(&options)?,
+                "reads" => reads(&options)?,
+                _ => writes(&options)?,
             };
             let json = report.to_json();
             match out {
@@ -64,6 +77,22 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
             [path] => Ok(table(&read_report(path)?)),
             _ => Err(usage()),
         },
+        "score" if !rest.is_empty() => {
+            let mut out = String::new();
+            for path in rest {
+                let report = read_report(path)?;
+                let _ = writeln!(
+                    out,
+                    "{path}: {} {}, commit {}\n",
+                    report.workload.name,
+                    report.workload.documents,
+                    report.commit.as_deref().unwrap_or("unknown"),
+                );
+                out.push_str(&score::score(&report));
+                out.push('\n');
+            }
+            Ok(out)
+        }
         "compare" => {
             let (paths, tolerance) = match rest {
                 [first, second] => ([first, second], 0.10),
@@ -73,6 +102,33 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
                 _ => return Err(usage()),
             };
             comparison(&read_report(paths[0])?, &read_report(paths[1])?, tolerance)
+        }
+        "latency" => {
+            let (options, out) = latency::parse_options(rest)?;
+            let report = latency::run(&options)?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, report.to_json()).map_err(|error| {
+                        BenchError::io(format!("writing {}", path.display()), error)
+                    })?;
+                    Ok(latency::table(&report))
+                }
+                None => Ok(report.to_json()),
+            }
+        }
+        "latency-table" if !rest.is_empty() => {
+            let reports = rest
+                .iter()
+                .map(|path| {
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|error| BenchError::io(format!("reading {path}"), error))?;
+                    LatencyReport::from_json(&text)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(match &reports[..] {
+                [one] => latency::table(one),
+                several => latency::runs_table(several),
+            })
         }
         _ => Err(usage()),
     }
@@ -124,6 +180,7 @@ pub fn parse_run(args: &[String]) -> Result<(RunOptions, Option<PathBuf>), Bench
                     "--seed" => settings.seed = parse_number(flag, value)?,
                     "--documents" => settings.documents = parse_number(flag, value)?,
                     "--owners" => settings.owners = parse_number(flag, value)?,
+                    "--churn" => settings.churn = parse_number(flag, value)?,
                     "--creates" => settings.measured_creates = parse_number(flag, value)?,
                     "--updates" => settings.updates = parse_number(flag, value)?,
                     "--deletes" => settings.deletes = parse_number(flag, value)?,
@@ -317,7 +374,8 @@ mod tests {
     fn run_options_parse() {
         let (options, out) = parse_run(&args(
             "--out r.json --scratch /s --label box --commit abc --engine rocksdb --perf --keep \
-             --seed 7 --documents 2000 --owners 20 --creates 40 --updates 60 --deletes 80 \
+             --seed 7 --documents 2000 --owners 20 --churn 100 --creates 40 --updates 60 \
+             --deletes 80 \
              --point-reads 1 --reference-reads 2 --warmup-reads 3 --cold-reads 4 \
              --checkpoints 5 --reopens 6",
         ))
@@ -334,11 +392,12 @@ mod tests {
                 settings.seed,
                 settings.documents,
                 settings.owners,
+                settings.churn,
                 settings.measured_creates,
                 settings.updates,
                 settings.deletes
             ),
-            (7, 2000, 20, 40, 60, 80)
+            (7, 2000, 20, 100, 40, 60, 80)
         );
         assert_eq!(
             (
@@ -423,10 +482,21 @@ mod tests {
         ] {
             assert_eq!(parse_run(&args(line)).unwrap_err().to_string(), message);
         }
-        for line in ["", "fly", "table", "compare a", "compare a b --tolerance"] {
+        for line in [
+            "",
+            "fly",
+            "table",
+            "score",
+            "compare a",
+            "compare a b --tolerance",
+        ] {
             assert_eq!(main_with(&args(line)).unwrap_err().to_string(), USAGE);
         }
         assert!(main_with(&args("table /nonexistent/report.json"))
+            .unwrap_err()
+            .to_string()
+            .starts_with("reading /nonexistent/report.json"));
+        assert!(main_with(&args("score /nonexistent/report.json"))
             .unwrap_err()
             .to_string()
             .starts_with("reading /nonexistent/report.json"));
@@ -436,6 +506,42 @@ mod tests {
                 .to_string(),
             "--tolerance takes a number, not \"x\""
         );
+    }
+
+    #[test]
+    fn the_latency_commands_make_a_report_and_table_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scratch, out) = (dir.path().join("scratch"), dir.path().join("r.json"));
+        let path = |path: &std::path::Path| path.display().to_string();
+        let mut line = args(
+            "latency --engine rocksdb --label head --documents 400 --owners 4 --warm-blocks 2 \
+             --blocks 4 --pause-us 200 --scratch",
+        );
+        line.push(path(&scratch));
+        // Without `--out` the command prints the report itself.
+        let json = main_with(&line).unwrap();
+        let report = LatencyReport::from_json(&json).unwrap();
+        assert_eq!(report.engines[0].commit_ns.len(), 4);
+        // With it the report is written there and its table is printed.
+        line.extend(["--out".to_string(), path(&out)]);
+        let text = main_with(&line).unwrap();
+        assert!(text.contains("| head | rocksdb | default | 4 |"), "{text}");
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(LatencyReport::from_json(&written).unwrap().engines.len(), 1);
+        // One report is tabled as the run printed it, and two of one run
+        // as a row each and a row of both.
+        let table = |reports: &[&std::path::Path]| {
+            let mut line = args("latency-table");
+            line.extend(reports.iter().map(|report| path(report)));
+            main_with(&line)
+        };
+        assert_eq!(table(&[&out]).unwrap(), text);
+        let both = table(&[&out, &out]).unwrap();
+        assert!(both.contains("| rocksdb | default | 2 |"), "{both}");
+        // No report, and a file that is none, are refused.
+        assert_eq!(table(&[]).unwrap_err().to_string(), USAGE);
+        let refused = table(&[&dir.path().join("none.json")]).unwrap_err();
+        assert!(refused.to_string().contains("reading"), "{refused}");
     }
 
     #[test]

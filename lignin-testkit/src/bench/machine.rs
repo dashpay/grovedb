@@ -179,6 +179,161 @@ pub fn process_io(field: &str) -> Option<u64> {
         .and_then(|value| value.trim().parse().ok())
 }
 
+/// What the operating system has counted of the process's reads at one
+/// moment (Linux only). The harness reads it before and after a phase or
+/// a kind of read and subtracts ([`StorageReads::since`]).
+///
+/// A count is `None` where the system does not give it. The two counts of
+/// the cgroup need cgroup v2 with the `io` controller on for the cgroup
+/// the process runs in, which a systemd unit with `IOAccounting=yes` has.
+/// They are of every process of that cgroup. Under a memory limit on the
+/// cgroup that leaves the kernel's page cache little room, they say how
+/// often a read reached the device; with the page cache free, a page that
+/// was read or written before is read from memory and counted nowhere
+/// here but in `process_calls`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageReads {
+    /// `/proc/self/io` `read_bytes`: bytes the process caused to be read
+    /// from storage, read-ahead included.
+    pub process_bytes: Option<u64>,
+    /// `/proc/self/io` `syscr`: the process's read system calls, whatever
+    /// they read and wherever it came from.
+    pub process_calls: Option<u64>,
+    /// `io.stat` `rios` of the process's cgroup, summed over its devices:
+    /// read requests that reached a device.
+    pub device_reads: Option<u64>,
+    /// `io.stat` `rbytes`, summed the same way: the bytes of those
+    /// requests.
+    pub device_bytes: Option<u64>,
+}
+
+impl StorageReads {
+    /// The counts now.
+    pub fn now() -> StorageReads {
+        let device = cgroup_io_stat().map(|text| device_reads(&text));
+        StorageReads {
+            process_bytes: process_io("read_bytes"),
+            process_calls: process_io("syscr"),
+            device_reads: device.map(|(reads, _)| reads),
+            device_bytes: device.map(|(_, bytes)| bytes),
+        }
+    }
+
+    /// What was counted between `earlier` and `self`. A count that either
+    /// reading lacks is `None`.
+    pub fn since(&self, earlier: &StorageReads) -> StorageReads {
+        let since = |now: Option<u64>, then: Option<u64>| {
+            now.zip(then).map(|(now, then)| now.saturating_sub(then))
+        };
+        StorageReads {
+            process_bytes: since(self.process_bytes, earlier.process_bytes),
+            process_calls: since(self.process_calls, earlier.process_calls),
+            device_reads: since(self.device_reads, earlier.device_reads),
+            device_bytes: since(self.device_bytes, earlier.device_bytes),
+        }
+    }
+}
+
+/// The `io.stat` file of the cgroup this process runs in (cgroup v2), or
+/// nothing where the cgroup's directory is not known, the file cannot be
+/// read, or the file that was opened is not on the mount the mount table
+/// named: a mount that covers a directory above that one gives a file of
+/// the same path that is another's.
+fn cgroup_io_stat() -> Option<String> {
+    use std::{io::Read, os::fd::AsRawFd};
+
+    let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let (mount, dir) = cgroup_dir(&mounts, membership(&groups)?)?;
+    let mut file = std::fs::File::open(dir.join("io.stat")).ok()?;
+    let opened = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).ok()?;
+    if mount_of(&opened)? != mount {
+        return None;
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The path of the process's cgroup in the cgroup v2 hierarchy, from the
+/// text of `/proc/self/cgroup`: what follows `0::` in its line, to the
+/// line feed and no further, since a group's name can end in a carriage
+/// return.
+fn membership(groups: &str) -> Option<&str> {
+    groups.split('\n').find_map(|line| line.strip_prefix("0::"))
+}
+
+/// The id of the mount an open file is on, from the text of its file in
+/// `/proc/self/fdinfo`.
+fn mount_of(fdinfo: &str) -> Option<u64> {
+    let id = fdinfo
+        .split('\n')
+        .find_map(|line| line.strip_prefix("mnt_id:"))?;
+    id.trim().parse().ok()
+}
+
+/// The directory of the cgroup `group` (its path in `/proc/self/cgroup`)
+/// by `mountinfo` (the text of `/proc/self/mountinfo`), with the id of
+/// the mount it is on, in the one layout this reads: the cgroup v2
+/// hierarchy mounted whole, once, at `/sys/fs/cgroup`, with nothing else
+/// mounted there or under it. The directory is then that one and the
+/// group's path.
+///
+/// In every other layout there is none, and a run has no counts of its
+/// cgroup: a part of the hierarchy mounted there, a second mount over it,
+/// a mount of anything under it, the hierarchy mounted elsewhere only, a
+/// table this cannot read, or a group whose path climbs (`..`). A path
+/// built in one of those could be another group's. A mount that covers a
+/// directory above `/sys/fs/cgroup` is not seen here: the caller checks
+/// the mount of the file it opens against the id.
+fn cgroup_dir(mountinfo: &str, group: &str) -> Option<(u64, PathBuf)> {
+    const AT: &str = "/sys/fs/cgroup";
+    let climbs = Path::new(group)
+        .components()
+        .any(|part| part == std::path::Component::ParentDir);
+    if !group.starts_with('/') || climbs {
+        return None;
+    }
+    let mut found = None;
+    for line in mountinfo.split('\n').filter(|line| !line.is_empty()) {
+        // The fields of a line are parted by one space each, and a space
+        // in a path is written as an escape.
+        let (mount, filesystem) = line.split_once(" - ")?;
+        let mut fields = mount.split(' ');
+        let id = fields.next()?.parse::<u64>().ok()?;
+        let mut fields = fields.skip(2);
+        let (mount_root, mount_point) = (fields.next()?, fields.next()?);
+        let under = mount_point
+            .strip_prefix(AT)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        if !under {
+            continue;
+        }
+        let whole = mount_point == AT
+            && mount_root == "/"
+            && filesystem.split(' ').next() == Some("cgroup2");
+        if !whole || found.is_some() {
+            return None;
+        }
+        found = Some(id);
+    }
+    Some((found?, Path::new(AT).join(group.trim_start_matches('/'))))
+}
+
+/// The read requests and the bytes read of every device in the text of
+/// an `io.stat` file, summed. A line is a device's numbers and then
+/// `key=value` fields; a field that is not a number counts as nothing.
+fn device_reads(io_stat: &str) -> (u64, u64) {
+    let sum = |key: &str| {
+        io_stat
+            .split_whitespace()
+            .filter_map(|field| field.strip_prefix(key)?.strip_prefix('='))
+            .filter_map(|value| value.parse::<u64>().ok())
+            .sum()
+    };
+    (sum("rios"), sum("rbytes"))
+}
+
 /// How a cold read is made cold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -293,6 +448,41 @@ pub fn files_under(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Copies the directory `from`, with every file and every directory under
+/// it, to `to`, which must not exist yet. What is neither a file nor a
+/// directory is left out. If the copy fails after `to` was made, what was
+/// copied is removed again, so that a copy is whole or is not there; where
+/// that removal fails too, the error says so, with the path.
+pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    copy_into(from, to).map_err(|error| match std::fs::remove_dir_all(to) {
+        Ok(()) => error,
+        Err(left) => std::io::Error::new(
+            error.kind(),
+            format!(
+                "{error}; and what was copied to {} could not be removed: {left}",
+                to.display()
+            ),
+        ),
+    })
+}
+
+/// Copies what is in the directory `from` into the directory `to`.
+fn copy_into(from: &Path, to: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            std::fs::create_dir(&target)?;
+            copy_into(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Drops every file under `dir` from the page cache. Returns false if the
 /// directory cannot be listed or the drop could not be made.
 pub fn drop_dir_cache(dir: &Path) -> bool {
@@ -305,6 +495,13 @@ pub fn drop_dir_cache(dir: &Path) -> bool {
 /// `perf` starts with counting off and is switched through its control
 /// FIFO, so only the measured sections count. Counts accumulate over every
 /// enabled section until [`Perf::finish`].
+///
+/// A measurement that looks for where time goes can name more events in
+/// the variable [`MORE_EVENTS`]. They are given to the same `perf` after
+/// the instructions, and what a `perf` printed is then written to
+/// standard error where it is stopped and its output is read
+/// (`counter_output`); a write that fails is not tried again. Nothing of
+/// the events goes into a report.
 pub struct Perf {
     child: Child,
     control: File,
@@ -314,6 +511,78 @@ pub struct Perf {
 }
 
 const PERF_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The variable of the environment that names more events for `perf` to
+/// count, as `perf stat -e` takes them
+/// (`cycles:u,cache-misses,dTLB-load-misses`). Unset, or with nothing
+/// but blanks in it, it changes nothing.
+pub const MORE_EVENTS: &str = "LIGNIN_BENCH_PERF_EVENTS";
+
+/// The events that [`MORE_EVENTS`] names in this process, if it names
+/// any.
+pub fn more_events() -> Option<String> {
+    named_events(std::env::var(MORE_EVENTS).ok().as_deref())
+}
+
+fn named_events(value: Option<&str>) -> Option<String> {
+    let named = value.map(str::trim).filter(|named| !named.is_empty());
+    named.map(str::to_owned)
+}
+
+/// The events `perf` is asked to count: the instructions, then `more`.
+pub fn perf_events(more: Option<&str>) -> String {
+    match more {
+        Some(more) => format!("instructions:u,{more}"),
+        None => "instructions:u".to_string(),
+    }
+}
+
+/// Why a run does not count the events `more` beside the instructions,
+/// if it does not: the word `instructions` is in them. The count of a
+/// row is read from the first line of what `perf` printed that holds that
+/// word and whose first field is a number (`parse_perf_csv`), and the
+/// line of an event that is named so could be taken for it. A second
+/// line with the word that `perf` prints where the list has none is met
+/// where the count is read (`instructions_beside_more`).
+pub fn more_events_refused(more: &str) -> Option<String> {
+    more.contains("instructions").then(|| {
+        format!(
+            "--perf: {MORE_EVENTS} names `{more}`, which has the word `instructions` in it: \
+             the instructions of a row are read from the line of `perf`'s output that holds \
+             that word. Name the other events alone; `instructions:u` is always asked for"
+        )
+    })
+}
+
+/// The instructions of what `perf` printed while it counted more events:
+/// the count that `parse_perf_csv` reads, where exactly one line of the
+/// output holds the word `instructions` and the third field of that
+/// line, the event's name, is `instructions:u`; and none otherwise.
+///
+/// So there is no count where `perf` prints the word in a second line,
+/// whatever event that line is of, and none where the only line with
+/// the word has another third field, whether it is the harness's own
+/// event under another name (`cpu_core/instructions:u/`, or with
+/// another modifier) or another event's line. The row then has no
+/// count, as where `perf` fails.
+fn instructions_beside_more(text: &str) -> Option<u64> {
+    let mut with_the_word = text.lines().filter(|line| line.contains("instructions"));
+    let line = with_the_word.next()?;
+    let alone = with_the_word.next().is_none();
+    let named = line.split(',').nth(2) == Some("instructions:u");
+    (alone && named).then(|| parse_perf_csv(text)).flatten()
+}
+
+/// What is written to standard error for a counter that finished while
+/// [`MORE_EVENTS`] names events: a line `# counter NAME`, where `NAME` is
+/// the name of the counter's directory (`perf-load-apply`, `perf-probe`),
+/// then `text`, which is what `perf stat -x ,` printed for it, ending in
+/// a line break.
+fn counter_output(dir: &Path, text: &str) -> String {
+    let name = dir.file_name().unwrap_or(dir.as_os_str()).to_string_lossy();
+    let end = if text.ends_with('\n') { "" } else { "\n" };
+    format!("# counter {name}\n{text}{end}")
+}
 
 impl Perf {
     /// Attaches `perf stat -e instructions:u` to thread `tid`, keeping its
@@ -343,7 +612,9 @@ impl Perf {
             .open(&ack_path)
             .ok()?;
         let child = Command::new("perf")
-            .args(["stat", "-x", ",", "-e", "instructions:u", "--delay=-1"])
+            .args(["stat", "-x", ",", "-e"])
+            .arg(perf_events(more_events().as_deref()))
+            .arg("--delay=-1")
             .arg(format!(
                 "--control=fifo:{},{}",
                 control_path.display(),
@@ -428,7 +699,13 @@ impl Perf {
         let _ = self.child.wait();
         let text = std::fs::read_to_string(&self.output).ok();
         let _ = std::fs::remove_dir_all(&self.dir);
-        parse_perf_csv(&text?)
+        let text = text?;
+        if more_events().is_none() {
+            return parse_perf_csv(&text);
+        }
+        let shown = counter_output(&self.dir, &text);
+        let _ = std::io::stderr().write_all(shown.as_bytes());
+        instructions_beside_more(&text)
     }
 
     fn abandon(&mut self) {
@@ -448,6 +725,100 @@ fn parse_perf_csv(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_of_a_directory_is_whole_or_not_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        std::fs::create_dir_all(from.join("inner")).unwrap();
+        std::fs::write(from.join("a"), b"one").unwrap();
+        std::fs::write(from.join("inner").join("b"), b"two").unwrap();
+
+        let to = dir.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"one");
+        assert_eq!(std::fs::read(to.join("inner").join("b")).unwrap(), b"two");
+
+        // A copy onto what is there is refused, and what is there stays.
+        let refused = copy_tree(&from, &to).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"one");
+
+        // A copy that fails after its directory was made leaves none.
+        let partial = dir.path().join("partial");
+        assert!(copy_tree(&dir.path().join("missing"), &partial).is_err());
+        assert!(!partial.exists());
+    }
+
+    #[test]
+    fn the_cgroup_of_the_process_and_the_mount_of_a_file_are_read_to_the_line_feed() {
+        // A group's name can end in a carriage return, which is no end of
+        // a line here: the group beside it without one is another group.
+        assert_eq!(membership("1:name=x:/y\n0::/run\r\n"), Some("/run\r"));
+        assert_eq!(membership("0::/run\n"), Some("/run"));
+        assert_eq!(membership("1:cpu:/run\n"), None);
+        assert_eq!(
+            mount_of("pos:\t0\nflags:\t0100000\nmnt_id:\t35\nino:\t77\n"),
+            Some(35)
+        );
+        assert_eq!(mount_of("pos:\t0\n"), None);
+        assert_eq!(mount_of("mnt_id:\tnone\n"), None);
+    }
+
+    #[test]
+    fn the_directory_of_a_cgroup_is_known_in_one_layout_of_the_mounts() {
+        let dir = |mountinfo: &str, group: &str| {
+            cgroup_dir(mountinfo, group)
+                .map(|(_, dir)| dir.to_string_lossy().trim_end_matches('/').to_owned())
+        };
+        let found = |path: &str| Some(path.to_owned());
+        let sys = "24 30 0:22 / /sys rw,nosuid - sysfs sysfs rw\n";
+        let whole = "35 24 0:30 / /sys/fs/cgroup rw,nosuid,nodev - cgroup2 cgroup2 rw,nsdelegate\n";
+        let usual = format!("{sys}{whole}36 24 0:31 / /sys/fs/bpf rw - bpf bpf rw\n");
+        assert_eq!(
+            dir(&usual, "/system.slice/run.service"),
+            found("/sys/fs/cgroup/system.slice/run.service")
+        );
+        assert_eq!(dir(&usual, "/"), found("/sys/fs/cgroup"));
+        // With the id of the mount, which the opened file is checked by.
+        assert_eq!(cgroup_dir(&usual, "/run").map(|(mount, _)| mount), Some(35));
+        assert_eq!(dir(&usual, "/run\r"), found("/sys/fs/cgroup/run\r"));
+        // A path that climbs, or that is none, names no directory.
+        assert_eq!(dir(&usual, "/../sibling"), None);
+        assert_eq!(dir(&usual, "/a/../../b"), None);
+        assert_eq!(dir(&usual, "run"), None);
+
+        // A part of the hierarchy mounted there: its paths are not the
+        // group's.
+        let part = "35 24 0:30 /team /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(dir(part, "/team/run"), None);
+        // A second mount there covers the first, and a mount under it
+        // covers a part of it: whichever is seen is not known.
+        assert_eq!(dir(&format!("{part}{whole}"), "/team/run"), None);
+        assert_eq!(dir(&format!("{whole}{whole}"), "/run"), None);
+        let over = "40 35 0:40 / /sys/fs/cgroup/run rw - tmpfs tmpfs rw\n";
+        assert_eq!(dir(&format!("{whole}{over}"), "/run"), None);
+        let hybrid = "35 24 0:30 / /sys/fs/cgroup ro - tmpfs tmpfs ro\n\
+                      36 35 0:31 / /sys/fs/cgroup/unified rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(dir(hybrid, "/run"), None);
+        // The hierarchy mounted elsewhere only, or not at all.
+        let elsewhere = "35 24 0:30 / /mnt/cg rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(dir(elsewhere, "/run"), None);
+        assert_eq!(dir(sys, "/run"), None);
+        assert_eq!(dir("", "/run"), None);
+        // A line that is no line of the table.
+        assert_eq!(dir(&format!("{whole}nonsense\n"), "/run"), None);
+
+        // A path beside it whose name only begins alike is another place,
+        // also where it holds a space that is no ASCII space, which the
+        // table writes as it is.
+        let beside = "41 24 0:41 / /sys/fs/cgroup2 rw - cgroup2 cgroup2 rw\n\
+                      42 24 0:42 / /sys/fs/cgroup\u{a0}one rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(
+            dir(&format!("{whole}{beside}"), "/run"),
+            found("/sys/fs/cgroup/run")
+        );
+    }
 
     #[test]
     fn load_averages_parse_from_both_systems() {
@@ -473,6 +844,110 @@ mod tests {
             None
         );
         assert_eq!(parse_perf_csv(""), None);
+        // More events follow the instructions, whose line is the count.
+        let more = "# started\n\n123,,instructions:u,5,100.00,0.5,insn per cycle\n\
+                    9,,cycles:u,5,100.00,,\n";
+        assert_eq!(parse_perf_csv(more), Some(123));
+    }
+
+    #[test]
+    fn more_events_are_those_the_variable_names_after_the_instructions() {
+        assert_eq!(named_events(None), None);
+        assert_eq!(named_events(Some("")), None);
+        assert_eq!(named_events(Some(" \n")), None);
+        let named = named_events(Some(" cycles:u,cache-misses\n"));
+        assert_eq!(named.as_deref(), Some("cycles:u,cache-misses"));
+        assert_eq!(perf_events(None), "instructions:u");
+        assert_eq!(
+            perf_events(named.as_deref()),
+            "instructions:u,cycles:u,cache-misses"
+        );
+        // The variable of this process is read through the same rule.
+        assert_eq!(
+            more_events(),
+            named_events(std::env::var(MORE_EVENTS).ok().as_deref())
+        );
+    }
+
+    #[test]
+    fn events_with_the_word_instructions_are_refused() {
+        assert_eq!(more_events_refused("cycles:u,cycles:k,cache-misses"), None);
+        for named in [
+            "instructions:k",
+            "cycles:u,instructions:u",
+            "cpu/event=0x3c,name=instructions:u/",
+        ] {
+            let why = more_events_refused(named).expect("refused");
+            assert!(
+                why.starts_with("--perf: LIGNIN_BENCH_PERF_EVENTS names `") && why.contains(named),
+                "{why}"
+            );
+        }
+        // What the rule is for: such a line would be read as the count.
+        let taken = "<not counted>,,instructions:u,0,0.00,,\n9,,instructions:k,5,100.00,,\n";
+        assert_eq!(parse_perf_csv(taken), Some(9));
+    }
+
+    #[test]
+    fn a_count_beside_more_events_is_of_the_one_line_with_the_word() {
+        let plain = "# started\n\n123,,instructions:u,5,100.00,0.5,insn per cycle\n\
+                     9,,cycles:u,5,100.00,,\n";
+        assert_eq!(instructions_beside_more(plain), Some(123));
+        let none = "<not counted>,,instructions:u,0,0.00,,\n9,,cycles:u,5,100.00,,\n";
+        assert_eq!(instructions_beside_more(none), None);
+        // A second line with the word, of whatever event and in either
+        // order, with a count of the instructions and without one: an
+        // event with the word in its name, one under the very name, and
+        // the line of one counting unit beside the plain line.
+        let others = [
+            "probe:instructions_done",
+            "instructions:u",
+            "instructions:k",
+            "cpu_core/instructions:u/",
+            "cycles:u,5,100.00,1.0,per instructions",
+        ];
+        for other in others {
+            for instructions in ["<not supported>", "123"] {
+                let own = format!("{instructions},,instructions:u,5,100.00,,\n");
+                let second = format!("9,,{other},5,100.00,,\n");
+                for text in [format!("{own}{second}"), format!("{second}{own}")] {
+                    assert_eq!(instructions_beside_more(&text), None, "{text}");
+                }
+            }
+        } // The lines of two counting units, with no plain line.
+        let units = "<not counted>,,cpu_atom/instructions:u/,0,0.00,,\n\
+                     55,,cpu_core/instructions:u/,5,100.00,,\n";
+        assert_eq!(parse_perf_csv(units), Some(55));
+        assert_eq!(instructions_beside_more(units), None);
+        // One line with the word that is not named `instructions:u`.
+        for name in [
+            "instructions:uH",
+            "instructions:k",
+            "cpu_core/instructions:u/",
+            "cpu_core/instructions/u",
+            "probe:instructions_done",
+        ] {
+            let text = format!("9,,{name},5,100.00,,\n7,,cycles:u,5,100.00,,\n");
+            assert_eq!(parse_perf_csv(&text), Some(9), "{name}");
+            assert_eq!(instructions_beside_more(&text), None, "{name}");
+        }
+        assert_eq!(instructions_beside_more("instructions\n"), None);
+        assert_eq!(instructions_beside_more("9,,cycles:u,5,100.00,,\n"), None);
+        assert_eq!(instructions_beside_more(""), None);
+    }
+
+    #[test]
+    fn what_perf_printed_is_shown_under_the_counters_name() {
+        let dir = Path::new("/scratch/perf-load-apply");
+        assert_eq!(
+            counter_output(dir, "1,,instructions:u,2,100.00,,\n"),
+            "# counter perf-load-apply\n1,,instructions:u,2,100.00,,\n"
+        );
+        assert_eq!(
+            counter_output(dir, "1,,cycles:u"),
+            "# counter perf-load-apply\n1,,cycles:u\n"
+        );
+        assert_eq!(counter_output(Path::new("/"), ""), "# counter /\n\n");
     }
 
     #[test]
@@ -574,6 +1049,62 @@ mod tests {
         assert!(files_under(&dir.path().join("missing")).is_err());
         assert!(!cache_drop_works(&dir.path().join("missing").join("probe")));
         assert_eq!(process_io("no_such_field"), None);
+    }
+
+    #[test]
+    fn a_tree_is_copied_with_its_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        std::fs::create_dir_all(from.join("sub").join("empty")).unwrap();
+        std::fs::write(from.join("a"), b"one").unwrap();
+        std::fs::write(from.join("sub").join("b"), b"two").unwrap();
+        let to = dir.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"one");
+        assert_eq!(std::fs::read(to.join("sub").join("b")).unwrap(), b"two");
+        assert!(to.join("sub").join("empty").is_dir());
+        // A copy over what is there, and of what is not, is refused.
+        assert!(copy_tree(&from, &to).is_err());
+        assert!(copy_tree(&dir.path().join("missing"), &dir.path().join("other")).is_err());
+    }
+
+    #[test]
+    fn the_reads_of_a_cgroup_are_summed_over_its_devices() {
+        let text = "253:0 rbytes=4096 wbytes=8192 rios=1 wios=2 dbytes=0 dios=0\n\
+                    8:16 rbytes=1000 wbytes=0 rios=3 wios=0 dbytes=0 dios=0\n";
+        assert_eq!(device_reads(text), (4, 5_096));
+        assert_eq!(device_reads(""), (0, 0));
+        assert_eq!(device_reads("253:0 rios=many rbytes=7"), (0, 7));
+    }
+
+    #[test]
+    fn storage_reads_are_differences_of_the_counts_both_readings_have() {
+        let earlier = StorageReads {
+            process_bytes: Some(10),
+            process_calls: Some(4),
+            device_reads: None,
+            device_bytes: Some(100),
+        };
+        let later = StorageReads {
+            process_bytes: Some(30),
+            process_calls: Some(3),
+            device_reads: Some(9),
+            device_bytes: None,
+        };
+        assert_eq!(
+            later.since(&earlier),
+            StorageReads {
+                process_bytes: Some(20),
+                process_calls: Some(0),
+                device_reads: None,
+                device_bytes: None,
+            }
+        );
+        // A reading takes the process's counts from the file `process_io`
+        // reads, and both counts of the cgroup from one file.
+        let now = StorageReads::now();
+        assert_eq!(now.process_calls.is_some(), process_io("syscr").is_some());
+        assert_eq!(now.device_reads.is_some(), now.device_bytes.is_some());
     }
 
     #[test]

@@ -16,16 +16,22 @@ impl<E: Engine> GroveDb<E> {
     /// directory at `path`, which opens as a database of its own. A
     /// `path` that is there already is refused and left as it is.
     ///
-    /// The LigninDB engine builds the checkpoint in a directory beside
-    /// `path`, under `path`'s name with `.creating` added, and gives it
-    /// the name `path` when it is whole. A creation that failed or was
-    /// cut can leave that directory. It is no checkpoint: it is not
-    /// opened, and whoever lists a directory of checkpoints does not
-    /// count it. It keeps disk space until it goes: a later creation at
-    /// `path` that gets as far as building takes it over, and
+    /// The LigninDB engine builds the checkpoint beside `path`, in a
+    /// staging directory under `path`'s name with `.creating` added: in
+    /// it, a directory `checkpoint.creating`, which gets the name `path`
+    /// when the checkpoint is whole. A creation that failed or was cut
+    /// can leave the staging directory, with what was built in it. It is
+    /// no checkpoint: it is not opened, and whoever lists a directory of
+    /// checkpoints does not count it. What was built keeps disk space
+    /// until it goes: a later creation at `path` that gets as far as
+    /// building removes it and builds there, and
     /// [`Self::delete_checkpoint_with_engine`] says when a deletion
-    /// removes it. A `path` whose own name ends in `.creating`, in any
-    /// case of its ASCII letters, is refused.
+    /// removes it. The engine takes a directory under that name for what
+    /// a creation left only where it holds nothing but an empty file
+    /// `LOCK` and a directory `checkpoint.creating`: a database, or
+    /// anything else that lies there, refuses the creation and is as it
+    /// was. A `path` whose own name ends in `.creating`, in any case of
+    /// its ASCII letters, is refused.
     pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         self.db.create_checkpoint(path).map_err(|e| e.into())
     }
@@ -71,19 +77,28 @@ impl<E: Engine> GroveDb<E> {
     ///   - an empty directory, and a directory that holds an empty file
     ///     named `LOCK` and nothing else;
     ///   - **a directory whose name ends in `.creating`, in that
-    ///     spelling, whatever else it holds.** The engine takes a
-    ///     directory of such a name for what a creation of a checkpoint
-    ///     left, and looks for no database in it. It leaves one that a
-    ///     look of `lignindb::checkpoint` refuses: among them, one whose
-    ///     lock is held, and one whose `LOCK` entry is no file;
+    ///     spelling, where it is what a creation of a checkpoint left**:
+    ///     one that holds nothing but an empty file `LOCK` and a
+    ///     directory `checkpoint.creating`, with whatever that directory
+    ///     holds. The engine looks for no database in it. One that holds
+    ///     anything else is refused, with nothing removed, and so is one
+    ///     that another look of `lignindb::checkpoint` refuses: among
+    ///     them, one whose lock is held;
     ///   - for a `path` whose own name does not end so, the directory of
     ///     `path`'s name with `.creating` added, in the same way: once
     ///     it has removed `path`, and where nothing has the name `path`.
     ///     Where `path` is refused, that directory is not looked for.
-    ///     Where it removed `path`, an error of that second removal is
-    ///     returned though `path` is gone, and a directory whose lock is
-    ///     held stays, with no error. Where nothing has the name `path`,
-    ///     such a directory is the error of the call.
+    ///     **Such a directory that no creation left is passed over**,
+    ///     with no error and with nothing in it touched, whether it lay
+    ///     there before the call or came while `path` was removed. Where
+    ///     the call removed `path`, a directory whose lock is held stays
+    ///     too, with no error, and any other error of that second removal
+    ///     is returned though `path` is gone: one of the file system, and
+    ///     that of a look under the lock which did not find the directory
+    ///     that was locked. Where nothing has the name `path`, a
+    ///     directory whose lock is held is the error of the call, and
+    ///     with one that no creation left the call answers as where
+    ///     nothing is there.
     ///
     ///   So a caller gives this call no path that it does not want gone.
     pub fn delete_checkpoint_with_engine<P: AsRef<Path>>(path: P) -> Result<(), Error> {
@@ -122,7 +137,8 @@ impl GroveDb {
     /// On the LigninDB engine the checkpoint is not opened, and the call
     /// can remove more than a checkpoint:
     /// [`Self::delete_checkpoint_with_engine`] warns of what, an empty
-    /// directory and a directory whose name ends in `.creating` among it.
+    /// directory and what a creation left under a name that ends in
+    /// `.creating` among it.
     pub fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), Error> {
         Self::delete_checkpoint_with_engine(path)
     }

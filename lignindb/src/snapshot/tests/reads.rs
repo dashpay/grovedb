@@ -237,6 +237,88 @@ impl Drop for EndOnPanic<'_> {
     }
 }
 
+/// A page version that is superseded and in a segment leaves the pool
+/// early, once the version after it is written (`BufferPool::reclaim`),
+/// but not while a snapshot or an operation that began before can ask
+/// for it: both go on reading their version from the pool, with no page
+/// read from a segment again. When they have ended the versions go, and
+/// the pool evicted nothing for any of it.
+#[test]
+fn a_snapshot_and_an_operation_keep_their_page_versions_from_an_early_release() {
+    // Room for every version of every page: the clock takes nothing.
+    let store = Store::new(64);
+    let versions = store.versions();
+    store.commit(&versions, &Changes::create(8));
+    store.write_back();
+    let reads_of = store.reads(&versions);
+    let mut buffers = LoadBuffers::new();
+    let rewrite = |pages: &Pages| Changes {
+        write: pages.keys().map(|id| page(*id)).collect(),
+        ..Changes::default()
+    };
+
+    // A snapshot at version 1, and every page written again twice and
+    // written back: the versions the snapshot reads are spent, and so are
+    // those of version 2.
+    let held = reads_of.snapshot();
+    let held_pages = store.pages_at(held.version());
+    for _ in 0..2 {
+        store.commit(&versions, &rewrite(&held_pages));
+        store.write_back();
+    }
+    // An operation on the latest version, which reads half of its pages
+    // now and the rest after two more commits.
+    let mut lease = LatestLease::new();
+    let operation = reads_of.operation(&mut lease);
+    let seen = store.pages_at(operation.at());
+    let (early, late): (Pages, Pages) = (seen.iter())
+        .map(|(id, born)| (*id, *born))
+        .partition(|(id, _)| id % 2 == 0);
+    check_pages(&operation, &early, &mut buffers);
+    for _ in 0..2 {
+        store.commit(&versions, &rewrite(&held_pages));
+        store.write_back();
+    }
+    versions.reclaim();
+    versions.reclaim();
+
+    // Nothing was released under the snapshot, and both read what they
+    // read before, from the pool.
+    let before = store.pool.stats();
+    assert_eq!((before.releases, before.evictions), (0, 0));
+    check_pages(&operation, &late, &mut buffers);
+    check_pages(&operation, &early, &mut buffers);
+    check_pages(&held.operation(), &held_pages, &mut buffers);
+    assert_eq!(store.pool.stats().misses, before.misses);
+
+    // The snapshot ends. No version pin is below the latest version
+    // now, and the operation, which began before that was found, still
+    // keeps every spent version: it reads its own from the pool.
+    drop(held);
+    versions.reclaim();
+    versions.reclaim();
+    assert_eq!(store.pool.stats().releases, 0);
+    check_pages(&operation, &late, &mut buffers);
+    check_pages(&operation, &early, &mut buffers);
+    assert_eq!(store.pool.stats().misses, before.misses);
+
+    // The operation ends: the four spent versions of each page go, and
+    // the latest version is read from the pool as before.
+    drop(operation);
+    versions.reclaim();
+    versions.reclaim();
+    let after = store.pool.stats();
+    assert_eq!((after.releases, after.evictions), (32, 0));
+    let latest = reads_of.snapshot();
+    check_pages(
+        &latest.operation(),
+        &store.pages_at(latest.version()),
+        &mut buffers,
+    );
+    assert_eq!(store.pool.stats().misses, before.misses);
+    assert_eq!(store.pool.census().published, 8);
+}
+
 #[test]
 fn a_snapshot_never_sees_a_later_commit_and_is_read_only() {
     let store = Store::new(8);

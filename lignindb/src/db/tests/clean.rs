@@ -104,6 +104,15 @@ fn the_cleaner_of_a_session_gives_back_what_drops_left_dead() {
     assert_eq!(stats.background, Background::default());
     assert_eq!(stats.cleaner.errors, 0);
     assert!(stats.to_string().contains("cleaner: "));
+    let took = |counts: &[u64; 5]| counts.iter().sum::<u64>();
+    assert!(
+        took(&stats.cleaner.segments_by_dead) > 0,
+        "{:?}",
+        stats.cleaner
+    );
+    assert!(stats
+        .to_string()
+        .contains("cleaner, by the dead share of what it took"));
 
     let whole = |db: &Db| {
         let snapshot = db.snapshot();
@@ -529,4 +538,69 @@ fn a_close_that_cannot_make_the_cleaners_segment_durable_fails_for_room() {
         assert_eq!(db.reopen(), None);
         whole_of(&db, stays, goes);
     }
+}
+
+/// What [`Db::space`] says of a store: after a first session every value
+/// of the value log is live, and after a commit of a second session that
+/// writes every value anew the first session's values are dead. The
+/// segments hold blocks, of which no more are live than there are. The
+/// second session is at rest, so no thread but this one makes a turn of
+/// write-back or a pass of the cleaner: the dead values are read where the
+/// commit left them. Then a pass of the cleaner, which moves nothing at
+/// these settings, gives the first session's file back whole, and only
+/// the new values are left, all of them live.
+#[test]
+fn the_space_of_a_store_says_what_its_writes_left_dead() {
+    const VALUES: u64 = 12;
+    let dir = temp();
+    let still = Options {
+        cleaner: Some(CleanerConfig {
+            target_dead_percent: 100,
+            value_dead_percent: 100,
+            value_ceiling_dead_percent: 100,
+            ..policy()
+        }),
+        ..options()
+    };
+    let db = Db::open(dir.path(), &still).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', VALUES as u32, 1500));
+    db.close().expect("the first session ends");
+    let db = open_at_rest(dir.path(), &still).expect("the database is opened again");
+    let (segments, values) = db.space().expect("the space");
+    assert!(segments.block_bytes() > 0, "{segments:?}");
+    assert!(segments.live_bytes() > 0, "{segments:?}");
+    assert!(segments
+        .segments
+        .iter()
+        .all(|one| one.live_bytes <= one.block_bytes));
+    assert!(
+        values.files > 0 && values.live_bytes >= VALUES * 1500,
+        "{values:?}"
+    );
+    assert_eq!(values.dead_bytes(), 0, "{values:?}");
+    Writes {
+        merks: vec![(subtree(1), Merk::sized(b'k', VALUES as u32, 1600))],
+        ..Writes::default()
+    }
+    .commit(&db);
+    written_back(&db);
+    let (_, values) = db.space().expect("the space");
+    assert!(values.live_bytes >= VALUES * 1600, "{values:?}");
+    assert!(values.dead_bytes() >= VALUES * 1500, "{values:?}");
+    let files = values.files;
+    for turn in 0.. {
+        db.clean().expect("a turn of the cleaner");
+        if db.stats().cleaner.value_files_dropped > 0 {
+            break;
+        }
+        assert!(turn < 20, "{}", db.stats());
+    }
+    let (_, values) = db.space().expect("the space");
+    assert_eq!(values.files, files - 1, "{values:?}");
+    assert!(values.live_bytes >= VALUES * 1600, "{values:?}");
+    assert_eq!(values.dead_bytes(), 0, "{values:?}");
+    assert_eq!(db.stats().cleaner.values_moved, 0);
+    drop(db);
+    let db = Db::open(dir.path(), &still).expect("the database is opened a third time");
+    db.close().expect("the third session ends");
 }

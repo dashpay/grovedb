@@ -11,6 +11,7 @@ use std::{
 
 use lignin_format::CommitVersion;
 use lignin_store::flush::{FlushError, Published};
+use lignin_tree::value::CarriedValues;
 
 use super::error::Stopped;
 use crate::snapshot::Versions;
@@ -41,6 +42,12 @@ pub struct CommitStats {
     pub not_durable: u64,
     /// The bytes of the groups that were appended.
     pub group_bytes: u64,
+    /// Values that the groups of published commits repeat because their
+    /// cells or entries were carried to another page: the value log's move
+    /// rule (`value-log-format.md` O5, `log-format.md` LG23).
+    pub values_carried: u64,
+    /// The bytes of the values of [`Self::values_carried`].
+    pub value_bytes_carried: u64,
     /// Groups that were written again because the log no longer ended
     /// where they were written for (`log-format.md` LG22).
     pub rewritten: u64,
@@ -90,6 +97,8 @@ struct Counters {
     failed: AtomicU64,
     not_durable: AtomicU64,
     group_bytes: AtomicU64,
+    values_carried: AtomicU64,
+    value_bytes_carried: AtomicU64,
     rewritten: AtomicU64,
     rollbacks: AtomicU64,
     stalls: AtomicU64,
@@ -235,6 +244,8 @@ impl CommitState {
             failed: read(&counters.failed),
             not_durable: read(&counters.not_durable),
             group_bytes: read(&counters.group_bytes),
+            values_carried: read(&counters.values_carried),
+            value_bytes_carried: read(&counters.value_bytes_carried),
             rewritten: read(&counters.rewritten),
             rollbacks: read(&counters.rollbacks),
             stalls: read(&counters.stalls),
@@ -291,8 +302,14 @@ impl CommitState {
     pub(super) fn count(&self, what: Counted) {
         let counters = &self.counters;
         let counter = match what {
-            Counted::Published { group_len } => {
+            Counted::Published { group_len, carried } => {
                 counters.group_bytes.fetch_add(group_len, Ordering::Relaxed);
+                counters
+                    .values_carried
+                    .fetch_add(carried.values, Ordering::Relaxed);
+                counters
+                    .value_bytes_carried
+                    .fetch_add(carried.bytes, Ordering::Relaxed);
                 &counters.published
             }
             Counted::Empty => &counters.empty,
@@ -344,7 +361,10 @@ pub(super) enum Spent {
 /// One thing a commit counts.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Counted {
-    Published { group_len: u64 },
+    Published {
+        group_len: u64,
+        carried: CarriedValues,
+    },
     Empty,
     Conflict,
     Failed,

@@ -26,11 +26,12 @@
 //! | [`other_records`](StoreStats::other_records), [`other_record_bytes`](StoreStats::other_record_bytes) | the changes of flat pages the groups carry: the flat keyspace | [`WriteBack::committed`] |
 //! | [`flush_bytes`](StoreStats::flush_bytes) | bytes write-back wrote: blocks as stored in segments, values as stored in the value log, the copies of regrouped values among them, table-checkpoint files | [`FlushState::stats`] |
 //! | [`cleaner_bytes`](StoreStats::cleaner_bytes) | bytes the cleaners wrote when they moved live blocks and values | [`Stats::count_cleaner_bytes`] |
-//! | [`page_reads`](StoreStats::page_reads) | page versions the pool did not hold and that were read from storage | [`BufferPool::stats`] (misses) |
+//! | [`page_reads`](StoreStats::page_reads) | page versions that were read from storage: each a base image and its runs, read in full for a load | [`BufferPool::stats`] (loads) |
 //! | [`cache_hits`](StoreStats::cache_hits) | page versions the pool held | [`BufferPool::stats`] (hits) |
 //! | [`hashes`](StoreStats::hashes) | hashes the tree computed | [`Stats::count_hashes`] |
 //! | [`keyed_lookups`](StoreStats::keyed_lookups) | searches by key that went on below a tree's root | [`Stats::count_keyed_lookups`] |
 //! | [`value_reads`](StoreStats::value_reads), [`value_read_bytes`](StoreStats::value_read_bytes) | values read from the value log by their pointers, and their bytes: by readers, write transactions and the invariant checker; not the cleaner's copies | [`ValueStore::reads`] |
+//! | [`block_reads`](StoreStats::block_reads), [`block_read_bytes`](StoreStats::block_read_bytes) | blocks read from segments by their locations, and their bytes as stored: the base image and the delta runs of every page that is loaded, and what write-back reads of a page it builds again; each is one read of the file layer | [`SegmentStore::reads`] |
 //!
 //! Every count is a running total since the store was opened, and only
 //! goes up. A benchmark takes two readings and subtracts.
@@ -73,6 +74,7 @@
 //! [`WriteBack::committed`]: crate::flush::WriteBack::committed
 //! [`WriteBack::run`]: crate::flush::WriteBack::run
 //! [`ValueStore::reads`]: crate::values::ValueStore::reads
+//! [`SegmentStore::reads`]: crate::segment::SegmentStore::reads
 
 mod read;
 mod striped;

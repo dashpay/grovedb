@@ -97,6 +97,8 @@
 //! | `flush_idle_ms` | [`FlushConfig::idle`] |
 //! | `cleaner_target` | [`CleanerConfig::target_dead_percent`] |
 //! | `cleaner_value_target` | [`CleanerConfig::value_dead_percent`] |
+//! | `cleaner_value_floor` | [`CleanerConfig::value_min_file_dead_percent`] |
+//! | `cleaner_value_ceiling` | [`CleanerConfig::value_ceiling_dead_percent`] |
 //! | `cleaner_checkpoint_dead` | [`CleanerConfig::checkpoint_dead_percent`] |
 //! | `cleaner_seal_dead` | [`CleanerConfig::seal_dead_percent`] |
 //! | `cleaner_max_segment` | [`CleanerConfig::max_segment_percent`] |
@@ -136,7 +138,7 @@ use lignin_store::{cleaner::CleanerConfig, flush::FlushConfig};
 use lignindb::{db::DbStats, Options};
 
 use super::{
-    engine::{Block, Counters, Detail, Engine, EngineSettings},
+    engine::{Block, Counters, Detail, Engine, EngineSettings, Space},
     BenchError,
 };
 use crate::workload::{apply, Op, Outcome, TransactionOp};
@@ -327,6 +329,8 @@ impl Tuning {
                 }
                 "cleaner_target"
                 | "cleaner_value_target"
+                | "cleaner_value_floor"
+                | "cleaner_value_ceiling"
                 | "cleaner_checkpoint_dead"
                 | "cleaner_seal_dead"
                 | "cleaner_max_segment"
@@ -338,6 +342,12 @@ impl Tuning {
                     match key {
                         "cleaner_target" => cleaner.target_dead_percent = percent(key, value)?,
                         "cleaner_value_target" => cleaner.value_dead_percent = percent(key, value)?,
+                        "cleaner_value_floor" => {
+                            cleaner.value_min_file_dead_percent = percent(key, value)?
+                        }
+                        "cleaner_value_ceiling" => {
+                            cleaner.value_ceiling_dead_percent = percent(key, value)?
+                        }
                         "cleaner_checkpoint_dead" => {
                             cleaner.checkpoint_dead_percent = percent(key, value)?
                         }
@@ -454,7 +464,7 @@ fn cleaner_copied(stats: &DbStats) -> u64 {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 42] = [
+pub const DETAIL_IDS: [&str; 53] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -464,6 +474,8 @@ pub const DETAIL_IDS: [&str; 42] = [
     "log_removes",
     "log_values",
     "log_value_bytes",
+    "log_values_carried",
+    "log_value_bytes_carried",
     "segment_bytes",
     "base_blocks",
     "base_payload_bytes",
@@ -473,6 +485,8 @@ pub const DETAIL_IDS: [&str; 42] = [
     "flat_blocks",
     "flat_block_bytes",
     "runs_refused",
+    "chains_read",
+    "chain_blocks_read",
     "versions_held_for_readers",
     "value_log_bytes",
     "values_appended",
@@ -497,6 +511,13 @@ pub const DETAIL_IDS: [&str; 42] = [
     "cleaner_checkpoints",
     "pages_freed",
     "value_reads",
+    "block_reads",
+    "block_read_bytes",
+    "pool_evictions",
+    "pool_overflows",
+    "pool_releases",
+    "pool_loads_overtaken",
+    "pool_misses",
 ];
 
 /// Where the bytes of [`Counters`] went, and what the background work did
@@ -509,6 +530,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
     const CLEANER: &str = "lignindb engine counters: the cleaner";
     const RECLAIMER: &str = "lignindb engine counters: the reclaimer";
     const VALUES: &str = "lignindb engine counters: values read from the value log";
+    const BLOCKS: &str = "lignindb engine counters: blocks read from segments by their locations";
+    const POOL: &str = "lignindb engine counters: the buffer pool's frames";
     let totals = [
         ("B", log.group_bytes, LOG),
         ("B", log.change_bytes, LOG),
@@ -519,6 +542,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("records", flush.remove_records, GROUPS),
         ("values", flush.values_logged, GROUPS),
         ("B", flush.value_logged_bytes, GROUPS),
+        ("values", stats.commits.values_carried, GROUPS),
+        ("B", stats.commits.value_bytes_carried, GROUPS),
         ("B", flush.appended_bytes, FLUSH),
         ("blocks", flush.base_blocks, FLUSH),
         ("B", flush.base_bytes, FLUSH),
@@ -528,6 +553,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("blocks", flush.flat_blocks, FLUSH),
         ("B", flush.flat_stored_bytes, FLUSH),
         ("blocks", flush.runs_refused, FLUSH),
+        ("pages", flush.chains_read, FLUSH),
+        ("blocks", flush.chain_blocks_read, FLUSH),
         ("versions", flush.held_for_readers, FLUSH),
         ("B", flush.value_stored_bytes, FLUSH),
         ("values", flush.values_appended, FLUSH),
@@ -552,6 +579,13 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("checkpoints", cleaner.checkpoints, CLEANER),
         ("pages", stats.reclaimed.pages_freed, RECLAIMER),
         ("values", stats.store.value_reads, VALUES),
+        ("blocks", stats.store.block_reads, BLOCKS),
+        ("B", stats.store.block_read_bytes, BLOCKS),
+        ("frames", stats.store.pool.evictions, POOL),
+        ("frames", stats.store.pool.overflows, POOL),
+        ("frames", stats.store.pool.releases, POOL),
+        ("loads", stats.store.pool.overtaken, POOL),
+        ("asks", stats.store.pool.misses, POOL),
     ];
     DETAIL_IDS
         .into_iter()
@@ -573,6 +607,20 @@ impl LigninDbEngine {
 
     fn stats(&self) -> DbStats {
         self.db.engine().database().stats()
+    }
+
+    /// Opens the database in `dir` as `tuning` says.
+    pub(super) fn open_tuned(dir: &Path, tuning: Tuning) -> Result<Self, BenchError> {
+        let engine =
+            LigninEngine::open_with(dir, &tuning.options).map_err(grovedb::Error::StorageError)?;
+        Ok(LigninDbEngine {
+            db: GroveDb::from_engine(engine),
+            dir: dir.to_path_buf(),
+            pace: tuning.pace,
+            quiet: tuning.quiet(),
+            read: None,
+            stood: Stood::default(),
+        })
     }
 
     /// Waits until a turn of write-back that began after this call has
@@ -613,17 +661,7 @@ impl Engine for LigninDbEngine {
     }
 
     fn open_with(dir: &Path, settings: &EngineSettings) -> Result<Self, BenchError> {
-        let tuning = Tuning::new(settings)?;
-        let engine =
-            LigninEngine::open_with(dir, &tuning.options).map_err(grovedb::Error::StorageError)?;
-        Ok(LigninDbEngine {
-            db: GroveDb::from_engine(engine),
-            dir: dir.to_path_buf(),
-            pace: tuning.pace,
-            quiet: tuning.quiet(),
-            read: None,
-            stood: Stood::default(),
-        })
+        Self::open_tuned(dir, Tuning::new(settings)?)
     }
 
     fn dir(&self) -> &Path {
@@ -723,6 +761,18 @@ impl Engine for LigninDbEngine {
 
     fn gauges(&mut self) -> Result<Vec<Detail>, BenchError> {
         Ok(std::mem::take(&mut self.stood).gauges())
+    }
+
+    fn space(&mut self) -> Result<Option<Space>, BenchError> {
+        let (segments, values) = self.db.engine().database().space().map_err(|error| {
+            BenchError::Check(format!("reading the space of the store: {error}"))
+        })?;
+        Ok(Some(Space {
+            segment_bytes: segments.block_bytes(),
+            segment_live_bytes: segments.live_bytes(),
+            value_bytes: values.bytes,
+            value_live_bytes: values.live_bytes,
+        }))
     }
 
     fn details(&mut self) -> Result<Vec<Detail>, BenchError> {
@@ -930,6 +980,8 @@ mod settings_tests {
             "flush_idle_ms=23",
             "cleaner_target=29",
             "cleaner_value_target=0",
+            "cleaner_value_floor=31",
+            "cleaner_value_ceiling=43",
             "cleaner_checkpoint_dead=37",
             "cleaner_seal_dead=41",
             "cleaner_max_segment=100",
@@ -964,6 +1016,8 @@ mod settings_tests {
             Some(CleanerConfig {
                 target_dead_percent: 29,
                 value_dead_percent: 0,
+                value_min_file_dead_percent: 31,
+                value_ceiling_dead_percent: 43,
                 checkpoint_dead_percent: 37,
                 seal_dead_percent: 41,
                 max_segment_percent: 100,

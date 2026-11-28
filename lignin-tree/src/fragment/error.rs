@@ -86,7 +86,8 @@ pub enum WriteError {
         address: CellAddress,
     },
     /// Two links or pointers of the write name one node, or a node names
-    /// itself.
+    /// itself, or a cell that the write reaches in the pages names a cell
+    /// above it.
     TwoPointers {
         /// The address of the node that is named twice; `None` for a node
         /// the write creates.

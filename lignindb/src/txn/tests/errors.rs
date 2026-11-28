@@ -921,6 +921,7 @@ fn every_error_says_what_it_is() {
         BatchError::HostAbsent { subtree },
         BatchError::ClearedAlone { subtree },
         BatchError::IfEntered { subtree },
+        BatchError::EvaluatedByKey { subtree },
     ];
     let faults = [
         WholeFault::HasRoot,
@@ -970,6 +971,7 @@ fn every_error_says_what_it_is() {
             unit: Unit::data(subtree),
         },
         TxnError::TreeValue(lignin_tree::value::ValueError::TooLong { len: 1 << 40 }),
+        TxnError::Hash(lignin_tree::hash::HashError::Rule("a rule refuses".into())),
     ];
     let sourceless = [1usize, 11, 12, 13];
     for (at, error) in errors.iter().enumerate() {

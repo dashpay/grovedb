@@ -7,9 +7,12 @@
 //! - [`Created`] says what a creation made, and [`CheckpointOptions`] how
 //!   much log it leaves for the checkpoint's first open to replay.
 //! - [`delete`] removes a checkpoint's directory, and
-//!   [`DELETING_FILE_NAME`] marks one that it is removing.
-//! - [`CREATING_SUFFIX`] is what the name of a directory ends in that a
-//!   checkpoint is built in.
+//!   [`DELETING_FILE_NAME`] marks one that it is removing. [`finish`]
+//!   ends what a deletion or a creation left when it was cut short, and
+//!   begins no deletion ([`Finished`]).
+//! - [`CREATING_SUFFIX`] is what the name of a creation's staging
+//!   directory ends in, and [`BUILDING_DIR_NAME`] the name, inside it, of
+//!   the directory the checkpoint is built in.
 //! - [`CheckpointError`] is every way a creation or a deletion fails.
 //!
 //! `docs/lignindb/transactions.md` section 11 is the specification (CK1 to
@@ -67,15 +70,15 @@
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, or whose name is one that checkpoints are built under, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). Then write-back is asked for the settled manifest: one that a replacement left in doubt, the catch-up's own among them, is opened again (`lignin_store::flush::WriteBack::settle_manifest`). If write-back answers an error to that, the creation fails with no directory made ([`CheckpointError::Settle`]). | nothing of the checkpoint's |
-//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name, and is found to be one that a creation can lock, is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. Where its lock is found held, the creation goes no further and fails, as it does where the looks before and under the lock refuse what is there ("Durability, and a creation that fails"). | the lock of that directory, to the end |
+//! | 3 | The staging directory of the creation is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken. In it the directory the checkpoint is built in is made ([`BUILDING_DIR_NAME`]), and the lock of that one is taken, as for any database directory that is written. A directory that is there under the staging name is listed first: where it lists anything but what a creation puts there, the creation goes no further and fails, with nothing in it removed, locked or made ([`CheckpointError::NotStaging`]). Otherwise it is taken for what an earlier creation left: its lock is taken, it is read again under the lock, the directory above and the directory itself are synced, and what was built in it goes. Where its lock is found held, the creation goes no further and fails, as it does where another look refuses what is there ("Durability, and a creation that fails"). | the lock of the staging directory and the lock of the directory in it, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the directory, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end, unless it is. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
 //! | 7 | The log's files up to the one the sample ended in are linked. | the same |
 //! | 8 | What could not be linked is copied. | nothing: each such file is open |
 //! | 9 | The manifest is written into the directory. | nothing |
-//! | 10 | **One set of syncs** makes durable everything in the directory and the directory's own name: each copy and the manifest, every name in the directory and in the directories in it, and the name it is built under in the directory above. | nothing |
-//! | 11 | The directory is renamed to the target, and the directory above is synced. | nothing |
+//! | 10 | **One set of syncs** makes durable everything in the directory and the directory's own name: each copy and the manifest, every name in the directory and in the directories in it, the name it is built under in the staging directory, and the staging directory's in the directory above. | nothing |
+//! | 11 | The directory is renamed to the target, out of the staging directory, and the directory above and the staging directory are synced, as a set. The staging directory, which holds its lock file and nothing else by then, is removed: that removal is not synced, and fails nothing. | nothing |
 //!
 //! **A creation holds the commit lock for the reads of step 4 and for
 //! nothing else** (CK5, CM8). The commit lock is given back as soon as
@@ -136,7 +139,8 @@
 //!
 //! **The directory gets the name of the target last, and whole.** Until
 //! step 11 the creation puts nothing under that name, and the directory
-//! has a name that says it is no database to open. When it is renamed,
+//! has a name that says it is no database to open, in a directory whose
+//! name says the same. When it is renamed,
 //! everything in it is durable, and so is the name it had: a rename is
 //! kept whole or not at all, so a creation that is cut short, by an error
 //! or by the power, leaves the whole checkpoint at the target or nothing
@@ -199,33 +203,40 @@
 //!
 //! # The syncs of a creation
 //!
-//! A creation that finds nothing under the name it builds under, and
-//! does not fail, asks the file layer for three things, and for no other
-//! sync:
+//! A creation that finds nothing under its staging name, and does not
+//! fail, asks the file layer for three things, and for no other sync:
 //!
 //! 1. the log's sync of step 6, which the log makes, where the log is not
 //!    durable through *vc*;
 //! 2. the set of step 10 (`lignin_io::Vfs::sync_together`): the files
 //!    this creation wrote, which are the manifest and the copies, each
 //!    through the handle that wrote it; the directories of the
-//!    checkpoint; the directory it is built in; and the directory above;
-//! 3. the directory above once more, after the rename of step 11.
+//!    checkpoint; the directory it is built in; the staging directory;
+//!    and the directory above;
+//! 3. a second set after the rename of step 11: the directory above and
+//!    the staging directory, which are the two directories of that
+//!    rename. A rename from one directory into another is durable once
+//!    both are synced (`lignin_io::Vfs::rename`).
 //!
 //! Write-back's catch-up of step 2 makes its own, and so does the opening
 //! of a manifest that was in doubt. A creation that takes over what an
-//! earlier one left syncs the directory above before it empties what it
-//! found, and one that fails after the rename syncs it once more, to take
-//! the name back ("Durability, and a creation that fails"). What a set
-//! costs less than its syncs one by one is the file layer's to say.
+//! earlier one left syncs the directory above and the staging directory
+//! before it removes what was built there, and one that fails after the
+//! rename syncs both once more, to take the name back ("Durability, and a
+//! creation that fails"). The removal of the staging directory, which
+//! ends a creation, is synced by nobody: a power cut can leave that
+//! directory beside the checkpoint, empty or with its lock file, and a
+//! deletion of the checkpoint removes it. What a set costs less than its
+//! syncs one by one is the file layer's to say.
 //!
-//! **The set has no order and is not whole before it returns, and step 10
-//! needs neither**: whatever a power cut keeps of it is in a directory
-//! that no power cut leaves at the target. The creation made that
-//! directory under the other name, or made that name durable when it took
-//! the directory over. What does need an order has a call of its own. The
-//! rename comes after the set has returned, because the directory must be
-//! whole when it gets its name, and the sync of the directory above comes
-//! after the rename.
+//! **The first set has no order and is not whole before it returns, and
+//! step 10 needs neither**: whatever a power cut keeps of it is in a
+//! directory that no power cut leaves at the target, since the creation
+//! made that directory in its staging directory and has not renamed it.
+//! What does need an order has a call of its own. The rename comes after
+//! the set has returned, because the directory must be whole when it
+//! gets its name, and the syncs of the two directories of the rename
+//! come after it.
 //!
 //! **The log's sync is not in the set.** A set that fails leaves every
 //! file in it as after a failed sync, and a log whose sync failed makes
@@ -293,8 +304,9 @@
 //! above it, whose own name is the caller's to have made durable.
 //!
 //! **A creation gives the name of the target to nothing but the whole
-//! checkpoint.** The checkpoint is built in a directory of another name,
-//! the target's with [`CREATING_SUFFIX`] added, and that directory is
+//! checkpoint.** The checkpoint is built in a directory of another name
+//! ([`BUILDING_DIR_NAME`]), inside the creation's staging directory, which
+//! has the target's name with [`CREATING_SUFFIX`] added. That directory is
 //! renamed to the target only when everything in it is durable, with the
 //! name it has. So a power cut during a creation leaves at the target
 //! what would be there without the creation, which is nothing unless
@@ -308,28 +320,69 @@
 //! `tests/opener.rs` open the states that such cuts leave with the
 //! engine's open.
 //!
-//! **What a cut leaves that is not at the target is under the other
-//! name**: a part of a checkpoint, or a whole one that did not get its
-//! name. A directory of that name is not to be opened as a database. The
-//! engine's open refuses a path whose last name ends so, in any case of
-//! its ASCII letters, before it looks at what is there
+//! **What a cut leaves that is not at the target is in the staging
+//! directory**: a part of a checkpoint, or a whole one that did not get
+//! its name, in the directory it was built in. Neither directory is to be
+//! opened as a database. The engine's open refuses a path whose last name
+//! ends in [`CREATING_SUFFIX`], as both do, in any case of its ASCII
+//! letters, before it looks at what is there
 //! (`crate::db::OpenError::Creating`): it would take an empty one, or one
 //! with a lock file alone, for a place to make a database in. A path
 //! that leads to such a directory under another last name is its
-//! callers' to keep from the open. It holds links
+//! callers' to keep from the open. What was built holds links
 //! to the live database's files, and so the space of those that the live
 //! database deletes, until it is removed. A creation at the same target
-//! that gets as far as building empties it and builds in it, and
-//! [`delete`] removes it ("Deleting a checkpoint, and removing one that
-//! is open"). A directory of that name is taken for a creation's with
-//! everything in it, so whatever it holds goes then. A target that is
+//! that gets as far as building removes it and builds in the staging
+//! directory, and [`delete`] removes that directory ("Deleting a
+//! checkpoint, and removing one that is open"). A target that is
 //! given a name that ends so, whatever the case of its ASCII letters, is
 //! refused, and the name under which the file system lists a checkpoint
 //! is the caller's to keep outside these names ([`CREATING_SUFFIX`]).
-//! Only a directory that the directory above lists under that name, byte
-//! for byte, with a lock file of its own or none, is taken for one, and
-//! a call that finds the lock of one held goes no further: what is looked
-//! at for that comes below.
+//!
+//! **A directory under the staging name is a creation's only where it
+//! lists what a creation puts there and nothing else.** A creation puts
+//! two entries into its staging directory and never a third: the lock
+//! file, which is made empty and which nobody writes, and the directory
+//! it builds in. Everything else it makes, it makes in that directory.
+//! So the rule reads a listing: a file of no length under the name of the
+//! lock file, a directory under [`BUILDING_DIR_NAME`], each under that
+//! name byte for byte, each or neither, and no other entry of any name
+//! or kind. The directory above has to list the staging name itself,
+//! byte for byte, as a directory.
+//!
+//! - **What the rule does not admit is neither built in nor emptied**
+//!   ([`CheckpointError::NotStaging`]): once a call has read a listing
+//!   that the rule refuses, it goes no further with the directory. A
+//!   creation at the target does not build, a [`delete`] that is given
+//!   the directory does not remove it, and a [`delete`] of the target
+//!   passes it over. Where the call's first look reads such a listing,
+//!   it has removed nothing of the directory, taken no lock in it and
+//!   made no lock file in it; what a call can have done by then to a
+//!   directory that was changed while it ran is under "What the looks do
+//!   not tell". A database of any engine that lies there closed, this
+//!   engine's among them, and whatever else somebody put or restored
+//!   under that name, is read so. The rule names what a creation of this
+//!   engine makes, and knows nothing of what else a directory can be.
+//! - **What the rule admits is taken for what a creation left**, and
+//!   what was built in it goes, with whatever it holds. It is read
+//!   before its lock is taken, **decided under the lock**, and read once
+//!   more right before the first removal: what is looked at for that
+//!   comes below. A call that finds the lock held goes no further.
+//! - **The directory a checkpoint is built in marks the staging
+//!   directory, and needs no sync of its own to do so.** Whatever a power
+//!   cut keeps of what a creation built is inside that directory, and a
+//!   directory whose name is lost is lost with everything in it. So a
+//!   cut at any moment of a creation leaves its staging directory as the
+//!   rule admits it: not there, empty, with its lock file, or with the
+//!   directory that was built in, whatever that holds, beside the lock
+//!   file or without it.
+//! - **What a creation of an earlier build left**, which built directly
+//!   in the directory of the staging name, is read by the same rule. An
+//!   empty one, and one with its lock file alone, is taken over. One
+//!   that holds a part of a checkpoint, or a whole one, is not told from
+//!   a database that lies there, and is refused: whoever knows it for
+//!   what an interrupted creation left removes the directory, and makes
+//!   the call again.
 //!
 //! **The name of the target is the caller's to keep free.** A target that
 //! is there is refused before anything is done, and again right before
@@ -338,12 +391,13 @@
 //! directory that somebody makes at the target between that last look and
 //! the rename is replaced by the checkpoint.
 //!
-//! **And the directory a checkpoint is built in is the creation's to
-//! build in alone, by its name and its lock and by nothing else.** The
+//! **And the staging directory, with the directory a checkpoint is built
+//! in, is the creation's to build in alone, by its names and its locks
+//! and by nothing else.** The
 //! file layer names everything by its path, so nothing keeps somebody who
-//! takes no lock from changing that directory while a checkpoint is built
-//! in it: from removing or replacing a file, or from putting a link where
-//! the directory, or a directory in it, was. What a creation and a
+//! takes no lock from changing those directories while a checkpoint is
+//! built: from removing or replacing a file, or from putting a link where
+//! a directory was. What a creation and a
 //! deletion do about it is look, and **a look says what was there when it
 //! was made, and no more**. Each later call to the file layer resolves
 //! its path when it runs ("What the looks do not tell", below). So
@@ -351,17 +405,20 @@
 //! does only to a directory of its own, it says of what these looks
 //! found:
 //!
-//! - Whoever is to build in a directory that is there, or to remove one
-//!   that a creation left, looks before it takes the lock. The directory
-//!   above has to list the name, byte for byte, as a directory. What it
-//!   lists as anything else is not locked, and neither is what it does
-//!   not list under that name though the file system finds it there, as
-//!   one does that takes several spellings for one name: a creation
+//! - Whoever is to build in a staging directory that is there, or to
+//!   remove one that a creation left, looks before it takes the lock. The
+//!   directory above has to list the name, byte for byte, as a directory.
+//!   What it lists as anything else is not locked, and neither is what it
+//!   does not list under that name though the file system finds it there,
+//!   as one does that takes several spellings for one name: a creation
 //!   refuses it ([`CheckpointError::NotADirectory`]), and a deletion
-//!   finds no directory that a creation left.
+//!   finds no directory that a creation left. And the directory itself
+//!   is listed, and has to list what a creation puts there and nothing
+//!   else ([`CheckpointError::NotStaging`]).
 //! - The lock of such a directory is taken in a lock file of its own.
 //!   Where the directory lists one, under that name byte for byte, it
-//!   has to be a file, and none is made. Where it lists none, the call
+//!   is an empty file by the look before, and none is made. Where it
+//!   lists none, the call
 //!   looks whether the name leads to something all the same, by a rename
 //!   of the path of the lock file to that same path, which follows no
 //!   link at that name. A lock file is made, by the call that takes the
@@ -370,18 +427,38 @@
 //!   file after either, it is not locked
 //!   ([`CheckpointError::NotALock`]).
 //! - It looks again under the lock, and so does a creation in the
-//!   directory it has just made: the lock file at the path has to be the
-//!   one that was locked, the directory has to list it as a file, and
-//!   the directory above has to list the path as a directory. A
+//!   staging directory it has just made: the lock file at the path has to
+//!   be the one that was locked, the directory has to list it as a file,
+//!   and the directory above has to list the path as a directory
+//!   ([`CheckpointError::Replaced`]). A
 //!   directory that the creation made itself is found also where the
 //!   directory above lists nothing under the name as it was given: then
 //!   every entry of it in which that lock file is found has to be a
-//!   directory. Only then is anything emptied or built
+//!   directory. **And what the directory lists then is read by the rule
+//!   once more** ([`CheckpointError::NotStaging`]): where a directory
+//!   that came under the name, or a file that came into the directory,
+//!   between the first look and the lock gives a listing that the rule
+//!   refuses, the call goes no further. Only then is anything built, or
+//!   decided to be removed.
+//! - What an earlier creation built there is removed only after two
+//!   syncs, which take as long as the device takes (below). So the
+//!   staging directory is looked for, and read by the rule, a third time
+//!   right before the first removal, and what is removed is the
+//!   directory under [`BUILDING_DIR_NAME`] and nothing else.
+//! - Whoever removes the staging directory itself, a deletion and a
+//!   creation that ends, looks for it once more right before that: it
+//!   has to be the directory whose lock is held and to list that lock
+//!   file, empty, and nothing else ([`CheckpointError::Replaced`]). Then
+//!   the lock file goes, and the directory by a removal that fails if
+//!   something has come into it.
+//! - The directory the creation makes in its staging directory is looked
+//!   for under its own lock in the same way, in the staging directory.
+//! - Right before the rename, the creation looks for both directories
+//!   once more, and for what they hold: the staging directory its lock
+//!   file and the directory that was built in, and that one what the
+//!   creation put into it and nothing else, each a file or a directory
+//!   of its own. Otherwise nothing is renamed
 //!   ([`CheckpointError::Replaced`]).
-//! - Right before the rename, the creation looks for that directory once
-//!   more, and for what it holds: what the creation put into it and
-//!   nothing else, each a file or a directory of its own. Otherwise
-//!   nothing is renamed ([`CheckpointError::Replaced`]).
 //! - A creation that fails looks in the same way for its directory
 //!   before it removes what it made, and removes a file or a directory
 //!   only where it is listed as one.
@@ -404,11 +481,45 @@
 //! - **Where a lock file is made.** `lignin_io::Vfs::lock` makes the
 //!   lock file where there is none, where its path leads at that moment:
 //!   through a link at the name of the lock file too. A creation calls
-//!   it in the directory it has just made. A creation and a deletion
-//!   call it in a directory that a creation left and that lists no lock
-//!   file, after the look that found nothing under the name: a link that
-//!   is put there between the look and the call is followed. And a
-//!   deletion calls it for a database directory.
+//!   it in the two directories it has just made. A creation and a
+//!   deletion call it in a staging directory that a creation left and
+//!   that lists no lock file, after the look that found nothing under
+//!   the name: a link that is put there between the look and the call is
+//!   followed, and a directory that is put under the staging name
+//!   between the two, and has no lock file, is given an empty one. What
+//!   it lists under the lock decides the rest. And a deletion calls it
+//!   for a database directory.
+//! - **Whose lock file is locked.** A directory that is put under the
+//!   staging name after the first look and has a lock file can have the
+//!   lock of that file taken, and what it lists under the lock decides.
+//!   The call writes nothing into that file; whoever asks for that lock
+//!   meanwhile finds it held. The same holds for a database directory
+//!   that is put where a deletion or [`finish`] is about to take a lock.
+//! - **What a call had removed when a look refused.** What an earlier
+//!   creation built in a staging directory is removed entry by entry,
+//!   from one listing of each directory, and the staging directory is
+//!   looked for again only once that is done, before its lock file goes.
+//!   Where that look does not find it as it has to be
+//!   ([`CheckpointError::Replaced`]), the call goes no further: what it
+//!   removed until then is removed, and it does not sync that. A
+//!   [`delete`] of a target that has deleted the target returns no error
+//!   for it where the name then leads to no directory or to one that the
+//!   rule refuses.
+//! - **The two names inside a staging directory, in another spelling.**
+//!   The rule reads the names `LOCK` and `checkpoint.creating` as the
+//!   staging directory lists them, byte for byte. Both are ASCII, which a
+//!   file system that keeps names in a form of its own leaves as they
+//!   are. On one that listed either otherwise, a creation would not find
+//!   the directory it had just made ([`CheckpointError::Replaced`]), and
+//!   what a creation left would be refused for the entry
+//!   ([`CheckpointError::NotStaging`]).
+//! - **Who made a directory that the rule admits.** The rule goes by the
+//!   two names and what is listed under them, and a listing says no more:
+//!   a directory under the staging name in which somebody else made an
+//!   empty file under the name of the lock file, or a directory under
+//!   [`BUILDING_DIR_NAME`], and nothing else, is taken for what a creation
+//!   left, and what is in the directory of that name goes. So does what
+//!   somebody put into the directory that a creation built in.
 //! - **A file from another file that was put under its name.** Such a
 //!   file gets the name of the target with the rest, and a creation that
 //!   fails removes it with the rest. The lock file is told from another
@@ -438,45 +549,54 @@
 //! sync of the log fails
 //! ([`CheckpointError::Sync`]), the log makes nothing more durable until
 //! the database is opened again (`lignin_store::wal`). The creation
-//! then removes what it made, and the directory it built in, so that the
-//! same call can be made again, with these exceptions. It removes a file
+//! then removes what it made, the directory it built in and its staging
+//! directory, so that the same call can be made again, with these
+//! exceptions. It removes a file
 //! or a directory it made only where the directory that holds it lists
 //! it, under the name the creation gave, as a file or as a directory of
 //! its own. Whatever else the directory holds by then stays, and the
-//! directory with it, as what a creation left: what has a name the
-//! creation did not use, and what is listed, under a name it did use, as
-//! something else than the creation put there. What the file layer does
+//! directory with it, in the staging directory, as what a creation left:
+//! what has a name the creation did not use, and what is listed, under a
+//! name it did use, as something else than the creation put there. What
+//! somebody put into the staging directory itself stays as well, with
+//! that directory and its lock file, and the next creation is refused
+//! for it ([`CheckpointError::NotStaging`]). What the file layer does
 //! not let it remove stays in the same way, and so does a file whose
 //! making failed without the file layer saying whether it was made, and
 //! a directory that could not be looked at, or whose name could not be
-//! made durable, once its lock was taken. And a directory that had been
+//! made durable, once its lock was taken: the staging directory is left
+//! with its lock file then, and with the directory in it and that one's
+//! lock file where it was made. And a directory that had been
 //! given the name of the target is dealt with as the next paragraph
 //! says.
 //!
 //! **A creation that fails, the next creation, and a deletion of what a
-//! creation left remove what is in a creation's directory only once that
-//! directory has not the name of the target and cannot come back with
-//! it:**
+//! creation left remove what is in the directory a checkpoint was built
+//! in only once that directory has not the name of the target and cannot
+//! come back with it:**
 //!
-//! - If the rename of step 11 was made and the sync after it fails, the
+//! - If the rename of step 11 was made and a sync after it fails, the
 //!   directory, if it is at the target still, is given its first name
-//!   back, and only once that is durable is anything in it removed.
+//!   back, in the staging directory, and only once that is durable is
+//!   anything in it removed.
 //!   Where the name cannot be taken
 //!   back, the whole checkpoint is at the target when the call returns
-//!   its error, and is not known to be durable there. Where it is taken
+//!   its error, and is not known to be durable there; the staging
+//!   directory, which holds nothing of it, is removed. Where it is taken
 //!   back and that cannot be made durable, the whole checkpoint is under
 //!   the other name, and a power cut can leave it under either. A
 //!   [`delete`] of the target is the call for either, given the target
 //!   in the spelling that the directory above lists for it, or for it
 //!   with [`CREATING_SUFFIX`] added.
-//! - Whoever empties a directory that it found under the other name
-//!   syncs the directory above first, under the directory's lock, which
-//!   settles which of the two names it has. A power cut can keep what is
-//!   removed from a directory and lose a rename of it. A creation finds
-//!   such a directory also where it has just made its own: one that
-//!   another creation of the same target renamed back onto it. So it
-//!   looks under the lock, and takes over whatever holds more than a lock
-//!   file.
+//! - Whoever removes what was built in a staging directory syncs the
+//!   directory above and the staging directory first, under the staging
+//!   directory's lock, which settles which of the two names what was
+//!   built has. A power cut can keep what is removed from a directory
+//!   and lose a rename of it. A creation reads a staging directory that
+//!   it has just made as it reads one that was there: it is empty until
+//!   its lock file is in it, so the creation looks under the lock at
+//!   what has come into it, and removes in the same way what it finds
+//!   built there.
 //!
 //! An error of the catch-up of step 2 does not fail the creation: it is
 //! reported in [`Created::catch_up`], and the checkpoint's first open
@@ -559,11 +679,35 @@
 //!   something missing: not a file of the store, which an open would miss,
 //!   and not a file that the engine or Platform keeps beside them (P-17),
 //!   which it would not. A second call finishes what it leaves.
-//! - **It removes what a creation at that target left beside it**
-//!   ("Durability, and a creation that fails"), once the target is
-//!   deleted or where nothing has its name, and, given a directory of
-//!   that kind itself, removes that: with whatever it holds, where the
-//!   looks of that section find it and its lock is not held.
+//! - **It removes the staging directory that a creation at that target
+//!   left beside it** ("Durability, and a creation that fails"), with
+//!   what was built in it, once the target is deleted or where nothing
+//!   has its name, and, given a directory of that kind itself, removes
+//!   that: where the looks of that section find it and its lock is not
+//!   held. **A directory under that name that the rule refuses is passed
+//!   over**: once a deletion that has deleted the target reads such a
+//!   listing, it does nothing more with the directory and returns no
+//!   error for it, whether it lay there before or came while the target
+//!   was removed, and a deletion that is given the directory itself is
+//!   refused ([`CheckpointError::NotStaging`]). What a directory that is
+//!   changed while the call runs can be given, a lock or an empty lock
+//!   file, and what a call can have removed when a look refuses, is under
+//!   "What the looks do not tell".
+//!
+//! **[`finish`] is the call for what was cut short, where nothing whole is
+//! to go.** [`delete`] removes the database it is given, and a caller that
+//! only wants to clear away what a power cut left, at the paths of
+//! checkpoints that may be whole and open, cannot ask it to. [`finish`]
+//! is [`delete`] without the step that makes a database stop being one:
+//! it renames no manifest. It finishes a deletion whose mark is in the
+//! directory already, with no manifest under the manifest's own name,
+//! removes an empty directory and one with an empty lock file alone, and
+//! removes the staging directory that a creation left beside the path.
+//! Where its first look finds a database that no deletion has begun on,
+//! it does nothing more with that directory and takes no lock of it, so
+//! a handle can have it open meanwhile: that is one with its manifest
+//! and no mark, and also one with a manifest under both names, which no
+//! deletion leaves. [`Finished`] says which it found.
 //!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the
@@ -603,10 +747,16 @@
 //!     errors of write-back and no more: it creates no directory, and it
 //!     is the one to see that nothing is written then (P-18). It shares
 //!     the name of the lock file with [`delete`], which is `LOCK`.
+//! - **Whoever clears away what a power cut left of checkpoints**
+//!   (OPS-03) has [`finish`] for it, on the file system of the database.
+//!   Nothing of GroveDB's engine types calls it yet.
 //! - **Whoever keeps a directory of checkpoints** (GROVE-08, OPS-03) finds
 //!   in it, after a creation that was cut short, a directory whose name
 //!   ends in [`CREATING_SUFFIX`]. It is no checkpoint and holds space
-//!   until it is removed ("Durability, and a creation that fails").
+//!   until it is removed ("Durability, and a creation that fails"). After
+//!   a power cut that follows a creation closely, such a directory can be
+//!   beside the checkpoint that was made, empty or with a lock file: the
+//!   removal that ends a creation is not synced. It holds no space.
 //! - **GroveDB's engine** (GROVE-01, GROVE-08) makes a [`Checkpointer`]
 //!   from the committer of the open database for `create_checkpoint`,
 //!   which refuses an existing path as the trait asks. Its
@@ -644,6 +794,11 @@
 //!   finds none.
 //! - `tests/files.rs`: copies, carried files, what a creation left,
 //!   deletion, the syncs a creation asks for, and the errors.
+//! - `tests/staging.rs`: what lies under the staging name and no creation
+//!   left, entry for entry, after a creation and after each deletion, and
+//!   where it comes between a first look and the takeover; each stage of
+//!   a creation that was cut; and what a creation of an earlier build
+//!   left.
 //! - `tests/reference.rs`: the timings on a store of the reference
 //!   database's size, left out of a normal run.
 
@@ -654,7 +809,10 @@ mod files;
 pub use create::{CheckpointOptions, Checkpointer, Created, DEFAULT_CATCH_UP_ABOVE};
 pub use error::CheckpointError;
 pub(crate) use files::is_reserved;
-pub use files::{delete, CREATING_SUFFIX, DELETING_FILE_NAME};
+pub use files::{
+    delete, finish, AtPath, Beside, Finished, BUILDING_DIR_NAME, CREATING_SUFFIX,
+    DELETING_FILE_NAME,
+};
 
 #[cfg(all(test, not(loom)))]
 mod tests;

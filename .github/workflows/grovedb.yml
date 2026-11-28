@@ -9,6 +9,9 @@ on:
       - master
       - develop
       - 'v[0-9]+.[0-9]+-dev'
+      # The integration branch of the LigninDB work, while pull requests
+      # are opened into it. The line goes when the branch merges.
+      - 'feat/LigninDB'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -48,6 +51,7 @@ jobs:
       any-code: ${{ steps.filter.outputs.any-code }}
       needs-tests: ${{ steps.decide.outputs.needs-tests }}
       bincode: ${{ steps.filter.outputs.bincode }}
+      operator-docs: ${{ steps.filter.outputs.operator-docs }}
       engine-suites: ${{ steps.engines.outputs.suites }}
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +92,15 @@ jobs:
             bincode:
               - 'grovedb-bincode/**'
               - 'grovedb-bincode-derive/**'
+              - '.github/workflows/grovedb.yml'
+              - '.github/actions/**'
+            operator-docs:
+              - 'docs/lignindb/**'
+              - 'docs/book/src/lignindb/**'
+              - 'docs/book/src/SUMMARY.md'
+              - 'lignin-tools/tests/operator_docs.rs'
+              - 'lignin-testkit/tests/runbook_rehearsal.rs'
+              - 'lignin-tools/tests/document_text/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
       - name: Check if Rust changes are doc-comment-only
@@ -502,6 +515,52 @@ jobs:
           cache-on-failure: "false"
       - name: Replay the golden corpus on LigninDB
         run: .github/scripts/lignin-ci.sh corpus --engine lignindb
+
+  # The operator's documents of LigninDB held to the code: each command, each
+  # quoted message and each default they give, their links, and the book's
+  # chapters, which are written from them. The test shards run this test
+  # too, but only when code changes; this job runs it when a document
+  # changes alone, which the shards do not see.
+  operator-docs:
+    name: Operator documents
+    needs: detect-changes
+    if: needs.detect-changes.outputs.operator-docs == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+      # The second step's build of the test kit needs libclang.
+      - name: Install clang
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v clang >/dev/null || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang libclang-dev
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      # Without the migrator's feature, so this build compiles no RocksDB:
+      # the case that migrates a GroveDB on RocksDB is left to the shards,
+      # which build every feature.
+      - name: Hold the operator's documents to the code
+        run: cargo test -p lignin-tools --test operator_docs
+      # The documents' commands of the benchmark, held to its own parser.
+      # It builds lignin-testkit, and with it GroveDB on RocksDB, which costs
+      # minutes on a runner without a kept target; it is here all the same
+      # because a change to a document alone runs no other job that would.
+      - name: Hold the benchmark's commands to its parser
+        run: cargo test -p lignin-testkit --test runbook_rehearsal
 
   formatting:
     name: Formatting

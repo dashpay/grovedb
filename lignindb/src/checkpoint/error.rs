@@ -2,6 +2,7 @@
 
 use std::{
     error::Error,
+    ffi::OsString,
     fmt, io,
     path::{Path, PathBuf},
 };
@@ -11,9 +12,11 @@ use lignin_store::{flush::FlushError, segment::SegmentStoreError, wal::LogError}
 
 use crate::commit::Stopped;
 
-/// Why [`Checkpointer::create`](super::Checkpointer::create) or
-/// [`delete`](super::delete) failed. Each of the two says what is left
-/// then.
+/// Why [`Checkpointer::create`](super::Checkpointer::create),
+/// [`delete`](super::delete) or [`finish`](super::finish) failed. Each of
+/// the three says what is left then, and what is said of
+/// [`delete`](super::delete) under an error holds for
+/// [`finish`](super::finish) where it does what a deletion does.
 ///
 /// Whatever the error, the live database holds what it held. What a
 /// creation does to it is write-back's work before a directory is made,
@@ -43,7 +46,7 @@ pub enum CheckpointError {
         /// The target.
         target: PathBuf,
     },
-    /// The directory is one that a creation builds a checkpoint in
+    /// The directory is the staging directory of a creation
     /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), and its lock is
     /// held, as by a creation that is building in it now. The call did
     /// nothing more once it found the lock held.
@@ -51,31 +54,76 @@ pub enum CheckpointError {
         /// The directory that is being built in.
         dir: PathBuf,
     },
-    /// A look at the path of a directory that checkpoints are built in
-    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) did not find what
-    /// the call looked for. Under a lock it has just taken, a creation,
-    /// or a deletion of what a creation left, looks for a directory of
-    /// its own in the directory above, with the lock file it holds. Right
-    /// before the rename, a creation looks for that directory holding
-    /// what the creation put into it and nothing else. The call does not
-    /// know why it was not found so. Nothing was given the name of the
-    /// target.
+    /// A look at the path of a creation's staging directory
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), of the directory
+    /// a checkpoint is built in inside it
+    /// ([`BUILDING_DIR_NAME`](super::BUILDING_DIR_NAME)), or of a
+    /// database directory that [`delete`](super::delete) or
+    /// [`finish`](super::finish) has locked, did not find the directory
+    /// whose lock is held, or not as
+    /// the call looked for it. Under a lock it has just taken, and
+    /// again before it removes what was built there, a creation, or a
+    /// deletion of what a creation left, looks for a directory of its own
+    /// in the directory above, with the lock file it holds. Right before
+    /// the rename, a creation looks for both directories, the one that
+    /// was built in holding what the creation put into it and nothing
+    /// else. And right before the lock file of a staging directory goes,
+    /// whoever removes that directory looks for it with that lock file,
+    /// empty, and nothing else in it. The call does not know why it was
+    /// not found so, and went no further. Nothing was given the name of
+    /// the target. Where it is that last look which failed, what was
+    /// built in the staging directory can have been removed before it.
     Replaced {
         /// The path of the directory.
         dir: PathBuf,
     },
-    /// A directory that checkpoints are built in
+    /// A staging directory
     /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) did not list a file
     /// under the name of its lock file, byte for byte, and the call made
-    /// none there. It lists something under that name that is not a file,
-    /// such as a link or a directory; or it lists nothing under it, and
-    /// the call found that the name leads to something all the same. The
-    /// lock of the directory was not taken, and the call went no further:
-    /// a creation does not build in such a directory, and
-    /// [`delete`](super::delete) does not go on to remove it.
+    /// none there: it lists nothing under that name, and the call found,
+    /// twice, that the name leads to something all the same, as it can
+    /// where a file system takes several spellings for one name. The lock
+    /// of the directory was not taken, and the call went no further: a
+    /// creation does not build in such a directory, and
+    /// [`delete`](super::delete) does not go on to remove it. One that
+    /// lists something else than a file under that name is refused
+    /// before, as [`Self::NotStaging`].
+    ///
+    /// Or [`delete`](super::delete) or [`finish`](super::finish) was to
+    /// take the lock of a database directory, and that directory lists
+    /// something else than a file under the name of its lock file, such
+    /// as a link, or lists nothing under it while the name leads to
+    /// something all the same: the call took no lock, and went no
+    /// further.
     NotALock {
         /// The path of the lock file.
         path: PathBuf,
+    },
+    /// A directory under a name that creations give their staging
+    /// directories ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) lists an
+    /// entry that no creation puts there: one of another name than the
+    /// lock file's and
+    /// [`BUILDING_DIR_NAME`](super::BUILDING_DIR_NAME), one of these that
+    /// is of another kind, or a lock file that holds a byte. So it is not
+    /// what a creation left, whatever it is: a creation at the target
+    /// beside it does not build in it, and [`delete`](super::delete),
+    /// given the directory itself, does not remove it. This is the error
+    /// of the looks that a call makes before it removes anything: the
+    /// call went no further once it read that listing. Where its first
+    /// look read it, the call had taken no lock in the directory and
+    /// made no lock file in it; what it can have done before a later
+    /// look read it is in the [module documentation](super) ("What the
+    /// looks do not tell"). A [`delete`](super::delete) of the target
+    /// beside it does not fail with this: it passes the directory over.
+    ///
+    /// What a creation of a build before this rule left there, with a
+    /// part of a checkpoint directly in it, is refused in the same way:
+    /// whoever knows it for that removes the directory.
+    NotStaging {
+        /// The directory.
+        dir: PathBuf,
+        /// The name of the first entry that no creation puts there.
+        found: OsString,
     },
     /// A file that the checkpoint was to carry beside the store's own is
     /// not named by one plain name inside the database directory.
@@ -150,8 +198,10 @@ pub enum CheckpointError {
     /// or a file, or something else, such as a link to a directory, which
     /// is not followed. [`delete`](super::delete) was given the path, and
     /// where nothing is there at all, nothing that a creation left was
-    /// found beside it either; or it is the name a creation was to build
-    /// under. Nothing was removed.
+    /// found beside it either: no directory, or one that a look before
+    /// any removal refused as none that a creation left. Or it is the
+    /// name of the staging directory a creation was to make. Nothing was
+    /// removed.
     NotADirectory {
         /// The path.
         dir: PathBuf,
@@ -220,6 +270,13 @@ impl fmt::Display for CheckpointError {
                 "{} is not listed as a file, and none was made there: the lock of its directory \
                  was not taken",
                 path.display()
+            ),
+            Self::NotStaging { dir, found } => write!(
+                f,
+                "{} holds {found:?}, which no creation of a checkpoint puts into its staging \
+                 directory: the directory is not taken for what a creation left, and nothing \
+                 in it was removed",
+                dir.display()
             ),
             Self::CarriedName { name } => write!(
                 f,
@@ -294,6 +351,7 @@ impl Error for CheckpointError {
             | Self::Creating { .. }
             | Self::Replaced { .. }
             | Self::NotALock { .. }
+            | Self::NotStaging { .. }
             | Self::CarriedName { .. }
             | Self::Stopped(_)
             | Self::LogAhead { .. }

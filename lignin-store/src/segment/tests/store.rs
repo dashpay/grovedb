@@ -805,6 +805,12 @@ fn a_block_is_read_only_through_its_exact_location() {
         db.read(location(2, 20, 8)).unwrap_err(),
         SegmentStoreError::UnknownSegment { file } if file == id(2)
     ));
+    // The three reads that returned a block are counted, with the bytes
+    // they are stored in. The reads that failed are not.
+    assert_eq!(
+        db.segments.reads(),
+        (3, u64::from(raw.len + compressed.len + empty.len))
+    );
     assert_eq!(
         db.segments.format_version(id(1)).unwrap(),
         lignin_format::FormatVersion::CURRENT

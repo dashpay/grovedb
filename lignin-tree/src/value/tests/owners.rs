@@ -215,10 +215,11 @@ fn the_cleaner_of_the_value_log_finds_and_repoints_the_cells_of_tree_pages() {
     assert_eq!(values_of(&tree, &db), values_of(&tree, &db));
 }
 
-/// What a pointer rewrite is refused for besides a private copy, which the
+/// What becomes of a pointer rewrite besides a private copy, which the
 /// test above has (`transactions.md` PV7, CL5): a page that a commit has
-/// superseded since the look, a cell that no longer holds the pointer, and
-/// a page that is gone.
+/// superseded since the look is looked at again and takes it, and it is
+/// refused for a cell that no longer holds the pointer and for a page that
+/// is gone.
 #[test]
 fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     let db = Db::new();
@@ -234,8 +235,9 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     };
 
     // A commit supersedes pages: one cell gets another value, and the
-    // pages on the way to it get a new version. Their other values are
-    // left for a later pass, and the cell's old value has no owner.
+    // pages on the way to it get a new version. Their steps are refused
+    // and tried again with a fresh look, which moves their other values;
+    // the cell's old value has no owner.
     let copies = copy(&mut to);
     assert_eq!(copies.len(), 300);
     let mut scope = db.scope();
@@ -249,19 +251,23 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
         .count() as u64;
     let cleaned = db.values.install(copies, &owners).expect("a pass");
     assert_eq!(
-        (cleaned.moved, cleaned.busy, cleaned.gone),
-        (300 - superseded, superseded, 0)
+        (cleaned.moved, cleaned.busy, cleaned.gone, cleaned.live),
+        (299, 0, 1, 0)
     );
-    assert_eq!(cleaned.live, superseded - 1);
     assert!(superseded > 1 && superseded < 300, "{superseded}");
     db.check_counts();
 
-    // A later pass looks again. The value that the commit replaced is not
-    // found, and the others move.
-    let copies = copy(&mut to);
-    assert_eq!(copies.len() as u64, superseded - 1);
-    // A cell whose pointer another step replaced meanwhile is gone: here
-    // the regrouping of its page.
+    // A later pass over the file the values went to. A cell whose pointer
+    // another step replaced meanwhile is gone: here the regrouping of its
+    // page.
+    let mut next = db.close_value_file();
+    let moved_to = db.finish(to);
+    let copies = db
+        .values
+        .copy_live(moved_to, &mut next, &owners)
+        .expect("copied");
+    db.cover(&mut next);
+    assert_eq!(copies.len(), 299);
     let page = before[7].at.page();
     let mut third = db.close_value_file();
     let regrouped = db.regroup(page, &mut third, RegroupPolicy::ALWAYS);
@@ -269,7 +275,7 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     assert!(regrouped.moved > 0);
     let cleaned = db.values.install(copies, &owners).expect("a pass");
     assert_eq!(cleaned.gone, regrouped.moved);
-    assert_eq!(cleaned.moved, superseded - 1 - regrouped.moved);
+    assert_eq!(cleaned.moved, 299 - regrouped.moved);
     assert_eq!(cleaned.live, 0, "the file holds no live value any more");
     db.check_counts();
     let values: Vec<Vec<u8>> = tree.scan(&db).into_iter().map(|read| read.value).collect();
@@ -285,7 +291,7 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     // A page that was freed since the look owns nothing: here every page
     // of the tree, whose keys a commit deleted.
     let mut last = db.close_value_file();
-    let file = db.finish(to);
+    let file = db.finish(next);
     let copies = db
         .values
         .copy_live(file, &mut last, &owners)

@@ -8,7 +8,7 @@
 //! are of LigninDB alone: they are of names that only it keeps.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -401,13 +401,78 @@ fn words(error: &Error) -> String {
     words
 }
 
-/// What a creation that was cut leaves beside its target: a directory
-/// under the target's name with `.creating` added, here with a part of a
-/// file in it.
-fn leave(left: &Path) {
-    fs::create_dir(left).expect("a directory");
-    fs::write(left.join("MANIFEST.tmp"), b"a part").expect("a file");
+/// Everything under the directory `dir`: each file by its path inside it
+/// with its bytes, and each directory with none.
+fn held(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut found = BTreeMap::new();
+    let mut dirs = vec![PathBuf::new()];
+    while let Some(inside) = dirs.pop() {
+        for entry in fs::read_dir(dir.join(&inside)).expect("a directory that is listed") {
+            let entry = entry.expect("an entry");
+            let path = inside.join(entry.file_name());
+            if entry.file_type().expect("a kind").is_dir() {
+                dirs.push(path.clone());
+                found.insert(path, None);
+            } else {
+                found.insert(path, Some(fs::read(entry.path()).expect("a file")));
+            }
+        }
+    }
+    found
 }
+
+/// Makes the directory `left` with `entries`: a name that ends in `/` is
+/// a directory, one whose last name is `LOCK` an empty file, and every
+/// other a file that holds a part.
+fn leave(left: &Path, entries: &[&str]) {
+    fs::create_dir(left).expect("a directory");
+    for entry in entries {
+        let path = left.join(entry);
+        if entry.ends_with('/') {
+            fs::create_dir_all(&path).expect("a directory");
+            continue;
+        }
+        fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
+        let bytes: &[u8] = match path.ends_with("LOCK") {
+            true => b"",
+            false => b"a part",
+        };
+        fs::write(&path, bytes).expect("a file");
+    }
+}
+
+/// What a creation that was cut leaves beside its target, under the
+/// target's name with `.creating` added, by how far it had come: its
+/// staging directory with nothing, with its lock file, with the directory
+/// the checkpoint is built in (`checkpoint.creating`), with that one's
+/// lock file, and with files of the checkpoint in it; and the last of
+/// these without the lock file of the staging directory, which a power
+/// cut can lose alone.
+const STAGES: [&[&str]; 6] = [
+    &[],
+    &["LOCK"],
+    &["LOCK", "checkpoint.creating/"],
+    &["LOCK", "checkpoint.creating/LOCK"],
+    &[
+        "LOCK",
+        "checkpoint.creating/LOCK",
+        "checkpoint.creating/MANIFEST.tmp",
+        "checkpoint.creating/seg/00000001.seg",
+    ],
+    &[
+        "checkpoint.creating/LOCK",
+        "checkpoint.creating/wal/00000001.log",
+    ],
+];
+
+/// What is under that name and no creation of this engine left: files of
+/// a checkpoint directly in it, as a creation of an earlier build left
+/// them, and files of somebody's.
+const NOT_LEFT_BY_A_CREATION: [&[&str]; 3] = [
+    &["MANIFEST.tmp"],
+    &["LOCK", "seg/00000001.seg", "wal/00000001.log"],
+    &["LOCK", "checkpoint.creating/LOCK", "theirs"],
+];
 
 #[test]
 fn what_a_creation_left_is_no_checkpoint_and_is_removed() {
@@ -417,6 +482,20 @@ fn what_a_creation_left_is_no_checkpoint_and_is_removed() {
     let target = above.path().join("9");
     let left = above.path().join("9.creating");
     let delete = |path: &Path| Lignin::delete_checkpoint_with_engine(path);
+    // A checkpoint of the grove at `at`, made under another name and
+    // given that one: nothing is looked for beside `at`.
+    let place = |at: &Path| {
+        let made = above.path().join("made");
+        db.create_checkpoint(&made).expect("a checkpoint");
+        fs::rename(&made, at).expect("a rename");
+    };
+    let not_staging = |refused: Error| {
+        let words = words(&refused);
+        assert!(
+            words.contains("which no creation of a checkpoint puts into its staging directory"),
+            "{words}"
+        );
+    };
 
     // The engine keeps the name for itself: a target that has it is
     // refused as a limit of the engine, in any case of its letters.
@@ -428,37 +507,90 @@ fn what_a_creation_left_is_no_checkpoint_and_is_removed() {
     }
     assert!(listed(above.path()).is_empty());
 
-    // A directory of that name is opened by neither open, and nothing is
-    // made in it.
-    leave(&left);
-    let holds = listed(&left);
-    words(&not_opened(Lignin::open_checkpoint_with_engine(&left)));
-    words(&not_opened(Lignin::open_with_engine(&left)));
-    assert_eq!(listed(&left), holds);
+    // The staging directory that a creation left, at each stage, and
+    // with the whole checkpoint that did not get its name.
+    let mut stages: Vec<Box<dyn Fn() + '_>> = Vec::new();
+    for entries in STAGES {
+        let left = left.clone();
+        stages.push(Box::new(move || leave(&left, entries)));
+    }
+    stages.push(Box::new(|| {
+        leave(&left, &["LOCK"]);
+        place(&left.join("checkpoint.creating"));
+    }));
+    for (stage, leave) in stages.iter().enumerate() {
+        // It is opened by neither open, and neither is the directory in
+        // it: nothing is made in them.
+        leave();
+        let holds = held(&left);
+        for path in [left.clone(), left.join("checkpoint.creating")] {
+            words(&not_opened(Lignin::open_checkpoint_with_engine(&path)));
+            words(&not_opened(Lignin::open_with_engine(&path)));
+        }
+        assert_eq!(held(&left), holds, "stage {stage}");
 
-    // The next creation at the target takes it over.
-    db.create_checkpoint(&target).expect("a checkpoint");
-    assert_eq!(listed(above.path()), BTreeSet::from(["9".to_string()]));
-    let checkpoint = Lignin::open_checkpoint_with_engine(&target).expect("it opens");
-    assert_eq!(root_of(&checkpoint, v), root);
-    drop(checkpoint);
+        // The next creation at the target takes it over.
+        db.create_checkpoint(&target).expect("a checkpoint");
+        assert_eq!(listed(above.path()), BTreeSet::from(["9".to_string()]));
+        let checkpoint = Lignin::open_checkpoint_with_engine(&target).expect("it opens");
+        assert_eq!(root_of(&checkpoint, v), root, "stage {stage}");
+        drop(checkpoint);
 
-    // The deletion of the target removes what is beside it under that
-    // name, with the target and where nothing has the target's name.
-    leave(&left);
-    delete(&target).expect("the checkpoint and what was left beside it");
-    assert!(listed(above.path()).is_empty());
-    leave(&left);
-    delete(&target).expect("what was left beside a target that is not there");
-    assert!(listed(above.path()).is_empty());
-    // And so does the deletion of that directory itself, also through an
-    // engine that wraps this one.
-    leave(&left);
-    delete(&left).expect("what was left");
-    assert!(listed(above.path()).is_empty());
-    leave(&left);
-    type Wrapped = crate::tests::faultable_reads::RefusedReads<LigninEngine>;
-    GroveDb::<Wrapped>::delete_checkpoint_with_engine(&left).expect("what was left");
+        // The deletion of the target removes it, with the target and
+        // where nothing has the target's name.
+        leave();
+        delete(&target).expect("the checkpoint and what was left beside it");
+        assert!(listed(above.path()).is_empty(), "stage {stage}");
+        leave();
+        delete(&target).expect("what was left beside a target that is not there");
+        assert!(listed(above.path()).is_empty(), "stage {stage}");
+        // And so does the deletion of that directory itself, also through
+        // an engine that wraps this one.
+        leave();
+        delete(&left).expect("what was left");
+        assert!(listed(above.path()).is_empty(), "stage {stage}");
+        leave();
+        type Wrapped = crate::tests::faultable_reads::RefusedReads<LigninEngine>;
+        GroveDb::<Wrapped>::delete_checkpoint_with_engine(&left).expect("what was left");
+        assert!(listed(above.path()).is_empty(), "stage {stage}");
+    }
+
+    // What no creation left under that name is as it was after each
+    // call: a part of a checkpoint directly in it, somebody's file beside
+    // what a creation left, and a whole database of the engine.
+    let mut others: Vec<Box<dyn Fn() + '_>> = Vec::new();
+    for entries in NOT_LEFT_BY_A_CREATION {
+        let left = left.clone();
+        others.push(Box::new(move || leave(&left, entries)));
+    }
+    others.push(Box::new(|| place(&left)));
+    for (index, put) in others.iter().enumerate() {
+        put();
+        let before = held(&left);
+        let as_it_was = |after: &str| assert_eq!(held(&left), before, "{index}, after {after}");
+
+        // A creation at the target is refused for it, and makes nothing.
+        not_staging(db.create_checkpoint(&target).expect_err("no creation's"));
+        assert!(!target.exists(), "{index}");
+        as_it_was("a creation");
+        // It is opened by neither open.
+        words(&not_opened(Lignin::open_checkpoint_with_engine(&left)));
+        words(&not_opened(Lignin::open_with_engine(&left)));
+        as_it_was("the opens");
+        // A deletion of the target passes it over: with a checkpoint at
+        // the target, which goes, and with nothing there, where nothing
+        // is deleted.
+        place(&target);
+        delete(&target).expect("the checkpoint");
+        assert!(!target.exists(), "{index}");
+        as_it_was("a deletion of the checkpoint");
+        words(&delete(&target).expect_err("nothing"));
+        as_it_was("a deletion where nothing has the target's name");
+        // A deletion of the directory itself is refused for it.
+        not_staging(delete(&left).expect_err("no creation's"));
+        as_it_was("a deletion of the directory");
+        fs::remove_dir_all(&left).expect("the directory is removed");
+    }
     assert!(listed(above.path()).is_empty());
 
     // Where nothing is there, nothing is deleted.

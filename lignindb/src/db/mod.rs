@@ -592,7 +592,9 @@ use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
     alloc::Census,
-    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats, Pass, ValuePass},
+    cleaner::{
+        BothOwners, Cleaner, CleanerError, CleanerStats, Pass, Space, ValuePass, ValueSpace,
+    },
     flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
@@ -826,6 +828,24 @@ impl fmt::Display for DbStats {
             self.cleaner.values_moved,
             self.cleaner.value_files_dropped,
             self.cleaner.segments_not_durable
+        )?;
+        let classes = |counts: &[u64; 5]| {
+            counts
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        writeln!(
+            f,
+            "cleaner, by the dead share of what it took (0-20/20-40/40-60/60-80/80-100 %): \
+             value-log files {} ({} bytes copied), {} passes with every file set aside; \
+             segments {} ({} bytes copied)",
+            classes(&self.cleaner.value_files_by_dead),
+            classes(&self.cleaner.value_bytes_by_dead),
+            self.cleaner.value_passes_all_busy,
+            classes(&self.cleaner.segments_by_dead),
+            classes(&self.cleaner.segment_bytes_by_dead)
         )?;
         writeln!(
             f,
@@ -1885,6 +1905,20 @@ impl Db {
             let values = cleaner.pass_values(owners).inspect_err(told);
             Ok((segments?, values?))
         })
+    }
+
+    /// What the segments and the value log hold now, as the cleaner counts
+    /// them ([`Cleaner::space`] and [`Cleaner::value_space`]): the two reads
+    /// a pass of the cleaner makes, one after the other, so the two are of
+    /// two moments, and they change nothing. The first reads the whole page
+    /// table under the cleaner's own lock, so it waits for a pass that is
+    /// under way and a pass waits for it; the second copies the value
+    /// log's counts of live bytes under the lock that a commit takes to
+    /// change them, for as long as the copy takes. A measurement that
+    /// states how much of the store is dead calls it.
+    pub fn space(&self) -> Result<(Space, ValueSpace), CleanerError> {
+        let cleaner = self.shared.cleaner();
+        Ok((cleaner.space()?, cleaner.value_space()?))
     }
 
     /// The entries of the database directory that are not the engine's,

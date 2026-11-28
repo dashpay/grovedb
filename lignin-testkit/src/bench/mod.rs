@@ -72,17 +72,22 @@
 //! attached to the thread and switched on only around the measured calls).
 //! A run that asks for it where `perf` counts nothing is refused at its
 //! start. A row during which `perf` fails later keeps its time and has no
-//! count, and a table says so where no row of it has one.
+//! count, and a table says so where no row of it has one. A measurement
+//! that looks for where time goes can have the same `perf` count more
+//! events and show what it printed ([`machine::MORE_EVENTS`]); nothing of
+//! them goes into a report.
 
 pub mod batches;
 pub mod cli;
 pub mod engine;
+pub mod latency;
 #[cfg(grovedb_engine_seam)]
 pub mod lignindb;
 pub mod machine;
 pub mod report;
 pub mod rocksdb;
 pub mod run;
+pub mod score;
 
 use std::path::PathBuf;
 
@@ -91,7 +96,7 @@ use grovedb_version::version::GroveVersion;
 #[cfg(grovedb_engine_seam)]
 pub use self::lignindb::LigninDbEngine;
 pub use self::{
-    engine::{Block, Counters, Detail, Engine, EngineSettings, NodeAnatomy},
+    engine::{Block, Counters, Detail, Engine, EngineSettings, NodeAnatomy, Space},
     machine::{ColdMethod, Machine},
     report::{compare, Agreement, Report, Row, RowKind},
     rocksdb::RocksDbEngine,
@@ -243,6 +248,22 @@ pub fn reads(options: &RunOptions) -> Result<Report, BenchError> {
     on_the_benchmark_thread(options, Rows::WarmReads)
 }
 
+/// Measures the writes at size alone, for every engine of `options`, over
+/// a copy of the databases that a run with `keep` left in the scratch
+/// directory ([`run::write_engine`]). The settings are that run's seed,
+/// documents and owners; it applied no creates, updates or deletes after
+/// its load. The creates, updates and deletes of the settings are applied
+/// to the copy, which is opened with the settings of the engine that this
+/// call names, so one kept database is measured under any number of them.
+/// The report holds the rows of the write phases and nothing else,
+/// states that nothing was read for a time, read cold, checkpointed or
+/// reopened, and no size on disk, and reads back and compares as any
+/// other.
+pub fn writes(options: &RunOptions) -> Result<Report, BenchError> {
+    options.check_engine_settings()?;
+    on_the_benchmark_thread(options, Rows::Writes)
+}
+
 /// Which rows a call measures.
 #[derive(Clone, Copy)]
 enum Rows {
@@ -250,6 +271,8 @@ enum Rows {
     All,
     /// The warm reads, over a kept database.
     WarmReads,
+    /// The writes at size, over a copy of a kept database.
+    Writes,
 }
 
 fn on_the_benchmark_thread(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
@@ -271,13 +294,45 @@ const NO_PERF: &str = "--perf: `perf stat -e instructions:u` counts nothing for 
                        process here (is `perf` installed, and does `kernel.perf_event_paranoid` \
                        allow it?). Without --perf the run measures and counts no instructions";
 
-/// Refuses a run that asks for instruction counts where `perf` counts
-/// none (`works`, which is asked only then, before the run measures
-/// anything).
-fn counts_instructions(asked: bool, works: impl FnOnce() -> bool) -> Result<(), BenchError> {
-    match asked && !works() {
-        true => Err(BenchError::Check(NO_PERF.to_string())),
-        false => Ok(()),
+/// What such a run is told where it also asked for the events `more`
+/// ([`machine::MORE_EVENTS`]): the probe got no usable count of the
+/// instructions from a `perf` that was asked for those events too. `perf`
+/// gave none, or it did not answer a switch, or what it printed has not
+/// exactly one line with the word `instructions`, named
+/// `instructions:u` (`instructions_beside_more` in [`machine`]); what it
+/// counted of the other events says nothing of that.
+fn no_perf_with(more: &str) -> String {
+    format!(
+        "--perf: the probe with `perf stat -e {}` got no usable count of `instructions:u` \
+         for a thread of this process here (is `perf` installed, does \
+         `kernel.perf_event_paranoid` allow it, and does `perf` take the events that {} \
+         names?). Without --perf the run measures and counts no instructions",
+        machine::perf_events(Some(more)),
+        machine::MORE_EVENTS
+    )
+}
+
+/// Refuses a run that asks for instruction counts where the events it
+/// names beside them are not taken ([`machine::more_events_refused`]),
+/// and where the probe of `perf` fails (`works`, which is asked only of a
+/// run that asks for counts and is not refused for its events, before
+/// the run measures anything). `more` is what [`machine::MORE_EVENTS`]
+/// names.
+fn counts_instructions(
+    asked: bool,
+    more: Option<&str>,
+    works: impl FnOnce() -> bool,
+) -> Result<(), BenchError> {
+    if !asked {
+        return Ok(());
+    }
+    if let Some(why) = more.and_then(machine::more_events_refused) {
+        return Err(BenchError::Check(why));
+    }
+    match (works(), more) {
+        (true, _) => Ok(()),
+        (false, None) => Err(BenchError::Check(NO_PERF.to_string())),
+        (false, Some(more)) => Err(BenchError::Check(no_perf_with(more))),
     }
 }
 
@@ -288,6 +343,7 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
     // whatever the settings name, and the machine is not probed for how
     // it reads cold.
     let warm_only = Settings {
+        churn: 0,
         measured_creates: 0,
         updates: 0,
         deletes: 0,
@@ -296,14 +352,28 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
         reopens: 0,
         ..options.settings.clone()
     };
+    // A measurement of the writes at size alone times no read, reads
+    // nothing cold, and times no checkpoint and no reopen.
+    let writes_only = Settings {
+        point_reads: 0,
+        reference_reads: 0,
+        cold_reads: 0,
+        checkpoints: 0,
+        reopens: 0,
+        ..options.settings.clone()
+    };
     let settings = match rows {
         Rows::All => &options.settings,
         Rows::WarmReads => &warm_only,
+        Rows::Writes => &writes_only,
     };
-    counts_instructions(settings.perf, || machine::Perf::works(&settings.scratch))?;
+    let more = settings.perf.then(machine::more_events).flatten();
+    counts_instructions(settings.perf, more.as_deref(), || {
+        machine::Perf::works(&settings.scratch)
+    })?;
     let cold_method = match rows {
         Rows::All => ColdMethod::detect(&settings.scratch),
-        Rows::WarmReads => ColdMethod::Reopen,
+        Rows::WarmReads | Rows::Writes => ColdMethod::Reopen,
     };
     let commit = options
         .commit
@@ -330,6 +400,9 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
             (EngineChoice::RocksDb, Rows::WarmReads) => {
                 run::read_engine::<RocksDbEngine>(settings, grove_version)?
             }
+            (EngineChoice::RocksDb, Rows::Writes) => {
+                run::write_engine::<RocksDbEngine>(settings, grove_version)?
+            }
             #[cfg(grovedb_engine_seam)]
             (EngineChoice::LigninDb, Rows::All) => {
                 run::run_engine::<LigninDbEngine>(settings, cold_method, grove_version)?
@@ -337,6 +410,10 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
             #[cfg(grovedb_engine_seam)]
             (EngineChoice::LigninDb, Rows::WarmReads) => {
                 run::read_engine::<LigninDbEngine>(settings, grove_version)?
+            }
+            #[cfg(grovedb_engine_seam)]
+            (EngineChoice::LigninDb, Rows::Writes) => {
+                run::write_engine::<LigninDbEngine>(settings, grove_version)?
             }
         });
     }
@@ -353,10 +430,34 @@ mod tests {
     fn a_run_that_asks_for_instructions_is_refused_where_perf_counts_none() {
         // A run that does not ask does not look for a counter.
         let unasked = || -> bool { panic!("a run without --perf looked for a counter") };
-        assert!(counts_instructions(false, unasked).is_ok());
-        assert!(counts_instructions(true, || true).is_ok());
-        match counts_instructions(true, || false) {
-            Err(BenchError::Check(why)) => assert!(why.starts_with("--perf: "), "{why}"),
+        assert!(counts_instructions(false, None, unasked).is_ok());
+        assert!(counts_instructions(false, Some("instructions:k"), unasked).is_ok());
+        assert!(counts_instructions(true, None, || true).is_ok());
+        assert!(counts_instructions(true, Some("cycles:u"), || true).is_ok());
+        match counts_instructions(true, None, || false) {
+            Err(BenchError::Check(why)) => assert_eq!(why, NO_PERF),
+            other => panic!("not refused: {other:?}"),
+        }
+        // With more events asked, the refusal names what `perf` was asked.
+        match counts_instructions(true, Some("cycles:u,no-such-event"), || false) {
+            Err(BenchError::Check(why)) => assert!(
+                why.starts_with(
+                    "--perf: the probe with `perf stat -e \
+                     instructions:u,cycles:u,no-such-event` got no usable count of \
+                     `instructions:u`"
+                ) && why.contains("LIGNIN_BENCH_PERF_EVENTS names?)"),
+                "{why}"
+            ),
+            other => panic!("not refused: {other:?}"),
+        }
+        // Events with the word `instructions` are refused before `perf`
+        // is looked for.
+        let unprobed = || -> bool { panic!("a refused list of events was given to `perf`") };
+        match counts_instructions(true, Some("cycles:u,instructions:k"), unprobed) {
+            Err(BenchError::Check(why)) => assert!(
+                why.starts_with("--perf: LIGNIN_BENCH_PERF_EVENTS names `cycles:u,instructions:k`"),
+                "{why}"
+            ),
             other => panic!("not refused: {other:?}"),
         }
     }

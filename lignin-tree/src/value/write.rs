@@ -77,6 +77,24 @@ impl Source {
     }
 }
 
+/// The values that a commit's group repeats because their cells or entries
+/// were carried to another page (`value-log-format.md` O5, `log-format.md`
+/// LG23): how many, and their bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CarriedValues {
+    /// The values repeated.
+    pub values: u64,
+    /// Their bytes.
+    pub bytes: u64,
+}
+
+impl CarriedValues {
+    pub(crate) fn add(&mut self, len: usize) {
+        self.values += 1;
+        self.bytes += len as u64;
+    }
+}
+
 /// The values that the tree cells of one write scope hold out of line and
 /// that the scope's commit writes: the tree side of what
 /// [`Private`](crate::flat::Private) is for flat leaves.
@@ -116,6 +134,7 @@ pub struct TreeValues {
     /// The page of the first cell that was said to hold a pending value of
     /// the scope's own whose bytes are not kept here.
     lost: Option<PageId>,
+    carried: CarriedValues,
 }
 
 impl TreeValues {
@@ -337,7 +356,11 @@ impl TreeValues {
             for (slot, _, value) in own_values(page, &cells, held)? {
                 let bytes = match value {
                     Source::Bytes(bytes) => Arc::clone(bytes),
-                    carried => Arc::from(carried.read(source, &mut buf)?),
+                    carried => {
+                        let bytes: Arc<[u8]> = Arc::from(carried.read(source, &mut buf)?);
+                        self.carried.add(bytes.len());
+                        bytes
+                    }
                 };
                 logged.push((slot, group.value(page, &bytes)?, bytes));
             }
@@ -357,6 +380,13 @@ impl TreeValues {
             }
         }
         Ok(())
+    }
+
+    /// The values of carried cells that [`Self::log_values`] has repeated.
+    /// Each is counted by the first call that writes it: a call for another
+    /// place finds its bytes in memory and counts it no more.
+    pub const fn values_carried(&self) -> CarriedValues {
+        self.carried
     }
 
     /// Puts the bytes of the scope's values of a page with its frame, each

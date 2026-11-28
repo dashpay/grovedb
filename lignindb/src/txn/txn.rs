@@ -24,7 +24,7 @@ use super::{
     check::check,
     commits::Watch,
     error::{BatchError, TxnError, WholeFault},
-    frames::{stored_key, Awake, Frames, Parked, Woken},
+    frames::{stored_key, Awake, Frames, Parked, Unbound, Woken},
     key::{Column, KeySet, Subtree, Unit},
     load::{cover, is_load, spill, Loaded},
     opened::{Opened, WrittenBelow},
@@ -68,8 +68,9 @@ pub struct TxnStats {
     /// transaction's commit writes: its own new values, and those of cells
     /// it carried to another page.
     pub value_pages: usize,
-    /// The nodes of its frames that have a stale hash, for its commit to
-    /// evaluate. None on existing GroveVersions.
+    /// The nodes of its frames that have a stale hash, for an evaluation
+    /// that is asked for or for its commit to make. None on existing
+    /// GroveVersions.
     pub stale_nodes: usize,
     /// How many times the frames were made again from the write set: after
     /// a commit outside the transaction (WT7), a rollback to a mark, or an
@@ -1991,22 +1992,27 @@ impl<'s> WriteTxn<'s> {
         if state.set.met() > 0 {
             return BatchError::MovedByKey { subtree }.into();
         }
-        if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
-            // The refusal that stopped the layout is told again as it was
-            // kept: frames that are made again lay out every load they
-            // come to, and append its values again.
-            if let Some(refused) = state.kept_refusal() {
-                return refused;
-            }
-            let mut loaded = Loaded::default();
-            let (set, scopes) = (&state.set, &state.scopes);
-            let lease = Lease::take();
-            let frames = Self::build(&self.path, guard, at, lease, set, scopes, &mut loaded);
-            if let Err(refused) = frames {
-                return refused;
-            }
+        if let Some(refused) = self.layout_refused(state, guard) {
+            return refused;
         }
         BatchError::MoveBeside { subtree }.into()
+    }
+
+    /// The refusal of the layout of the transaction's writes, where they
+    /// cannot be laid out over the version it reads, and `None` where no
+    /// layout of all of them was stopped or one is made now.
+    fn layout_refused(&self, state: &State<'s>, guard: &OperationGuard<'s>) -> Option<TxnError> {
+        let (at, _) = state.stuck.filter(|(_, ops)| *ops == state.set.ops())?;
+        // The refusal that stopped the layout is told again as it was
+        // kept: frames that are made again lay out every load they come
+        // to, and append its values again.
+        if let Some(refused) = state.kept_refusal() {
+            return Some(refused);
+        }
+        let mut loaded = Loaded::default();
+        let (set, scopes) = (&state.set, &state.scopes);
+        let lease = Lease::take();
+        Self::build(&self.path, guard, at, lease, set, scopes, &mut loaded).err()
     }
 
     /// Whether `who` is answered from the write set over the committed
@@ -3798,15 +3804,15 @@ impl<'s> WriteTxn<'s> {
         // counts those that cells hold (`log-format.md` LG16).
         let loaded = std::mem::take(&mut state.loaded);
         state.end();
-        let Frames {
+        let (unbound, flat) = frames.into_unbound();
+        let Unbound {
             tree,
             values,
             hashes,
-            flat,
             directory,
             dropped,
             ..
-        } = frames;
+        } = unbound;
         Ok(Sealed::Ready(Box::new(Parts {
             base: op.at,
             pin,
@@ -4010,13 +4016,13 @@ fn show_framed<R>(
     let Some(address) = at else {
         return Ok(read(None));
     };
-    let Frames {
+    let Unbound {
         tree,
         values,
         source,
         hashes,
         ..
-    } = frames;
+    } = &mut **frames;
     let stale = hashes.stale(address);
     let shown = tree.shown(address.page(), |page, committed| {
         let node = page.node(address.slot())?;
@@ -4241,6 +4247,120 @@ macro_rules! reads {
         ) -> Result<$crate::txn::MerkCursor<'_, 's>, TxnError> {
             $crate::txn::Cursor::merk(self.txn(), self.who(), subtree, Some(flat))
         }
+
+        /// Makes the stale hashes of the Merk `subtree` with `rules`, and
+        /// returns the Merk's root hash: what the rules make of the cell
+        /// of its root node, or `None` for a Merk with no node
+        /// (`lignin_tree::hash`, `transactions.md` CM3 step 5;
+        /// `crate::txn`, "An evaluation before the commit").
+        ///
+        /// Every stale hash of the Merk is made once: those that the
+        /// evaluation of the root comes to, and those of a node that no
+        /// stale hash leads to. With them, the stale hashes of each Merk
+        /// that a node hosts where the value hash of the host is stale,
+        /// as far as the root hash of that Merk is made from them. A
+        /// node of `subtree` that is read afterwards has its hashes, and
+        /// none of them is stale ([`NodeView::stale`]). A commit that
+        /// follows makes none of them again. Where the Merk has no stale
+        /// hash, the call reads the root's cell, changes nothing and
+        /// adds nothing. No page is copied for a read. The calls of
+        /// `rules` are counted as hashes of the store, also where they
+        /// panic.
+        ///
+        /// **It is a write** of every node it makes a hash of: of the
+        /// node as its cell has it afterwards, with every hash stated
+        /// and the value kept. The writes are one operation of the write
+        /// set for each Merk. So a rollback to a savepoint from before
+        /// the call takes the made hashes out with the other writes
+        /// after it, the rollback of the scope that made the call does,
+        /// and frames that are made again have them again.
+        ///
+        /// Through a scope it claims a read of `subtree`, as a read of its
+        /// entry does, then a read of each Merk it comes to through the pointer
+        /// of a host, before it reads anything of that Merk, and a write of
+        /// each Merk it makes a hash in, together or not at all (SC3). The
+        /// writes are asked for after every host and every read that can refuse
+        /// the call, and before a hash is made: a Merk that another open scope
+        /// has read refuses the call there. They are taken once every hash is
+        /// made. So a call that ends at its rules, with their error or with a
+        /// panic, leaves the scope the reads it was granted and no write, as a
+        /// call that is refused does. The Merk under a host is the one that the
+        /// subtree directory has entered there, and one that another open scope
+        /// writes refuses the call as a host that is behind does, so the answer
+        /// is the same whether the writes of the scopes beside the caller are
+        /// laid out or not, once the caller's own writes are laid out. A scope
+        /// that keeps its writes in the write set has them laid out first
+        /// ([`Scope::lay_out`]), also where the call is then refused, and is
+        /// refused as there where they cannot be laid out beside what another
+        /// scope laid out before.
+        /// Through the transaction,
+        /// a stale hash is made only while no scope is open
+        /// ([`TxnError::ScopeOpen`]): a write goes through a scope (SC1).
+        /// A Merk with no stale hash is read through the transaction
+        /// beside open scopes too, as any read through it is: the call
+        /// gives its root hash, and is refused only a Merk that a scope
+        /// writes.
+        ///
+        /// It is refused before a hash is made, with no page and no
+        /// write of the transaction changed. The reads that a scope was
+        /// granted before the refusal stay with it, as the claims of a
+        /// batch that is refused for what it says do:
+        ///
+        /// - for a subtree that is not entered
+        ///   ([`BatchError::NotEntered`]);
+        /// - as a conflict, where a commit outside has met a write of
+        ///   the transaction ([`BatchError::EvaluatedByKey`]), and with
+        ///   the refusal of the layout where its writes cannot be laid
+        ///   out;
+        /// - with [`TxnError::ScopeOverlap`], which names the unit that
+        ///   stands against the call. At the read of `subtree`, which is
+        ///   the first thing claimed: its data unit where another open
+        ///   scope writes it, or that of a Merk above it which another
+        ///   open scope dropped or cleared. And when the writes are asked
+        ///   for, after the walk: the data unit of a Merk that the call
+        ///   would make a hash in, `subtree` or one under a host, which
+        ///   another open scope has read;
+        /// - with [`TxnError::Hash`] of
+        ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind),
+        ///   which names the cell of a host with a stale value hash that
+        ///   is behind the Merks it hosts, when the walk comes to that
+        ///   host. The host is marked pending as the caller is shown the
+        ///   marks ([`Scope::is_pending`]). Or it points elsewhere than
+        ///   at the root of a Merk that is entered under it there, as
+        ///   after a clear or a drop. Or the read of the data unit of
+        ///   the Merk under it is refused: another open scope writes
+        ///   that Merk, or dropped or cleared one above it. A scope that
+        ///   has only read the Merk under a host lets the walk go on,
+        ///   and stands against the call later, as above, if a hash is
+        ///   to be made in that Merk.
+        ///
+        /// Where a rule refuses a hash, or the evaluation does not read a page
+        /// or a value, the error is [`TxnError::Hash`]. A page or a record of
+        /// the subtree directory that is not read outside the evaluation is
+        /// told as any read tells it ([`TxnError::Node`],
+        /// [`TxnError::Directory`]): while the call finds what it comes to,
+        /// before a hash is made, or while it reads the nodes it made a hash
+        /// of, afterwards. In each case the write set is what it was, and every
+        /// hash that was stale is stale: a call that fails adds no entry to the
+        /// write set. Of claims it leaves the reads its scope was granted. If
+        /// a hash was stored before the error, which is so of every error
+        /// after the evaluation, the frames are made again from the write set,
+        /// and every node handle read through the transaction has ended (PN8).
+        ///
+        /// `rules` are called inside the operation, under the
+        /// transaction's lock. A rule computes from what it is given:
+        /// it must not call the transaction, nor enter any operation of
+        /// the database that takes a lock. One that commits another
+        /// transaction of the same database waits for the commit lock
+        /// while this transaction's lock is held, and a commit that
+        /// holds that lock can be waiting for this transaction.
+        pub fn evaluate<R: lignin_tree::hash::HashRules>(
+            &self,
+            subtree: Subtree,
+            rules: &mut R,
+        ) -> Result<Option<lignin_format::tree_page::Hash>, TxnError> {
+            self.txn().evaluate_in(self.who(), subtree, rules)
+        }
     };
 }
 
@@ -4255,6 +4375,11 @@ impl<'s> WriteTxn<'s> {
 #[path = "../scope/engine.rs"]
 mod scopes;
 
+#[path = "evaluate.rs"]
+mod evaluate;
+
+#[cfg(test)]
+pub(crate) use evaluate::counted::take_marks as counted_marks;
 pub use scopes::Scope;
 
 #[cfg(test)]

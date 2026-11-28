@@ -13,9 +13,9 @@ use lignin_io::{StdVfs, Vfs};
 use lignin_store::{flush::Checkpointed, segment::read_manifest};
 
 use super::{
-    block, building, bytes_of, checkpointer, checkpoints_in, gone, names_of, open, open_on,
-    remove_block, root_hash, sim, store_files, store_on, store_with_log, turn, write_documents,
-    History, DIR, NO_CATCH_UP,
+    block, bytes_of, checkpointer, checkpoints_in, gone, names_of, open, open_on, remove_block,
+    root_hash, sim, staging, store_files, store_on, store_with_log, turn, write_documents, History,
+    DIR, NO_CATCH_UP,
 };
 use crate::{
     checkpoint::{create::Step, CheckpointError, CheckpointOptions, DEFAULT_CATCH_UP_ABOVE},
@@ -615,7 +615,7 @@ fn a_manifest_in_doubt_is_settled_before_it_is_sampled() {
     let in_doubt = || (db.manifest.lock().expect("the manifest").manifest()).is_err();
     let checkpoints = checkpoints_in(&db);
     let nothing_made = |target: &Path| {
-        assert!(gone(&fs, target) && gone(&fs, &building(target)));
+        assert!(gone(&fs, target) && gone(&fs, &staging(target)));
         assert_eq!(versions.pins_held(), 0);
     };
     let maker = checkpointer(&db, &versions).with_options(NO_CATCH_UP);

@@ -15,7 +15,7 @@ use super::{
     access::{fault, read_record_with_root, Reads},
     tests::{apply, version, Lignin, Outcome, NO_VALUE_DEFINED_COST},
     tree_type_bytes, tree_type_from_bytes, LigninBatch, LigninEntry, LigninHost, LigninHosted,
-    LigninNodeStore, LigninSubtree, LigninWriter,
+    LigninNodeStore, LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
 };
 use crate::{
     cost_model::Keyspace, merk::defaults::ROOT_KEY_KEY, store::NodeStore, tree::kv::KV, CryptoHash,
@@ -166,6 +166,86 @@ fn on_rocksdb(kind: Kind, tree_type: TreeType) -> (Vec<Step>, OperationCost) {
 fn entry_of(writer: &LigninWriter<'_, '_>, subtree: [u8; 32]) -> Option<LigninEntry> {
     let reader = LigninNodeStore::deferred(writer, LigninSubtree::alone(subtree), None);
     reader.entry().expect("the directory is read")
+}
+
+/// What `view` answers for the subtree `prefix` when it is asked itself
+/// ([`LigninView::entry`]), after it was held to what a handle of each of
+/// the three modes on that view answers for the same subtree, an error
+/// by its words.
+fn asked_of<'a>(view: impl Into<LigninView<'a>>, prefix: [u8; 32]) -> Result<LigninEntry, String> {
+    let view = view.into();
+    let words = |answer: Result<Option<LigninEntry>, Error>| format!("{answer:?}");
+    let asked = view.entry(&prefix);
+    let subtree = LigninSubtree::alone(prefix);
+    let handles = [
+        LigninNodeStore::read_only(view, subtree.clone()),
+        LigninNodeStore::deferred(view, subtree.clone(), None),
+        LigninNodeStore::immediate(view, subtree),
+    ];
+    for handle in handles {
+        assert_eq!(words(view.entry(&prefix)), words(handle.entry()));
+    }
+    match asked {
+        Ok(Some(entry)) => Ok(entry),
+        Ok(None) => Err("not entered".to_owned()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// A view that is asked for the entry of a subtree answers what a handle
+/// of that subtree on it answers. Each view is asked for a subtree that a
+/// writer enters and writes and for one that is never entered: the
+/// writer; the write transaction while the writer's scope is open, after
+/// the scope is merged, and a new one after the commit; a snapshot from
+/// before the transaction, before and after the commit; and a snapshot
+/// from after it.
+#[test]
+fn a_view_answers_the_entry_that_a_handle_of_the_subtree_answers() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let before = LigninSnapshot::new(path.snapshot());
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let fresh = LigninNodeStore::immediate(&writer, LigninSubtree::alone(FRESH));
+    fresh
+        .enter(TreeType::SumTree)
+        .expect("the subtree is entered");
+    let (mut merk, _) = open(Kind::Base, fresh, TreeType::SumTree);
+    apply(&mut merk, &batches(TreeType::SumTree)[0]);
+    let root = merk.root_key();
+    assert!(root.is_some(), "the batch left a root");
+    drop(merk);
+
+    // The writer reads its own enter and the root it stated.
+    let entry = asked_of(&writer, FRESH).expect("the writer entered the subtree");
+    assert_eq!(entry.tree_type().unwrap(), TreeType::SumTree);
+    assert_eq!(
+        (entry.root_key.clone(), entry.host.clone()),
+        (root.clone(), None)
+    );
+    assert_eq!(asked_of(&writer, OTHER), Err("not entered".to_owned()));
+    // The transaction reads from outside the writer's scope, which has
+    // written the subtree's Merk: the read is refused, to the view as to
+    // a handle. A subtree that no scope has written is read.
+    let refused = asked_of(&transaction, FRESH).expect_err("a scope is open");
+    assert_ne!(refused, "not entered");
+    assert_eq!(asked_of(&transaction, OTHER), Err("not entered".to_owned()));
+    // The snapshot from before the transaction has neither.
+    assert_eq!(asked_of(&before, FRESH), Err("not entered".to_owned()));
+    assert_eq!(asked_of(&before, OTHER), Err("not entered".to_owned()));
+
+    writer.into_scope().merge();
+    assert_eq!(asked_of(&transaction, FRESH), Ok(entry.clone()));
+    assert_eq!(asked_of(&transaction, OTHER), Err("not entered".to_owned()));
+    commit(&lignin, &transaction);
+    assert_eq!(asked_of(&before, FRESH), Err("not entered".to_owned()));
+    assert_eq!(asked_of(&before, OTHER), Err("not entered".to_owned()));
+    let after = LigninSnapshot::new(path.snapshot());
+    assert_eq!(asked_of(&after, FRESH), Ok(entry.clone()));
+    assert_eq!(asked_of(&after, OTHER), Err("not entered".to_owned()));
+    let transaction = path.begin();
+    assert_eq!(asked_of(&transaction, FRESH), Ok(entry));
+    assert_eq!(asked_of(&transaction, OTHER), Err("not entered".to_owned()));
 }
 
 /// The same run on LigninDB, in one transaction or with a commit after

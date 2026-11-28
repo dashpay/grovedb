@@ -10,9 +10,15 @@
 //! ([`Engine::open_write_scope`] on [`EitherEngine`]).
 //!
 //! [`EitherEngine::open_with`] is told the engine by an [`EngineChoice`].
-//! Named RocksDB opens reject a reserved name before listing. Other opens
-//! and path-only removals classify the directory before calling an engine
-//! ([`EitherEngine::found_at`] says how a directory is told).
+//! Opens and path-only removals classify the directory before calling an
+//! engine ([`EitherEngine::found_at`] says how a directory is told). Where
+//! no entry says an engine, a RocksDB open of a path whose last name ends
+//! in `.creating` is refused. And a creation or a removal of a checkpoint
+//! at `p` is not handed to LigninDB where the type, when it looks, finds
+//! that the entries of `p.creating` say RocksDB: LigninDB builds the
+//! checkpoint at `p` in a directory of that name, and leaves it alone if
+//! it lists a RocksDB entry. The type refuses the call before invoking
+//! LigninDB.
 //!
 //! `docs/lignindb/engine.md`, "An engine chosen at the open", is the
 //! contract.
@@ -22,10 +28,10 @@ mod tests;
 
 use std::{
     cell::Cell,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fmt,
     io::ErrorKind,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use grovedb_costs::{
@@ -44,50 +50,24 @@ use grovedb_storage::{
     Error, FlatStore, RawIterator,
 };
 use grovedb_version::version::GroveVersion;
+use lignin_io::{EntryKind, Vfs};
 /// The LigninDB crate, for the options an [`EngineChoice`] carries
 /// ([`lignindb::Options`]).
 pub use lignindb;
 /// When a commit of LigninDB makes its log durable: the type of
 /// [`lignindb::Options::sync`].
 pub use lignindb::options::SyncPolicy;
-use lignindb::{
-    checkpoint::{CREATING_SUFFIX, DELETING_FILE_NAME},
-    Options,
-};
+use lignindb::{checkpoint::CREATING_SUFFIX, Options};
 
+pub use super::entries::EngineKind;
+#[cfg(test)]
+use super::entries::{engine_of_entry, LIGNIN_DIRECTORIES};
 use super::{
+    entries::{held_among, look, unlisted},
     lignin::{LigninTransaction, LigninWriteScope},
     Engine, EngineBatch, LigninEngine, RocksDbEngine, SubtreeCursor, SubtreeHandle, SubtreeMove,
     WriteGroup,
 };
-
-/// Which of the two engines.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EngineKind {
-    /// The RocksDB engine, [`RocksDbEngine`].
-    RocksDb,
-    /// The LigninDB engine, [`LigninEngine`].
-    Lignin,
-}
-
-impl EngineKind {
-    /// The other engine.
-    pub fn other(self) -> Self {
-        match self {
-            EngineKind::RocksDb => EngineKind::Lignin,
-            EngineKind::Lignin => EngineKind::RocksDb,
-        }
-    }
-}
-
-impl fmt::Display for EngineKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            EngineKind::RocksDb => "RocksDB",
-            EngineKind::Lignin => "LigninDB",
-        })
-    }
-}
 
 /// The engine a database is opened on, with that engine's own options.
 #[derive(Clone)]
@@ -578,76 +558,14 @@ const WHERE_NONE_IS_SAID: EngineKind = match cfg!(all(test, grovedb_test_engine 
     false => EngineKind::RocksDb,
 };
 
-/// The engine whose database an entry of this name belongs to, if the
-/// name is one that only that engine gives an entry of its database
-/// directory.
-fn engine_of_entry(name: &OsStr) -> Option<EngineKind> {
-    let name = name.to_str()?;
-    let rocksdb = matches!(name, "CURRENT" | "IDENTITY")
-        || name.starts_with("MANIFEST-")
-        || name.starts_with("OPTIONS-")
-        || name.ends_with(".sst");
-    let lignin =
-        name == "MANIFEST" || name == DELETING_FILE_NAME || LIGNIN_DIRECTORIES.contains(&name);
-    match (rocksdb, lignin) {
-        (true, _) => Some(EngineKind::RocksDb),
-        (false, true) => Some(EngineKind::Lignin),
-        (false, false) => None,
+/// Lists `dir` on the file system `vfs` of a LigninDB engine and says what
+/// it holds.
+fn look_on(vfs: &dyn Vfs, dir: &Path) -> Result<Option<(EngineKind, OsString)>, Error> {
+    match vfs.read_dir(dir) {
+        Ok(entries) => held_among(dir, entries.into_iter().map(|entry| entry.name)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(unlisted(dir, error)),
     }
-}
-
-/// The directories LigninDB keeps its files in, inside its database
-/// directory: the log, the segments, the value log and the page table.
-const LIGNIN_DIRECTORIES: [&str; 4] = ["wal", "seg", "val", "table"];
-
-/// What the entries of a directory say it holds: an engine, with the first
-/// entry that says so.
-fn held_among(
-    dir: &Path,
-    entries: impl IntoIterator<Item = OsString>,
-) -> Result<Option<(EngineKind, OsString)>, Error> {
-    let mut found: Option<(EngineKind, OsString)> = None;
-    for entry in entries {
-        let Some(kind) = engine_of_entry(&entry) else {
-            continue;
-        };
-        let Some((first, of_first)) = &found else {
-            found = Some((kind, entry));
-            continue;
-        };
-        if kind != *first {
-            return Err(Error::NotSupported(format!(
-                "the directory {} holds entries of both engines (`{}` is {first}'s and `{}` is \
-                 {kind}'s): it is opened as neither",
-                dir.display(),
-                of_first.to_string_lossy(),
-                entry.to_string_lossy(),
-            )));
-        }
-    }
-    Ok(found)
-}
-
-fn unlisted(dir: &Path, error: std::io::Error) -> Error {
-    Error::StorageError(format!(
-        "the directory {} could not be listed to see which engine's database it holds: {error}",
-        dir.display()
-    ))
-}
-
-/// Lists `dir` on the file system of the process and says what it holds.
-fn look(dir: &Path) -> Result<Option<(EngineKind, OsString)>, Error> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(unlisted(dir, error)),
-    };
-    let mut names = entries
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| unlisted(dir, error))?;
-    names.sort();
-    held_among(dir, names)
 }
 
 /// Whether the last name of `path` ends in the suffix of the directory
@@ -662,9 +580,10 @@ fn is_reserved(path: &Path) -> bool {
     })
 }
 
-/// RocksDB opens for the caller and checkpoint creation reject this
-/// suffix, ignoring ASCII case. LigninDB builds at the literal sibling
-/// `p.creating`.
+/// Checkpoint creation by RocksDB rejects this suffix, ignoring ASCII
+/// case, and so does a RocksDB open for the caller where no entry of the
+/// directory says an engine ([`listed_for_rocksdb`]). LigninDB builds at
+/// the literal sibling `p.creating`.
 fn refuse_a_reserved_name(path: &Path) -> Result<(), Error> {
     match is_reserved(path) {
         true => Err(Error::NotSupported(format!(
@@ -694,11 +613,7 @@ fn no_checkpoint(dir: &Path) -> Error {
 fn refuse_the_other(dir: &Path, choice: &EngineChoice) -> Result<bool, Error> {
     let found = match choice {
         EngineChoice::RocksDb => look(dir)?,
-        EngineChoice::Lignin(options) => match options.vfs.read_dir(dir) {
-            Ok(entries) => held_among(dir, entries.into_iter().map(|entry| entry.name))?,
-            Err(error) if error.kind() == ErrorKind::NotFound => None,
-            Err(error) => return Err(unlisted(dir, error)),
-        },
+        EngineChoice::Lignin(options) => look_on(&*options.vfs, dir)?,
     };
     match found {
         Some((kind, entry)) if kind != choice.kind() => Err(Error::NotSupported(format!(
@@ -710,6 +625,119 @@ fn refuse_the_other(dir: &Path, choice: &EngineChoice) -> Result<bool, Error> {
         ))),
         found => Ok(found.is_some()),
     }
+}
+
+/// [`refuse_the_other`] for an open that names RocksDB. Where no entry
+/// says an engine, a last name of `dir` that ends in `.creating` is
+/// refused: LigninDB may be building a checkpoint there, and a directory
+/// it has just made has no entry yet.
+fn listed_for_rocksdb(dir: &Path) -> Result<bool, Error> {
+    let says_rocksdb = refuse_the_other(dir, &EngineChoice::RocksDb)?;
+    if !says_rocksdb {
+        refuse_a_reserved_name(dir)?;
+    }
+    Ok(says_rocksdb)
+}
+
+/// A call that is handed to LigninDB for a checkpoint at a path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OfLignin {
+    Creation,
+    Removal,
+}
+
+/// The directory beside `target` that LigninDB looks for, and takes for
+/// what a creation of a checkpoint there left where it lists nothing but
+/// what a creation puts there, where `call` at `target` on the file
+/// system `vfs` would look for one: the one under the name of `target`
+/// with `.creating` added, where the directory above lists that name,
+/// byte for byte, as a directory of its own. That is how
+/// `lignindb::checkpoint` finds it.
+///
+/// `None` where LigninDB looks for none. It makes no checkpoint at a target
+/// whose last name ends in `.creating`, in any case of its ASCII letters,
+/// and its removal of a path whose last name ends so, as it is written,
+/// is of that directory and of nothing beside it. A name that the
+/// directory above lists in another spelling, as a link or as a file is
+/// not looked into, and neither is anything where there is no directory
+/// above.
+///
+/// A listing of the directory above that fails otherwise is the error:
+/// LigninDB lists that directory again itself, and its listing can
+/// succeed where this one failed.
+fn taken_beside(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Result<Option<PathBuf>, Error> {
+    let (Some(name), Some(above)) = (target.file_name(), target.parent()) else {
+        return Ok(None);
+    };
+    let its_own = match call {
+        OfLignin::Creation => is_reserved(target),
+        OfLignin::Removal => (name.as_encoded_bytes()).ends_with(CREATING_SUFFIX.as_bytes()),
+    };
+    if its_own {
+        return Ok(None);
+    }
+    let mut beside = name.to_os_string();
+    beside.push(CREATING_SUFFIX);
+    let above = match above.as_os_str().is_empty() {
+        true => Path::new("."),
+        false => above,
+    };
+    let entries = match vfs.read_dir(above) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(unlisted(above, error)),
+    };
+    let listed = (entries.iter()).any(|entry| entry.name == beside && entry.kind == EntryKind::Dir);
+    Ok(listed.then(|| target.with_file_name(beside)))
+}
+
+/// Refuses to hand `call` for a checkpoint at `target` to LigninDB, which
+/// would act on the file system `vfs`, where an entry of the directory it
+/// would look for beside `target` ([`taken_beside`]) says RocksDB.
+/// LigninDB builds the checkpoint at `target` in that directory, and
+/// takes one that is there for what a creation left only where it lists
+/// nothing but what a creation puts there: a creation at `target` then
+/// removes what was built in it, and a removal at `target` removes it.
+/// One with an entry of RocksDB's it neither builds in nor removes
+/// (`lignindb::checkpoint`). The type refuses the call before invoking
+/// LigninDB. The opens of this type hand a database of RocksDB under
+/// such a name to RocksDB ([`listed_for_rocksdb`]).
+///
+/// Where LigninDB would look for no directory, and where no entry of the
+/// one it would look for says an engine or one says LigninDB, the call
+/// goes on. A
+/// listing of that directory with entries of both engines, and a listing
+/// of it or of the directory above that fails otherwise than for a
+/// directory that is not there, is the listing's error.
+fn keep_from_lignindb(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Result<(), Error> {
+    let Some(beside) = taken_beside(vfs, target, call)? else {
+        return Ok(());
+    };
+    match look_on(vfs, &beside)? {
+        Some((EngineKind::RocksDb, entry)) => Err(Error::NotSupported(format!(
+            "the directory {} beside the checkpoint path {} has an entry of RocksDB's (`{}`); \
+             LigninDB builds a checkpoint at the path in a directory of that name and leaves \
+             it alone if it lists a RocksDB entry, so LigninDB was not called and nothing was \
+             changed",
+            beside.display(),
+            target.display(),
+            entry.to_string_lossy(),
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Why no checkpoint is made at `target` by a LigninDB engine that was
+/// built on a database its caller opened, and does not say which file
+/// system it is on.
+fn not_looked_beside(target: &Path) -> Error {
+    Error::NotSupported(format!(
+        "no checkpoint was made at {}: the LigninDB engine was built on a database that its \
+         caller opened, so the file system it builds on is not known here and the directory \
+         beside the path, in which LigninDB builds the checkpoint, was not looked at; open the \
+         database with GroveDB's own open of the engine to make checkpoints through it",
+        target.display()
+    ))
 }
 
 /// The RocksDB engine or the LigninDB engine, chosen when the database is
@@ -744,6 +772,16 @@ impl From<RocksDbEngine> for EitherEngine {
 
 impl From<LigninEngine> for EitherEngine {
     /// The engine holding a LigninDB engine that its caller opened.
+    ///
+    /// An engine that [`LigninEngine`] opened, by
+    /// [`LigninEngine::open_with`] or by an open of [`Engine`], keeps the
+    /// file system it is on, and makes its checkpoints through this type
+    /// as one that this type opened does. One that was built on a
+    /// database its caller opened ([`LigninEngine::new`]) does not say
+    /// which file system it is on. The type cannot then look at the
+    /// directory beside a checkpoint path as [`Engine::create_checkpoint`]
+    /// of the type does, and makes no checkpoint through such an engine:
+    /// the call is refused with [`Error::NotSupported`].
     fn from(engine: LigninEngine) -> Self {
         Self {
             held: OneOf::Lignin(engine),
@@ -761,19 +799,29 @@ impl EitherEngine {
     /// the file system of its options. A listing with an entry of the
     /// other engine's, or with entries of both, is refused with
     /// [`Error::NotSupported`], and the chosen engine is not called. The
-    /// listing and the open are two steps: the refusal is of what the
-    /// directory held when it was listed.
+    /// listing and the open are two steps: a refusal, and the admission of
+    /// a name below, are of what the directory held when it was listed.
+    /// The listing goes by the names of the entries and looks at no lock.
     ///
     /// For RocksDB a path whose last name ends in `.creating`, in any case
-    /// of its ASCII letters, is refused before it is listed. LigninDB
-    /// builds the checkpoint at `p` at the literal sibling `p.creating`
-    /// (`lignindb::checkpoint`).
+    /// of its ASCII letters, is opened only where the listing says RocksDB
+    /// and only RocksDB: a database of RocksDB that is there is opened as
+    /// under any other name. Where there is no directory, or no entry
+    /// says an engine, the path is refused for its name with
+    /// [`Error::NotSupported`], and nothing is made. LigninDB builds the
+    /// checkpoint at `p` at the literal sibling `p.creating`
+    /// (`lignindb::checkpoint`), and a directory it has just made has no
+    /// entry yet. A directory that is there under that name with an
+    /// entry of a name of RocksDB's and none of LigninDB's is handed to
+    /// RocksDB. LigninDB does not build in such a directory: a creation
+    /// through this type is refused for it before LigninDB is called
+    /// ([`Engine::create_checkpoint`] of the type), and one by LigninDB's
+    /// own engine is refused by LigninDB.
     pub fn open_with<P: AsRef<Path>>(path: P, choice: &EngineChoice) -> Result<Self, Error> {
         let path = path.as_ref();
         match choice {
             EngineChoice::RocksDb => {
-                refuse_a_reserved_name(path)?;
-                refuse_the_other(path, choice)?;
+                listed_for_rocksdb(path)?;
                 RocksDbEngine::open(path).map(Self::from)
             }
             EngineChoice::Lignin(options) => {
@@ -789,25 +837,25 @@ impl EitherEngine {
     /// with the options of the choice, [`Options::create_if_missing`]
     /// taken as off.
     ///
-    /// What [`Self::open_with`] refuses is refused here. Where RocksDB is
-    /// chosen, a listing in which no entry says an engine is refused by
-    /// this type too, with [`Error::StorageError`] and no engine called;
-    /// where LigninDB is chosen it is LigninDB's to answer. An admitted
-    /// RocksDB-only listing selects the native checkpoint open, which can
-    /// write files before failing.
+    /// What [`Self::open_with`] refuses is refused here, a path whose last
+    /// name ends in `.creating` by the same rule: where RocksDB is chosen
+    /// and the path is refused for its name, with [`Error::NotSupported`].
+    /// Where RocksDB is chosen, a listing of a path of any other name in
+    /// which no entry says an engine is refused by this type too, with
+    /// [`Error::StorageError`] and no engine called; where LigninDB is
+    /// chosen it is LigninDB's to answer. An admitted RocksDB-only listing
+    /// selects the native checkpoint open, which can write files before
+    /// failing.
     pub fn open_checkpoint_with<P: AsRef<Path>>(
         path: P,
         choice: &EngineChoice,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
         match choice {
-            EngineChoice::RocksDb => {
-                refuse_a_reserved_name(path)?;
-                match refuse_the_other(path, choice)? {
-                    true => RocksDbEngine::open_checkpoint(path).map(Self::from),
-                    false => Err(no_checkpoint(path)),
-                }
-            }
+            EngineChoice::RocksDb => match listed_for_rocksdb(path)? {
+                true => RocksDbEngine::open_checkpoint(path).map(Self::from),
+                false => Err(no_checkpoint(path)),
+            },
             EngineChoice::Lignin(options) => {
                 refuse_the_other(path, choice)?;
                 let options = Options {
@@ -849,13 +897,22 @@ impl EitherEngine {
     /// entries of the directory say, and refuses one in which none says an
     /// engine. LigninDB's removal does more than remove a database: it
     /// finishes a removal that was cut short after the last name of the
-    /// database was gone, and takes what a creation left beside a
+    /// database was gone, and removes what a creation left beside a
     /// checkpoint that is not there. With [`EngineKind::Lignin`] this call
     /// hands such a directory to LigninDB. With [`EngineKind::RocksDb`] it
     /// is refused, with no engine called.
     ///
     /// A listing with an entry of the other engine's, or with entries of
     /// both, is refused with no engine called.
+    ///
+    /// With [`EngineKind::Lignin`], the directory that LigninDB's removal
+    /// would look for with the checkpoint, beside `path` under its name
+    /// with `.creating` added, is listed too before LigninDB is called, as
+    /// [`Engine::create_checkpoint`] of the type looks for it: where an entry
+    /// of it says RocksDB, the removal is refused with
+    /// [`Error::NotSupported`] and nothing is changed. A `path` whose last
+    /// name ends in `.creating` as it is written has no such directory:
+    /// its removal is of the directory at `path` alone.
     ///
     /// The directory is listed and removed on the file system of the
     /// process. A checkpoint of LigninDB on another one
@@ -877,7 +934,10 @@ impl EitherEngine {
             None if kind == EngineKind::RocksDb => Err(no_checkpoint(path).into()),
             _ => match kind {
                 EngineKind::RocksDb => RocksDbEngine::delete_checkpoint(path),
-                EngineKind::Lignin => LigninEngine::delete_checkpoint(path),
+                EngineKind::Lignin => {
+                    keep_from_lignindb(&*Options::default().vfs, path, OfLignin::Removal)?;
+                    LigninEngine::delete_checkpoint(path)
+                }
             },
         }
     }
@@ -989,13 +1049,18 @@ impl Engine for EitherEngine {
     /// directory say ([`Self::found_at`]), with that engine's default
     /// options. On an unmarked ordinary path, `EitherEngine::open` selects
     /// RocksDB except in the `either-lignin` unit suite, which selects
-    /// LigninDB. Where the path would go to RocksDB and its last name ends
-    /// in `.creating`, it is refused as by [`Self::open_with`].
+    /// LigninDB. Where no entry says an engine, the path would go to
+    /// RocksDB and its last name ends in `.creating`, it is refused as by
+    /// [`Self::open_with`]. Where an entry says RocksDB, the name is not
+    /// looked at.
     fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
-        match Self::found_at(path)?.unwrap_or(WHERE_NONE_IS_SAID) {
+        let found = Self::found_at(path)?;
+        match found.unwrap_or(WHERE_NONE_IS_SAID) {
             EngineKind::RocksDb => {
-                refuse_a_reserved_name(path)?;
+                if found.is_none() {
+                    refuse_a_reserved_name(path)?;
+                }
                 RocksDbEngine::open(path).map(Self::from)
             }
             EngineKind::Lignin => LigninEngine::open(path).map(Self::from),
@@ -1004,25 +1069,57 @@ impl Engine for EitherEngine {
 
     /// Opens the checkpoint at `path` with the engine that the entries of
     /// the directory say. A listing in which none says an engine is
-    /// refused with no engine called, and so is a path whose last name
-    /// ends in `.creating` where an entry says RocksDB. An admitted
-    /// RocksDB-only listing selects the native checkpoint open, which can
-    /// write files before failing.
+    /// refused with no engine called, whatever the name of the path. An
+    /// admitted RocksDB-only listing selects the native checkpoint open,
+    /// also under a last name that ends in `.creating`, which can write
+    /// files before failing.
     fn open_checkpoint<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
         match Self::found_at(path)? {
-            Some(EngineKind::RocksDb) => {
-                refuse_a_reserved_name(path)?;
-                RocksDbEngine::open_checkpoint(path).map(Self::from)
-            }
+            Some(EngineKind::RocksDb) => RocksDbEngine::open_checkpoint(path).map(Self::from),
             Some(EngineKind::Lignin) => LigninEngine::open_checkpoint(path).map(Self::from),
             None => Err(no_checkpoint(path)),
         }
     }
 
     /// Makes a checkpoint with the engine that is held. Where RocksDB is
-    /// held, a `path` whose last name ends in `.creating` is refused, as
-    /// by [`Self::open_with`].
+    /// held, a `path` whose last name ends in `.creating`, in any case of
+    /// its ASCII letters, is refused, whatever is there.
+    ///
+    /// Where LigninDB is held, the directory it would build in, beside
+    /// `path` under its name with `.creating` added, is looked for first.
+    /// LigninDB takes a directory that is there under that name for what
+    /// a creation left only where it lists nothing but what a creation
+    /// puts there, and the opens of this type hand a database of RocksDB
+    /// under such a name to RocksDB. It is looked for as LigninDB finds
+    /// it: the directory above has to list the name, byte for byte, as a
+    /// directory of its own. One that it lists in another spelling, as a
+    /// link or as a file is not LigninDB's to build in, and LigninDB is
+    /// called as before; so it
+    /// is for a `path` that LigninDB makes no checkpoint at for its name.
+    /// A directory that is found is listed, and its entries are told as
+    /// [`Self::found_at`] tells them: where one says RocksDB, the creation
+    /// is refused with [`Error::NotSupported`], LigninDB is not called and
+    /// nothing is changed, and a listing with entries of both engines is
+    /// the listing's error. So is a listing that fails, of that directory
+    /// or of the one above, though there is a directory to list: LigninDB
+    /// is not called on what this type could not look at.
+    ///
+    /// The look is at the file system the engine is on, which is where it
+    /// builds, and the type asks the engine it holds for it
+    /// ([`Options::vfs`] of the options [`LigninEngine`] opened it with:
+    /// those of the choice, or the default ones for an open that names no
+    /// engine). So it is for an engine that this type opened and for one
+    /// that its caller opened by [`LigninEngine`]'s opens and handed over
+    /// ([`From`]). An engine that was built on a database its caller
+    /// opened ([`LigninEngine::new`]) does not say which file system it is
+    /// on. The type does not guess: the creation is then refused with
+    /// [`Error::NotSupported`], and LigninDB is not called.
+    ///
+    /// The look and the creation are two steps. The type refuses what is
+    /// there when it looks, and holds nothing: what is put under that
+    /// name afterwards is LigninDB's to answer, by its own rule for such
+    /// a directory (`lignindb::checkpoint`).
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         let path = path.as_ref();
         match &self.held {
@@ -1030,7 +1127,13 @@ impl Engine for EitherEngine {
                 refuse_a_reserved_name(path)?;
                 engine.create_checkpoint(path)
             }
-            OneOf::Lignin(engine) => engine.create_checkpoint(path),
+            OneOf::Lignin(engine) => {
+                let Some(vfs) = engine.file_system() else {
+                    return Err(not_looked_beside(path));
+                };
+                keep_from_lignindb(vfs, path, OfLignin::Creation)?;
+                engine.create_checkpoint(path)
+            }
         }
     }
 
@@ -1038,12 +1141,21 @@ impl Engine for EitherEngine {
     /// the directory say removes one. A listing in which none says an
     /// engine is refused with no engine called:
     /// [`Self::delete_checkpoint_of`] names the engine for what a removal
-    /// or a creation of LigninDB left.
+    /// or a creation of LigninDB left. Where the removal is LigninDB's,
+    /// the directory beside `path` under its name with `.creating` added
+    /// is looked for and listed first, as [`Self::create_checkpoint`] does
+    /// it: LigninDB's removal removes that directory with the checkpoint
+    /// where a creation left it, and where an entry of it says RocksDB
+    /// the removal is refused with [`Error::NotSupported`] and nothing is
+    /// changed.
     fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), crate::Error> {
         let path = path.as_ref();
         match Self::found_at(path)? {
             Some(EngineKind::RocksDb) => RocksDbEngine::delete_checkpoint(path),
-            Some(EngineKind::Lignin) => LigninEngine::delete_checkpoint(path),
+            Some(EngineKind::Lignin) => {
+                keep_from_lignindb(&*Options::default().vfs, path, OfLignin::Removal)?;
+                LigninEngine::delete_checkpoint(path)
+            }
             None => Err(no_checkpoint(path).into()),
         }
     }

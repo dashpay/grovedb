@@ -8,6 +8,7 @@
 
 mod v0;
 mod v1;
+mod v2;
 
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
@@ -19,7 +20,8 @@ impl EstimatedLayerSizes {
     /// to preserve consensus-locked grove v1/v2 outputs while letting
     /// grove v3+ use a corrected weighted-average formula on the Mix
     /// arm (v0 = `Σ size_i / Σ weight_i`, v1 = `Σ (size_i · weight_i) / Σ weight_i`).
-    /// Non-Mix variants are version-independent.
+    /// Non-Mix variants are version-independent. v2, for grove version 6,
+    /// is v1 with sizes it cannot count refused.
     pub fn value_with_feature_and_flags_size(
         &self,
         grove_version: &GroveVersion,
@@ -31,10 +33,11 @@ impl EstimatedLayerSizes {
         {
             0 => self.value_with_feature_and_flags_size_v0(grove_version),
             1 => self.value_with_feature_and_flags_size_v1(grove_version),
+            2 => self.value_with_feature_and_flags_size_v2(grove_version),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
                     method: "EstimatedLayerSizes::value_with_feature_and_flags_size".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 },
             )),

@@ -61,6 +61,11 @@ fn every_reader_reads_what_it_read_before_its_blocks_were_moved() {
     assert_eq!(stats.cleaner_bytes(), state.stats().bytes_moved);
     assert_eq!(state.stats().bytes_moved, done.bytes_moved);
     assert_eq!(cleaner.state().stats().blocks_moved, done.blocks_moved);
+    // The bytes moved, by the dead share of the segments they came out of.
+    let did = state.stats();
+    let by_dead: u64 = did.segment_bytes_by_dead.iter().sum();
+    assert_eq!(by_dead, did.bytes_moved + did.bytes_lost);
+    assert!(did.segments_by_dead.iter().sum::<u64>() > 0, "{did:?}");
 
     // And the next session reads the same.
     db.versions.unpin();

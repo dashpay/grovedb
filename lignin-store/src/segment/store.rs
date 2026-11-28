@@ -214,6 +214,21 @@ impl Segment {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Tells the file layer that the block at `location` is about to be
+    /// read, if the range lies in the segment's file: after its header and
+    /// before the end of what is written of it, as far as this handle
+    /// knows. For a sealed segment that end is the file's, past its
+    /// blocks; whether a location is a block is the read's to say.
+    fn will_read(&self, location: BlockLocation) {
+        let end = self.end.load(Ordering::Acquire);
+        let len = u64::from(location.len);
+        let inside = location.offset >= DATA_START
+            && (location.offset.checked_add(len)).is_some_and(|after| after <= end);
+        if inside {
+            self.file.will_read(location.offset, len);
+        }
+    }
+
     fn read_exact(&self, buf: &mut [u8], offset: u64) -> Result<(), SegmentStoreError> {
         self.file
             .read_exact_at(buf, offset)
@@ -432,6 +447,18 @@ pub struct SegmentStore {
     /// and it is taken before `segments`.
     creating: Mutex<Option<FileId>>,
     segments: RwLock<Segments>,
+    /// The blocks [`Self::read`] read, and their bytes.
+    reads: BlockReads,
+}
+
+/// The blocks read by their locations from the segments of a store
+/// ([`SegmentStore::reads`]): what page loads and write-back read of
+/// base images and delta runs. The blocks a walk passes
+/// ([`SegmentStore::walk`]) are not among them.
+#[derive(Debug, Default)]
+struct BlockReads {
+    blocks: AtomicU64,
+    bytes: AtomicU64,
 }
 
 impl SegmentStore {
@@ -497,6 +524,7 @@ impl SegmentStore {
             read_only,
             creating: Mutex::new(last_id),
             segments: RwLock::new(segments),
+            reads: BlockReads::default(),
         })
     }
 
@@ -818,8 +846,51 @@ impl SegmentStore {
         max_payload_len: usize,
         buf: &'a mut Vec<u8>,
     ) -> Result<Block<'a>, SegmentStoreError> {
-        self.segment(location.file)?
-            .block(location, max_payload_len, buf)
+        let block = self
+            .segment(location.file)?
+            .block(location, max_payload_len, buf)?;
+        self.reads.blocks.fetch_add(1, Ordering::Relaxed);
+        let bytes = u64::from(location.len);
+        self.reads.bytes.fetch_add(bytes, Ordering::Relaxed);
+        Ok(block)
+    }
+
+    /// Tells the file layer that the blocks at `locations` are about to be
+    /// read, each with [`Self::read`]: the blocks of one page's chain, which
+    /// were written at different times and so, as a rule, lie apart. A
+    /// file layer that acts on the hint ([`VfsFile::will_read`]) can bring
+    /// them in at the same time.
+    ///
+    /// It is advice: nothing is checked and nothing is reported, and
+    /// neither the file layer nor the system need act on it. A location
+    /// that names no segment of the store, or does not lie in its
+    /// segment's file as far as that is written when the hint is made, is
+    /// passed over. That says nothing of what a read of it answers. One
+    /// block alone is not worth a call, and none is made for it.
+    pub fn will_read(&self, locations: &[BlockLocation]) {
+        if locations.len() < 2 {
+            return;
+        }
+        // As a read does, each call of the file layer is made with no lock
+        // of the store held.
+        for &location in locations {
+            if let Ok(segment) = self.segment(location.file) {
+                segment.will_read(location);
+            }
+        }
+    }
+
+    /// How many blocks [`Self::read`] has read since the store was opened,
+    /// and their bytes as stored, frames included: every read that
+    /// returned a block, whoever made it. Each is one read of the file
+    /// layer. A read that failed is not counted, and nor are the blocks
+    /// of a walk.
+    pub fn reads(&self) -> (u64, u64) {
+        let reads = &self.reads;
+        (
+            reads.blocks.load(Ordering::Relaxed),
+            reads.bytes.load(Ordering::Relaxed),
+        )
     }
 
     /// The format version the segment `file` was written in, from its file

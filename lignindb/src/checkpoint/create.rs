@@ -234,14 +234,21 @@ impl<'s> Checkpointer<'s> {
     /// directory, and on another file system.
     ///
     /// **This call puts nothing at `target` but the whole checkpoint.** The
-    /// checkpoint is built beside it, in a directory of the target's name
-    /// with [`CREATING_SUFFIX`](super::CREATING_SUFFIX) added, which is
-    /// renamed to `target` when everything in it is durable. That name is
-    /// reserved for creation. Before building in a directory already
-    /// there, the call takes its lock, checks the directory again under
-    /// that lock, syncs its parent, and removes every entry except the
-    /// lock file. Where its lock is found held, as by another creation
-    /// that is building in it, the call fails
+    /// checkpoint is built beside it, in the staging directory of the
+    /// creation: a directory of the target's name with
+    /// [`CREATING_SUFFIX`](super::CREATING_SUFFIX) added, in which the
+    /// directory it is built in
+    /// ([`BUILDING_DIR_NAME`](super::BUILDING_DIR_NAME)) is renamed to
+    /// `target` when everything in it is durable. That name is reserved
+    /// for creation. **A directory already there under it is built in
+    /// only where it lists what a creation puts there and nothing else**:
+    /// a database, or anything else that lies there, fails the call and
+    /// is as it was ([`CheckpointError::NotStaging`]). Before building in
+    /// what an earlier creation left, the call takes its lock, reads the
+    /// directory again under that lock, syncs the directory above and the
+    /// directory itself, reads it once more, and removes what was built
+    /// in it. Where its lock is found held, as by another creation that
+    /// is building in it, the call fails
     /// ([`CheckpointError::Creating`]).
     ///
     /// **When this returns `Ok`, the checkpoint is durable, and so is its
@@ -267,14 +274,14 @@ impl<'s> Checkpointer<'s> {
     /// until the database is opened again, as after any sync of it that
     /// fails (`lignin_store::wal`). What was made is taken away again as
     /// far as the file layer lets it, and what it does not let go stays
-    /// under the other name, for the next creation at `target` or a
+    /// in the staging directory, for the next creation at `target` or a
     /// [`delete`](super::delete) to remove. Nothing is at `target` then,
     /// with one exception: where the directory had that name already, the
     /// name could not be made durable, and it could not be taken back
     /// either, `target` is the whole checkpoint, and is not known to be
     /// durable. Where it was taken back and that could not be made durable,
-    /// the whole checkpoint is under the other name, and a power cut can
-    /// leave it at `target`.
+    /// the whole checkpoint is in the staging directory, and a power cut
+    /// can leave it at `target`.
     pub fn create(&self, target: &Path) -> Result<Created, CheckpointError> {
         if let Some(stopped) = self.state.stopped() {
             return Err(CheckpointError::Stopped(stopped));
@@ -295,8 +302,9 @@ impl<'s> Checkpointer<'s> {
         #[cfg(all(test, not(loom)))]
         self.reached(Step::Made);
         let created = self.fill(&mut made, &source, catch_up);
-        if created.is_err() {
-            made.remove();
+        match created {
+            Ok(_) => made.leave(),
+            Err(_) => made.remove(),
         }
         created
     }

@@ -297,31 +297,8 @@ impl Scopes {
         whole: &[Subtree],
         lineage: &mut L,
     ) -> Result<(), Refused<L::Error>> {
-        let who = Who::scope(id);
-        if self.open.len() > 1 {
-            for unit in reads {
-                if let Some(held) = self.read_refused(who, *unit, lineage)? {
-                    return Err(Refused::Overlap(held));
-                }
-            }
-            for unit in units {
-                if (self.claims.get(unit)).is_some_and(|claim| claim.held_beside(who)) {
-                    return Err(Refused::Overlap(*unit));
-                }
-                if let Some(above) = self.held_above(who, *unit, lineage)? {
-                    return Err(Refused::Overlap(Unit::new(Column::Data, above)));
-                }
-            }
-            for above in whole {
-                for (unit, claim) in &self.claims {
-                    let below = claim.held_beside(who)
-                        && unit.subtree != *above
-                        && lineage.below(&unit.subtree, above)?;
-                    if below {
-                        return Err(Refused::Overlap(*unit));
-                    }
-                }
-            }
+        if let Some(held) = self.write_refused(id, units, reads, whole, lineage)? {
+            return Err(Refused::Overlap(held));
         }
         for unit in units {
             // The unit is the scope's to write from here on. What the map
@@ -341,6 +318,48 @@ impl Scopes {
             }
         }
         Ok(())
+    }
+
+    /// The unit that refuses the scope `id` the claims of [`Self::write`],
+    /// if one does. Nothing is taken: an operation that makes its change
+    /// before it takes its claims asks this first, and is granted them
+    /// afterwards if no claim was taken or given up in between.
+    pub(crate) fn write_refused<L: Lineage>(
+        &self,
+        id: ScopeId,
+        units: &[Unit],
+        reads: &[Unit],
+        whole: &[Subtree],
+        lineage: &mut L,
+    ) -> Result<Option<Unit>, L::Error> {
+        let who = Who::scope(id);
+        if self.open.len() <= 1 {
+            return Ok(None);
+        }
+        for unit in reads {
+            if let Some(held) = self.read_refused(who, *unit, lineage)? {
+                return Ok(Some(held));
+            }
+        }
+        for unit in units {
+            if (self.claims.get(unit)).is_some_and(|claim| claim.held_beside(who)) {
+                return Ok(Some(*unit));
+            }
+            if let Some(above) = self.held_above(who, *unit, lineage)? {
+                return Ok(Some(Unit::new(Column::Data, above)));
+            }
+        }
+        for above in whole {
+            for (unit, claim) in &self.claims {
+                let below = claim.held_beside(who)
+                    && unit.subtree != *above
+                    && lineage.below(&unit.subtree, above)?;
+                if below {
+                    return Ok(Some(*unit));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Checks what the table holds against itself: every claim is of an

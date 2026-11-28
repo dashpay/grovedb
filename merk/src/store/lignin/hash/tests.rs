@@ -1386,6 +1386,77 @@ fn a_commit_makes_the_hashes_merk_left_out_as_merk_would_have() {
     }
 }
 
+/// The engine makes the hashes that Merk left out when it is asked inside
+/// the transaction, before the commit (`lignindb::txn`, "An evaluation
+/// before the commit"), with the same rules: the call gives the root
+/// hash a commit of Merk gives the same tree, the store hands out the
+/// nodes with their hashes afterwards, a second call makes the root's
+/// hash alone, and the commit makes no hash, with rules that refuse
+/// every one.
+#[test]
+fn a_call_before_the_commit_makes_the_hashes_merk_left_out_as_merk_would_have() {
+    for tree_type in TREE_TYPES {
+        let at = format!("{tree_type:?}");
+        let lignin = Lignin::new();
+        let path = lignin.path();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+
+        let fresh = modified(0..150, tree_type).unwrap();
+        let handle = store(&writer);
+        let mut change_set = handle.change_set();
+        change_set.state_root(Some(fresh.key()));
+        let with_children = put_below(&mut change_set, &fresh);
+        handle.commit(change_set).unwrap().expect("the write");
+        // The root has a stale hash: the store does not hand it out.
+        let refused = handle.get_node(fresh.key(), NO_COST, version());
+        assert!(refused.unwrap().is_err(), "{at}");
+        drop(handle);
+        assert_eq!(transaction.stats().stale_nodes, with_children, "{at}");
+
+        // The call, through the scope of the writer: one node hash for
+        // each link and one for the root, of two calls of the hash
+        // function each.
+        let expected = hashed(fresh);
+        let root_hash = expected.hash_for_link(tree_type).unwrap();
+        let scope = writer.into_scope();
+        let mut rules = MerkHashRules::new(version());
+        let made = scope.evaluate(Subtree::new(SUBTREE), &mut rules);
+        assert_eq!(made.expect("the hashes are made"), Some(root_hash), "{at}");
+        assert_eq!(rules.cost().hash_node_calls, 150 * 2, "{at}");
+        assert_eq!(transaction.stats().stale_nodes, 0, "{at}");
+
+        // Every node is handed out with the hashes, heights and
+        // aggregates that a commit of Merk gives the same tree.
+        let writer = LigninWriter::new(scope);
+        assert_eq!(same_hashes(&store(&writer), &expected, &at), 150);
+
+        // A second call makes the hash of the root from its cell, and
+        // nothing else.
+        let scope = writer.into_scope();
+        let mut rules = MerkHashRules::new(version());
+        let again = scope.evaluate(Subtree::new(SUBTREE), &mut rules);
+        assert_eq!(again.expect("a hash"), Some(root_hash), "{at}");
+        assert_eq!(rules.cost().hash_node_calls, 2, "{at}");
+        scope.merge();
+
+        // The commit makes no hash: its rules refuse every one.
+        assert_eq!(lignin.commit(&transaction, &mut NoStaleHashes), 0, "{at}");
+        let reader = path.begin();
+        let committed = LigninNodeStore::read_only(&reader, LigninSubtree::alone(SUBTREE));
+        assert_eq!(same_hashes(&committed, &expected, &at), 150);
+        let merk = Merk::open_layered_with_root_key(
+            committed,
+            Some(expected.key().to_vec()),
+            tree_type,
+            NO_COST,
+            version(),
+        );
+        let merk = merk.unwrap().expect("the Merk opens");
+        assert_eq!(merk.root_hash().unwrap(), root_hash, "{at}");
+    }
+}
+
 #[test]
 fn a_node_that_cannot_be_handed_over_is_refused_when_it_is_put() {
     let lignin = Lignin::new();

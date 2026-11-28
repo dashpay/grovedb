@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     engine::{Counters, Engine, NodeAnatomy},
-    machine::Machine,
+    machine::{Machine, StorageReads},
     BenchError,
 };
 
@@ -57,6 +57,10 @@ pub struct WorkloadSpec {
     pub document_size: u32,
     /// State transitions per block.
     pub transitions_per_block: u32,
+    /// Documents created after the load as the phase `churn`, before the
+    /// measured creates. A report from before the phase has none.
+    #[serde(default)]
+    pub churn: u64,
     /// Documents created after the load, measured as the write rows.
     pub measured_creates: u64,
     /// Document replacements after those.
@@ -158,6 +162,11 @@ pub struct PhaseTotals {
     /// Bytes the operating system counted as written by the process
     /// (`/proc/self/io` `write_bytes`), where it counts them.
     pub process_write_bytes: Option<u64>,
+    /// What the operating system counted of the process's reads over the
+    /// phase, where it counts them. A report from before the field reads
+    /// back with no count.
+    #[serde(default)]
+    pub storage_reads: StorageReads,
 }
 
 /// Files under a database directory, in its subdirectories too.
@@ -624,11 +633,11 @@ pub fn compare(first: &Report, second: &Report) -> Vec<Agreement> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::bench::machine::ColdMethod;
 
-    fn row(id: &str, phase: &str, value: f64) -> Row {
+    pub(crate) fn row(id: &str, phase: &str, value: f64) -> Row {
         Row {
             id: id.to_string(),
             phase: phase.to_string(),
@@ -647,7 +656,7 @@ mod tests {
         }
     }
 
-    fn engine(name: &str, rows: Vec<Row>) -> EngineReport {
+    pub(crate) fn engine(name: &str, rows: Vec<Row>) -> EngineReport {
         EngineReport {
             engine: name.to_string(),
             root_hash_after_load: String::new(),
@@ -659,7 +668,7 @@ mod tests {
         }
     }
 
-    fn report(engines: Vec<EngineReport>) -> Report {
+    pub(crate) fn report(engines: Vec<EngineReport>) -> Report {
         Report {
             schema: SCHEMA.to_string(),
             started_at_unix: 0,
@@ -675,6 +684,7 @@ mod tests {
                 owners: 1,
                 document_size: 1,
                 transitions_per_block: 1,
+                churn: 0,
                 measured_creates: 0,
                 updates: 0,
                 deletes: 0,

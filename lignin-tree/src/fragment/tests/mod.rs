@@ -137,6 +137,9 @@ pub(crate) struct Mem {
     behind: Vec<CellAddress>,
     /// How many times a host was said to be behind.
     said_behind: usize,
+    /// Each time the pages were asked whether a host is behind: the host,
+    /// and how many pages had been read or changed before.
+    asked: Vec<(CellAddress, usize)>,
 }
 
 impl Mem {
@@ -156,6 +159,7 @@ impl Mem {
             writes_left: None,
             behind: Vec::new(),
             said_behind: 0,
+            asked: Vec::new(),
         }
     }
 
@@ -226,6 +230,7 @@ impl Pages for Mem {
     fn host_is_behind(&mut self, host: CellAddress) -> bool {
         let behind = self.behind.contains(&host);
         self.said_behind += usize::from(behind);
+        self.asked.push((host, self.touched.len()));
         behind
     }
 

@@ -6,10 +6,10 @@
 use std::{
     collections::BTreeMap,
     fmt::Debug,
-    fs,
+    fs, io,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use grovedb_costs::{CostResult, OperationCost};
@@ -23,12 +23,13 @@ use grovedb_storage::{
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_io::{
     sim::{Fault, FaultRule, OpKind, OpSet, SimConfig, SimVfs},
-    Create, OpenMode, Vfs,
+    Create, DirEntry, OpenMode, StdVfs, SyncItem, Vfs, VfsFile, VfsLock,
 };
 
 use super::{
-    lignindb::Options, EitherBatch, EitherEngine, EitherWriteGroup, EngineChoice, EngineKind,
-    OneOf, WHERE_NONE_IS_SAID,
+    lignindb::{self, Options},
+    EitherBatch, EitherEngine, EitherWriteGroup, EngineChoice, EngineKind, OneOf,
+    WHERE_NONE_IS_SAID,
 };
 use crate::{
     batch::QualifiedGroveDbOp,
@@ -662,6 +663,233 @@ fn a_choice_of_lignindb_looks_at_the_file_system_of_its_options() {
     .expect("a tree");
     assert!(sim.read_dir(&grove).is_ok_and(|listed| !listed.is_empty()));
     assert!(files(host.path()).is_empty());
+
+    // A checkpoint of that database is built on the file system of the
+    // choice, and the directory it is built in is looked for there. A
+    // database of RocksDB under that name on the file system of the
+    // process refuses nothing, and is as it was.
+    let target = host.path().join("checkpoint");
+    let beside = host.path().join("checkpoint.creating");
+    filled_by_rocksdb_itself(&beside, v);
+    let before = files(&beside);
+    db.create_checkpoint(&target).expect("a checkpoint");
+    assert!(sim.read_dir(&target).is_ok_and(|listed| !listed.is_empty()));
+    assert!(sim.read_dir(&beside).is_err());
+    assert!(!target.exists());
+    assert_eq!(files(&beside), before);
+
+    // A directory under such a name there, with an entry of RocksDB's,
+    // refuses the creation, and has that entry and no other afterwards.
+    let target = host.path().join("another");
+    let beside = host.path().join("another.creating");
+    sim.create_dir(&beside).expect("a directory");
+    let made = sim.open(&beside.join("CURRENT"), OpenMode::Write(Create::New));
+    drop(made.expect("a file"));
+    let words = refusal(db.create_checkpoint(&target));
+    assert!(
+        words.contains("has an entry of RocksDB's (`CURRENT`)"),
+        "{words}"
+    );
+    let listed = sim.read_dir(&beside).expect("a listing");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "CURRENT");
+    assert!(sim.read_dir(&target).is_err());
+
+    // A listing of the directory above that fails once is the error of
+    // the creation, and LigninDB, whose own listing would succeed, is not
+    // called: the directory has its entry afterwards.
+    let listing = OpSet::of(&[OpKind::ReadDir]);
+    sim.add_rule(FaultRule::new(Fault::Eio).on(listing));
+    match db.create_checkpoint(&target) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => {
+            assert!(words.contains("could not be listed"), "{words}");
+            let above = host.path().display().to_string();
+            assert!(
+                words.contains(&format!("the directory {above} could")),
+                "{words}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    sim.clear_rules();
+    let listed = sim.read_dir(&beside).expect("a listing");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "CURRENT");
+    assert!(sim.read_dir(&target).is_err());
+
+    // So is a listing of that directory itself that fails once, after the
+    // one of the directory above.
+    let listing = OpSet::of(&[OpKind::ReadDir]);
+    sim.add_rule(FaultRule::new(Fault::Eio).on(listing).skip(1));
+    match db.create_checkpoint(&target) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => {
+            let beside = beside.display().to_string();
+            assert!(
+                words.contains(&format!("the directory {beside} could not be listed")),
+                "{words}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    sim.clear_rules();
+    let listed = sim.read_dir(&beside).expect("a listing");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "CURRENT");
+    assert!(sim.read_dir(&target).is_err());
+}
+
+/// Asserts that a creation of a checkpoint at `target` was refused because
+/// the engine the type holds does not say which file system it is on, word
+/// for word.
+fn not_looked_beside<T>(refused: Result<T, impl Into<Error>>, target: &Path) {
+    let words = refusal(refused);
+    let expected = format!(
+        "no checkpoint was made at {}: the LigninDB engine was built on a database that its \
+         caller opened, so the file system it builds on is not known here and the directory \
+         beside the path, in which LigninDB builds the checkpoint, was not looked at; open the \
+         database with GroveDB's own open of the engine to make checkpoints through it",
+        target.display()
+    );
+    assert_eq!(words, expected);
+}
+
+#[test]
+fn a_lignindb_engine_that_its_caller_hands_over_is_guarded_where_it_says_its_file_system() {
+    let v = GroveVersion::latest();
+    let host = tempfile::tempdir().expect("a directory");
+    let sim = sim_with(host.path(), 7);
+    let on_sim = Options {
+        vfs: Arc::new(sim.clone()),
+        ..Options::default()
+    };
+    let grove = host.path().join("grove");
+    // The two file systems disagree in both directions. On the engine's,
+    // a directory beside one path has an entry of RocksDB's, which
+    // LigninDB would empty. On the process's, a database of RocksDB is
+    // beside another path, where the engine builds nothing.
+    let (target, on_the_engines) = (
+        host.path().join("checkpoint"),
+        host.path().join("checkpoint.creating"),
+    );
+    sim.create_dir(&on_the_engines).expect("a directory");
+    let made = sim.open(
+        &on_the_engines.join("CURRENT"),
+        OpenMode::Write(Create::New),
+    );
+    drop(made.expect("a file"));
+    let (another, on_the_processes) = (
+        host.path().join("another"),
+        host.path().join("another.creating"),
+    );
+    filled_by_rocksdb_itself(&on_the_processes, v);
+    let before = files(&on_the_processes);
+    let as_they_were = || {
+        let listed = sim.read_dir(&on_the_engines).expect("a listing");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "CURRENT");
+        assert!(sim.read_dir(&target).is_err());
+        assert_eq!(files(&on_the_processes), before);
+        assert!(sim.read_dir(&on_the_processes).is_err());
+        assert!(!another.exists());
+    };
+
+    // An engine that was built on a database its caller opened does not
+    // say which file system it is on. The type looks at neither: the
+    // creation beside the entry of RocksDB's on the engine's file system,
+    // and the one beside the database of RocksDB on the process's, are
+    // each refused for that, in the same words and not for what is beside
+    // the path, and nothing is made or changed on either.
+    let of_the_caller = lignindb::Db::open(&grove, &on_sim).expect("a database");
+    let built = LigninEngine::new(of_the_caller).expect("an engine");
+    let db = GroveDb::from_engine(EitherEngine::from(built));
+    assert_eq!(db.engine().kind(), EngineKind::Lignin);
+    not_looked_beside(db.create_checkpoint(&target), &target);
+    as_they_were();
+    not_looked_beside(db.create_checkpoint(&another), &another);
+    assert!(sim.read_dir(&another).is_err());
+    as_they_were();
+    // So is one at a path with nothing beside it on either.
+    let yet_another = host.path().join("yet another");
+    not_looked_beside(db.create_checkpoint(&yet_another), &yet_another);
+    assert!(sim.read_dir(&yet_another).is_err() && !yet_another.exists());
+    as_they_were();
+    drop(db);
+
+    // An engine that `LigninEngine` opened, on another file system than
+    // the process's, and that its caller handed to the type. It keeps the
+    // file system it is on, and the type looks there: the creation beside
+    // the entry of RocksDB's is refused for it, and the one beside the
+    // database on the file system of the process is made.
+    let opened = LigninEngine::open_with(&grove, &on_sim).expect("a database");
+    let db = GroveDb::from_engine(EitherEngine::from(opened));
+    let words = refusal(db.create_checkpoint(&target));
+    assert!(
+        words.contains("has an entry of RocksDB's (`CURRENT`)"),
+        "{words}"
+    );
+    as_they_were();
+    db.create_checkpoint(&another).expect("a checkpoint");
+    assert!(sim
+        .read_dir(&another)
+        .is_ok_and(|listed| !listed.is_empty()));
+    as_they_were();
+    drop(db);
+
+    // On the file system of the process it is the same. An engine that
+    // `LigninEngine` opened, as a database or as a checkpoint, and that
+    // was handed to the type makes its checkpoints and is refused one
+    // beside the database of RocksDB.
+    let live = host.path().join("live");
+    filled(&live, EngineKind::Lignin, v);
+    let opened = LigninEngine::open(&live).expect("a database");
+    let db = GroveDb::from_engine(EitherEngine::from(opened));
+    let first = host.path().join("first");
+    db.create_checkpoint(&first).expect("a checkpoint");
+    beside_a_database_of_rocksdb(db.create_checkpoint(&another), &another);
+    drop(db);
+    let opened = LigninEngine::open_checkpoint(&first).expect("a checkpoint");
+    let of_the_checkpoint = GroveDb::from_engine(EitherEngine::from(opened));
+    assert!(holds_the_item(&of_the_checkpoint, v));
+    let second = host.path().join("second");
+    (of_the_checkpoint.create_checkpoint(&second)).expect("a checkpoint of a checkpoint");
+    beside_a_database_of_rocksdb(of_the_checkpoint.create_checkpoint(&another), &another);
+    drop(of_the_checkpoint);
+    assert_eq!(files(&on_the_processes), before);
+
+    // One that was built on a database its caller opened there makes none,
+    // with nothing beside the path.
+    let of_the_caller = lignindb::Db::open(&live, &Options::default()).expect("a database");
+    let built = LigninEngine::new(of_the_caller).expect("an engine");
+    let db = GroveDb::from_engine(EitherEngine::from(built));
+    let third = host.path().join("third");
+    not_looked_beside(db.create_checkpoint(&third), &third);
+    assert!(!third.exists());
+    drop(db);
+
+    // And an engine that the type opened by an open that names no engine
+    // makes its checkpoints, after the open of a database and after the
+    // open of a checkpoint, and is refused one beside the database of
+    // RocksDB.
+    let opened = EitherEngine::open(&live).expect("a database of LigninDB");
+    assert_eq!(opened.kind(), EngineKind::Lignin);
+    let db = GroveDb::from_engine(opened);
+    db.create_checkpoint(&third).expect("a checkpoint");
+    beside_a_database_of_rocksdb(db.create_checkpoint(&another), &another);
+    drop(db);
+    let opened = EitherEngine::open_checkpoint(&third).expect("a checkpoint of LigninDB");
+    assert_eq!(opened.kind(), EngineKind::Lignin);
+    let of_the_checkpoint = GroveDb::from_engine(opened);
+    assert!(holds_the_item(&of_the_checkpoint, v));
+    let fourth = host.path().join("fourth");
+    (of_the_checkpoint.create_checkpoint(&fourth)).expect("a checkpoint of a checkpoint");
+    beside_a_database_of_rocksdb(of_the_checkpoint.create_checkpoint(&another), &another);
+    drop(of_the_checkpoint);
+    assert_eq!(files(&on_the_processes), before);
+    assert!(!another.exists());
+    for made in [&second, &fourth] {
+        let opened = Either::open_checkpoint_with_engine(made).expect("a checkpoint");
+        assert!(holds_the_item(&opened, v));
+    }
 }
 
 #[test]
@@ -1212,58 +1440,915 @@ fn a_write_group_is_settled_and_applied_as_by_the_engine_that_is_held() {
     }
 }
 
+/// The names under which LigninDB builds a checkpoint, as a caller can
+/// spell them.
+const RESERVED: [&str; 2] = ["checkpoint.creating", "checkpoint.CREATING"];
+
+/// Asserts that a refusal is the type's of a name ending in `.creating`.
+fn reserved<T>(refused: Result<T, impl Into<Error>>) {
+    let words = refusal(refused);
+    assert!(words.contains("ends in `.creating`"), "{words}");
+}
+
+/// A database that RocksDB's own engine makes at `dir`, with a tree and an
+/// item in it, closed.
+fn filled_by_rocksdb_itself(dir: &Path, v: &GroveVersion) {
+    let db = GroveDb::from_engine(RocksDbEngine::open(dir).expect("a database of RocksDB"));
+    (db.insert(ROOT, b"tree", Element::empty_tree(), None, None, v)
+        .unwrap())
+    .expect("a tree");
+    (db.insert(TREE, b"k", item(7), None, None, v).unwrap()).expect("an item");
+    db.flush().expect("a flush");
+}
+
 #[test]
 fn rocksdb_opens_for_the_caller_and_checkpoint_creation_refuse_reserved_names() {
     let v = GroveVersion::latest();
-    let dir = tempfile::tempdir().expect("a directory");
-    let reserved = |words: String| assert!(words.contains("ends in `.creating`"), "{words}");
 
     // No database of RocksDB is made at such a path, in any case of the
-    // letters, by the choice or by an open that names no engine.
-    for name in ["checkpoint.creating", "checkpoint.CREATING"] {
+    // letters, by the choice or by an open that names no engine, where no
+    // entry says an engine: where there is no directory, in one that has
+    // no entry, as one that LigninDB has just made to build in, in one
+    // that has a lock file, which either engine keeps, and in one that has
+    // a log beside it, which is what RocksDB's open of a checkpoint leaves
+    // where it finds no database.
+    for name in RESERVED {
+        // A directory for each spelling: a file system can take the two
+        // for one name.
+        let dir = tempfile::tempdir().expect("a directory");
         let path = dir.path().join(name);
-        reserved(refusal(EitherEngine::open_with(
-            &path,
-            &EngineChoice::RocksDb,
-        )));
-        reserved(refusal(EitherEngine::open_checkpoint_with(
-            &path,
-            &EngineChoice::RocksDb,
-        )));
-        let unnamed = Either::open_with_engine(&path);
-        match WHERE_NONE_IS_SAID {
-            EngineKind::RocksDb => reserved(refusal(unnamed)),
-            // LigninDB refuses the name itself.
-            EngineKind::Lignin => assert!(unnamed.is_err()),
+        for make in [
+            |_: &Path| {},
+            |path: &Path| fs::create_dir(path).expect("a directory"),
+            |path: &Path| fs::write(path.join("LOCK"), b"").expect("a file"),
+            |path: &Path| fs::write(path.join("LOG"), b"of RocksDB").expect("a file"),
+        ] {
+            make(&path);
+            let before = path.exists().then(|| files(&path));
+            reserved(EitherEngine::open_with(&path, &EngineChoice::RocksDb));
+            reserved(EitherEngine::open_checkpoint_with(
+                &path,
+                &EngineChoice::RocksDb,
+            ));
+            let unnamed = EitherEngine::open(&path);
+            match WHERE_NONE_IS_SAID {
+                EngineKind::RocksDb => reserved(unnamed),
+                // LigninDB refuses the name itself, and the error is its
+                // own.
+                EngineKind::Lignin => {
+                    let by_the_type = unnamed.expect_err("a name of LigninDB's");
+                    let by_lignin = LigninEngine::open(&path).expect_err("the same name");
+                    assert!(matches!(by_the_type, StorageError::StorageError(_)));
+                    assert_eq!(by_the_type.to_string(), by_lignin.to_string());
+                }
+            }
+            no_checkpoint(EitherEngine::open_checkpoint(&path));
+            assert_eq!(path.exists().then(|| files(&path)), before);
         }
-        assert!(!path.exists());
+
+        // Where the path cannot be listed, and where the listing has
+        // entries of both engines, the error is the listing's, as under
+        // any other name, and no engine is called.
+        type Opened = Result<EitherEngine, StorageError>;
+        let opens: [fn(&Path) -> Opened; 4] = [
+            |path| EitherEngine::open_with(path, &EngineChoice::RocksDb),
+            |path| EitherEngine::open_checkpoint_with(path, &EngineChoice::RocksDb),
+            |path| EitherEngine::open(path),
+            |path| EitherEngine::open_checkpoint(path),
+        ];
+        fs::remove_dir_all(&path).expect("a removal");
+        fs::write(&path, b"no directory").expect("a file");
+        for open in opens {
+            match open(&path) {
+                Err(StorageError::StorageError(words)) => {
+                    assert!(words.contains("could not be listed"), "{words}")
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(fs::read(&path).expect("the file"), b"no directory");
+        fs::remove_file(&path).expect("a removal");
+        filled_by_rocksdb_itself(&path, v);
+        fs::create_dir(path.join("wal")).expect("an entry of LigninDB's name");
+        let before = files(&path);
+        for open in opens {
+            let words = refusal(open(&path));
+            assert!(words.contains("entries of both engines"), "{words}");
+        }
+        assert_eq!(files(&path), before);
     }
-    // Nor a checkpoint of a database on RocksDB.
-    let (live, beside) = (dir.path().join("live"), dir.path().join("target.creating"));
+
+    // Nor a checkpoint of a database on RocksDB, whatever is at the target:
+    // nothing, a directory with no entry, or a database of RocksDB, which
+    // is as it was.
+    let dir = tempfile::tempdir().expect("a directory");
+    let live = dir.path().join("live");
     filled(&live, EngineKind::RocksDb, v);
-    reserved(refusal(
-        open(&live, EngineKind::RocksDb).create_checkpoint(&beside),
-    ));
+    let db = open(&live, EngineKind::RocksDb);
+    let removals: [fn(&Path) -> Result<(), Error>; 2] = [
+        |path| EitherEngine::delete_checkpoint(path),
+        |path| EitherEngine::delete_checkpoint_of(EngineKind::RocksDb, path),
+    ];
+    for (name, remove) in RESERVED.into_iter().zip(removals) {
+        let target = dir.path().join(name);
+        reserved(db.create_checkpoint(&target));
+        assert!(!target.exists());
+        fs::create_dir(&target).expect("a directory");
+        reserved(db.create_checkpoint(&target));
+        assert!(files(&target).is_empty());
+        filled_by_rocksdb_itself(&target, v);
+        let before = files(&target);
+        reserved(db.create_checkpoint(&target));
+        assert_eq!(files(&target), before);
+
+        // That database is RocksDB's by its entries, so the name keeps no
+        // open of the type from it, and it is removed as a database of
+        // RocksDB, by a removal that names no engine or by one that names
+        // RocksDB.
+        let opened = EitherEngine::open_with(&target, &EngineChoice::RocksDb);
+        assert!(holds_the_item(
+            &GroveDb::from_engine(opened.expect("a database of RocksDB")),
+            v
+        ));
+        remove(&target).expect("a removal by RocksDB");
+        assert!(!target.exists());
+    }
+}
+
+/// The names of the entries of `dir` with each run of digits as one `#`:
+/// the numbers RocksDB gives its files, and the time in the name of a log
+/// it has put aside.
+fn shapes(dir: &Path) -> Vec<String> {
+    let shape = |name: String| {
+        let mut shape = String::new();
+        for letter in name.chars() {
+            match letter.is_ascii_digit() {
+                true if shape.ends_with('#') => {}
+                true => shape.push('#'),
+                false => shape.push(letter),
+            }
+        }
+        shape
+    };
+    let mut shapes: Vec<_> = names(dir).into_iter().map(shape).collect();
+    shapes.sort();
+    shapes
+}
+
+type Opened = Result<EitherEngine, StorageError>;
+type OpenedByRocksDb = Result<RocksDbEngine, StorageError>;
+
+/// Each open of the type that can go to RocksDB, by its name, with
+/// RocksDB's own, and whether that one makes a database where there is
+/// none.
+const OPENS: [(
+    &str,
+    fn(&Path) -> Opened,
+    fn(&Path) -> OpenedByRocksDb,
+    bool,
+); 4] = [
+    (
+        "open_with",
+        |path| EitherEngine::open_with(path, &EngineChoice::RocksDb),
+        |path| RocksDbEngine::open(path),
+        true,
+    ),
+    (
+        "open",
+        |path| EitherEngine::open(path),
+        |path| RocksDbEngine::open(path),
+        true,
+    ),
+    (
+        "open_checkpoint",
+        |path| EitherEngine::open_checkpoint(path),
+        |path| RocksDbEngine::open_checkpoint(path),
+        false,
+    ),
+    (
+        "open_checkpoint_with",
+        |path| EitherEngine::open_checkpoint_with(path, &EngineChoice::RocksDb),
+        |path| RocksDbEngine::open_checkpoint(path),
+        false,
+    ),
+];
+
+#[test]
+fn a_database_of_rocksdb_under_a_reserved_name_is_opened_as_under_any_other() {
+    let v = GroveVersion::latest();
+    for name in RESERVED {
+        // The same database twice, made by RocksDB's own engine: under the
+        // reserved name, and under a name that is not. Each open of the
+        // type under the reserved name is held to RocksDB's own of the
+        // other.
+        let dir = tempfile::tempdir().expect("a directory");
+        let (path, twin) = (dir.path().join(name), dir.path().join("checkpoint"));
+        for made in [&path, &twin] {
+            filled_by_rocksdb_itself(made, v);
+        }
+        assert_eq!(shapes(&path), shapes(&twin));
+
+        for (n, (call, of_the_type, of_rocksdb, _)) in (1..).zip(OPENS) {
+            let engine = of_the_type(&path).unwrap_or_else(|refused| panic!("{call}: {refused}"));
+            assert_eq!(engine.kind(), EngineKind::RocksDb, "{call}");
+            let db = GroveDb::from_engine(engine);
+            let beside = GroveDb::from_engine(of_rocksdb(&twin).expect("RocksDB's own open"));
+            // It reads what was written before it, by RocksDB's own engine
+            // and through each earlier open, and is written through.
+            assert!(holds_the_item(&db, v), "{call}");
+            for earlier in 1..n {
+                let read = db.get(TREE, &[earlier], None, v).unwrap();
+                assert_eq!(read.ok(), Some(item(earlier)), "{call}");
+            }
+            (db.insert(TREE, &[n], item(n), None, None, v).unwrap()).expect("an item");
+            (beside.insert(TREE, &[n], item(n), None, None, v).unwrap()).expect("an item");
+            let root = db.root_hash(None, v).unwrap().expect("a root hash");
+            let beside_root = beside.root_hash(None, v).unwrap().expect("a root hash");
+            assert_eq!(root, beside_root, "{call}");
+            drop((db, beside));
+
+            // The directory holds what RocksDB's own open leaves.
+            assert_eq!(shapes(&path), shapes(&twin), "{call}");
+            let found = EitherEngine::found_at(&path).expect("a look");
+            assert_eq!(found, Some(EngineKind::RocksDb), "{call}");
+        }
+    }
+}
+
+#[test]
+fn an_entry_of_rocksdbs_name_alone_under_a_reserved_name_is_rocksdbs_to_answer() {
+    // The listing goes by names: one entry of a name of RocksDB's, in a
+    // directory that holds no database, says RocksDB. Each open is then
+    // RocksDB's own of the same directory under another name: one of a
+    // database makes the database, and one of a checkpoint fails, makes
+    // none, and leaves what RocksDB's leaves. Where the entry is a
+    // `CURRENT` that names no manifest, every open fails. An error is
+    // RocksDB's own, word for word, and none of the type's.
+    let entries = [
+        ("OPTIONS-of a caller", "", true),
+        ("single.sst", "", true),
+        ("CURRENT", "no manifest", false),
+    ];
+    let cases = RESERVED
+        .into_iter()
+        .flat_map(|name| entries.map(|entry| (name, entry)));
+    for (name, (entry, bytes, opens)) in cases {
+        for (call, of_the_type, of_rocksdb, makes) in OPENS {
+            let dir = tempfile::tempdir().expect("a directory");
+            let (path, twin) = (dir.path().join(name), dir.path().join("checkpoint"));
+            for made in [&path, &twin] {
+                fs::create_dir(made).expect("a directory");
+                fs::write(made.join(entry), bytes).expect("a file");
+            }
+            let found = EitherEngine::found_at(&path).expect("a look");
+            assert_eq!(found, Some(EngineKind::RocksDb), "{call} {entry}");
+
+            let opened = of_the_type(&path);
+            let by_rocksdb = of_rocksdb(&twin);
+            assert_eq!(by_rocksdb.is_ok(), opens && makes, "{call} {entry}");
+            // The words of an error, but for the directory they name.
+            let words = |error: &StorageError, dir: &Path| {
+                assert!(matches!(error, StorageError::RocksDBError(_)), "{error:?}");
+                error.to_string().replace(&dir.display().to_string(), "")
+            };
+            match (&opened, &by_rocksdb) {
+                (Ok(engine), Ok(_)) => assert_eq!(engine.kind(), EngineKind::RocksDb, "{call}"),
+                (Err(refused), Err(by_rocksdb)) => {
+                    assert_eq!(words(refused, &path), words(by_rocksdb, &twin), "{call}")
+                }
+                _ => panic!("{call} {entry}: {opened:?}"),
+            }
+            drop((opened, by_rocksdb));
+            if opens {
+                assert_eq!(path.join("CURRENT").exists(), makes, "{call} {entry}");
+            }
+            assert_eq!(shapes(&path), shapes(&twin), "{call} {entry}");
+        }
+    }
+}
+
+/// Whether no open that can go to RocksDB opens `path`, the two that name
+/// RocksDB refuse it in the type's words, for its name where no entry
+/// says an engine and as LigninDB's where one says LigninDB, each of the
+/// two that name no engine answers what it is to answer there, and every
+/// entry below it is afterwards what it was.
+///
+/// An open that names no engine and is handed to LigninDB answers
+/// LigninDB's own error, in variant and words: the one of a database where
+/// an entry says LigninDB, or where none says an engine and such a path
+/// goes to LigninDB, and the one of a checkpoint where an entry says
+/// LigninDB. Elsewhere the answer is the type's: of the name for a
+/// database, and that the directory is no checkpoint.
+fn kept_from_rocksdb(path: &Path) -> bool {
+    let before = files(path);
+    let found = match EitherEngine::found_at(path) {
+        Ok(found @ (None | Some(EngineKind::Lignin))) => found,
+        _ => return false,
+    };
+    let why = match found {
+        None => "ends in `.creating`",
+        Some(_) => "a database of LigninDB",
+    };
+    let in_words = |opened: Opened| match opened {
+        Err(StorageError::NotSupported(words)) => words.contains(why),
+        _ => false,
+    };
+    let as_lignindb = |opened: Opened, by_lignindb: Result<LigninEngine, StorageError>| match (
+        opened,
+        by_lignindb,
+    ) {
+        (Err(of_the_type), Err(of_lignindb)) => {
+            std::mem::discriminant(&of_the_type) == std::mem::discriminant(&of_lignindb)
+                && of_the_type.to_string() == of_lignindb.to_string()
+        }
+        _ => false,
+    };
+    let unnamed = match found.unwrap_or(WHERE_NONE_IS_SAID) {
+        EngineKind::Lignin => as_lignindb(EitherEngine::open(path), LigninEngine::open(path)),
+        EngineKind::RocksDb => in_words(EitherEngine::open(path)),
+    };
+    let of_a_checkpoint = match found {
+        Some(_) => as_lignindb(
+            EitherEngine::open_checkpoint(path),
+            LigninEngine::open_checkpoint(path),
+        ),
+        None => matches!(
+            EitherEngine::open_checkpoint(path),
+            Err(StorageError::StorageError(words))
+                if words.contains("no entry of a database of either engine")
+        ),
+    };
+    in_words(EitherEngine::open_with(path, &EngineChoice::RocksDb))
+        && in_words(EitherEngine::open_checkpoint_with(
+            path,
+            &EngineChoice::RocksDb,
+        ))
+        && unnamed
+        && of_a_checkpoint
+        && files(path) == before
+}
+
+/// What was seen of a directory at one moment of a checkpoint's creation:
+/// the engine its entries say, their names, and whether it was kept from
+/// RocksDB.
+type Seen = (Option<EngineKind>, Vec<String>, bool);
+
+/// What is seen of the directory `dir` now.
+fn seen_of(dir: &Path) -> Seen {
+    let said = EitherEngine::found_at(dir).expect("a look");
+    (said, names(dir), kept_from_rocksdb(dir))
+}
+
+/// The file system of the process, on which a call that makes, opens,
+/// links or locks an entry in one directory or below it, gives an entry a
+/// name there, or removes a file there, is followed by a look at that
+/// directory, the staging directory of a creation, and by one at the
+/// directory in it that the checkpoint is built in, where that is there.
+/// What is written through an open file is followed by none, and neither
+/// is the removal of a directory or a rename to a name outside it.
+struct Watched {
+    dir: PathBuf,
+    seen: Mutex<Vec<Seen>>,
+    /// What was seen of the directory the checkpoint is built in.
+    built: Mutex<Vec<Seen>>,
+}
+
+impl Watched {
+    fn look(&self) {
+        let seen = seen_of(&self.dir);
+        self.seen.lock().expect("what was seen").push(seen);
+        let built = self.dir.join(lignindb::checkpoint::BUILDING_DIR_NAME);
+        if built.is_dir() {
+            let seen = seen_of(&built);
+            self.built.lock().expect("what was seen").push(seen);
+        }
+    }
+
+    /// Looks after a call that succeeded on a path in the directory.
+    fn after<T>(&self, path: &Path, done: io::Result<T>) -> io::Result<T> {
+        if done.is_ok() && path.starts_with(&self.dir) {
+            self.look();
+        }
+        done
+    }
+}
+
+impl Debug for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watched").finish_non_exhaustive()
+    }
+}
+
+impl Vfs for Watched {
+    fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
+        self.after(path, StdVfs.open(path, mode))
+    }
+
+    /// Looks before the directory is given another name, too: it is then
+    /// as whole as it gets under this one.
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if from.starts_with(&self.dir) {
+            self.look();
+        }
+        self.after(to, StdVfs.rename(from, to))
+    }
+
+    fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
+        self.after(link, StdVfs.hard_link(original, link))
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.after(path, StdVfs.remove_file(path))
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        self.after(path, StdVfs.create_dir(path))
+    }
+
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        StdVfs.remove_dir(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        StdVfs.read_dir(path)
+    }
+
+    fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        StdVfs.sync_dir(path)
+    }
+
+    fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
+        StdVfs.sync_together(items)
+    }
+
+    fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.after(path, StdVfs.lock(path))
+    }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.after(path, StdVfs.lock_existing(path))
+    }
+}
+
+#[test]
+fn what_lignindb_builds_or_holds_under_a_reserved_name_is_kept_from_rocksdb() {
+    let v = GroveVersion::latest();
+    for name in RESERVED {
+        // A database of LigninDB under such a name, which LigninDB makes
+        // under no such name: one that was given it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let (made, path) = (dir.path().join("made"), dir.path().join(name));
+        filled(&made, EngineKind::Lignin, v);
+        fs::rename(&made, &path).expect("a rename");
+        let found = EitherEngine::found_at(&path).expect("a look");
+        assert_eq!(found, Some(EngineKind::Lignin));
+        assert!(kept_from_rocksdb(&path));
+        // It is the database it was.
+        fs::rename(&path, &made).expect("a rename");
+        assert!(holds_the_item(&open(&made, EngineKind::Lignin), v));
+    }
+
+    // The staging directory of a creation of LigninDB and, in it, the
+    // directory the checkpoint is built in, each looked at after each
+    // call of the file layer that makes, opens, links or locks an entry
+    // there, gives an entry a name there or removes a file there, and
+    // before what was built is given the name of its target.
+    let dir = tempfile::tempdir().expect("a directory");
+    let (live, target) = (dir.path().join("live"), dir.path().join("checkpoint"));
+    let watched = Arc::new(Watched {
+        dir: dir.path().join(RESERVED[0]),
+        seen: Mutex::default(),
+        built: Mutex::default(),
+    });
+    filled(&live, EngineKind::Lignin, v);
+    let on_watched = Options {
+        vfs: watched.clone(),
+        ..Options::default()
+    };
+    let chosen = EngineChoice::Lignin(on_watched.clone());
+    let db = GroveDb::from_engine(EitherEngine::open_with(&live, &chosen).expect("a database"));
+    assert!(watched.seen.lock().expect("what was seen").is_empty());
+    db.create_checkpoint(&target).expect("a checkpoint");
+
+    let seen = std::mem::take(&mut *watched.seen.lock().expect("what was seen"));
+    let built = std::mem::take(&mut *watched.built.lock().expect("what was seen"));
+    for (said, names, kept) in seen.iter().chain(&built) {
+        assert!(kept, "{said:?} {names:?}");
+    }
+    // The staging directory was seen with no entry, with its lock file
+    // alone, and with the directory the checkpoint is built in beside
+    // that: no entry of it says an engine at any moment, so it is kept
+    // from RocksDB for its name throughout.
+    let was = |seen: &[Seen], said: Option<EngineKind>, held: &[&str]| {
+        (seen.iter()).any(|(seen, names, _)| *seen == said && names.iter().eq(held))
+    };
+    let in_it = lignindb::checkpoint::BUILDING_DIR_NAME;
+    assert!(was(&seen, None, &[]), "{seen:?}");
+    assert!(was(&seen, None, &["LOCK"]), "{seen:?}");
+    assert!(was(&seen, None, &["LOCK", in_it]), "{seen:?}");
+    assert!(seen.iter().all(|(said, ..)| said.is_none()), "{seen:?}");
+    // The directory the checkpoint is built in, whose name ends in
+    // `.creating` too, was seen with no entry, with its lock file alone,
+    // and with entries that say LigninDB, its manifest among them at the
+    // end.
+    assert!(was(&built, None, &[]), "{built:?}");
+    assert!(was(&built, None, &["LOCK"]), "{built:?}");
+    let (said, names, _) = built.last().expect("a last look");
+    assert_eq!(*said, Some(EngineKind::Lignin));
+    assert!(names.iter().any(|name| name == "MANIFEST"), "{names:?}");
+
+    // The creation was not disturbed: the checkpoint is whole.
+    assert!(!watched.dir.exists());
+    let opened = Either::open_checkpoint_with_engine(&target).expect("a checkpoint");
+    assert_eq!(opened.engine().kind(), EngineKind::Lignin);
+    assert!(holds_the_item(&opened, v));
+    drop(opened);
+
+    // A directory that is there under the name and holds an entry of a
+    // name of RocksDB's. A creation through the type is refused for it,
+    // LigninDB is not called, and the directory is as it was.
+    Either::delete_checkpoint_with_engine(&target).expect("a removal");
+    fs::create_dir(&watched.dir).expect("a directory");
+    fs::write(watched.dir.join("OPTIONS-of a caller"), b"").expect("a file");
+    let before = files(&watched.dir);
+    let entry = beside_a_database_of_rocksdb(db.create_checkpoint(&target), &target);
+    assert_eq!(entry, "OPTIONS-of a caller");
+    assert_eq!(files(&watched.dir), before);
+    assert!(watched.seen.lock().expect("what was seen").is_empty());
+    assert!(!target.exists());
+    drop(db);
+
+    // A creation that is not the type's meets LigninDB's own rule.
+    // LigninDB's own engine takes a directory under that name for what an
+    // earlier creation left only where it lists nothing but what a
+    // creation puts there: this one it refuses, with no lock file made in
+    // it and nothing of it removed. It says RocksDB as before, so an open
+    // through the type hands it to RocksDB still. Once the entry is gone,
+    // the creation builds there, and the directory is kept from RocksDB
+    // as above.
+    let of_lignindb = LigninEngine::open_with(&live, &on_watched).expect("a database");
+    let db = GroveDb::from_engine(of_lignindb);
+    match db.create_checkpoint(&target) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => assert!(
+            words.contains("which no creation of a checkpoint puts into its staging directory"),
+            "{words}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(files(&watched.dir), before);
+    assert!(!target.exists());
+    // LigninDB made, opened, locked and renamed nothing there, so the
+    // watcher recorded nothing. Looked at now, the directory says
+    // RocksDB by its one entry, and is not kept from RocksDB.
+    assert!(watched.seen.lock().expect("what was seen").is_empty());
+    assert!(watched.built.lock().expect("what was seen").is_empty());
+    let (said, names, kept) = seen_of(&watched.dir);
+    assert_eq!(said, Some(EngineKind::RocksDb));
+    assert_eq!(names[..], ["OPTIONS-of a caller"]);
+    assert!(!kept);
+
+    fs::remove_file(watched.dir.join("OPTIONS-of a caller")).expect("a removal");
+    db.create_checkpoint(&target).expect("a checkpoint");
+    let seen = std::mem::take(&mut *watched.seen.lock().expect("what was seen"));
+    let built = std::mem::take(&mut *watched.built.lock().expect("what was seen"));
+    assert!(!seen.is_empty() && !built.is_empty());
+    for (said, names, kept) in seen.iter().chain(&built) {
+        assert!(kept, "{said:?} {names:?}");
+    }
+    assert!(!watched.dir.exists());
+    let opened = Either::open_checkpoint_with_engine(&target).expect("a checkpoint");
+    assert!(holds_the_item(&opened, v));
+}
+
+/// Asserts that a call was refused by the type for an entry of RocksDB's
+/// in the directory LigninDB builds the checkpoint at `target` in, word
+/// for word, and says which entry the words name.
+fn beside_a_database_of_rocksdb<T>(refused: Result<T, impl Into<Error>>, target: &Path) -> String {
+    let words = refusal(refused);
+    let beside = format!("{}.creating", target.display());
+    let before = format!(
+        "the directory {beside} beside the checkpoint path {} has an entry of RocksDB's (`",
+        target.display()
+    );
+    let after = "`); LigninDB builds a checkpoint at the path in a directory of that name and \
+                 leaves it alone if it lists a RocksDB entry, so LigninDB was not called and \
+                 nothing was changed";
+    let entry = (words.strip_prefix(&before))
+        .and_then(|rest| rest.strip_suffix(after))
+        .unwrap_or_else(|| panic!("{words}"));
+    assert!(names(Path::new(&beside)).iter().any(|name| name == entry));
+    entry.to_owned()
+}
+
+#[test]
+fn lignindb_makes_and_removes_no_checkpoint_beside_a_database_of_rocksdb() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    let (live, target) = (dir.path().join("live"), dir.path().join("checkpoint"));
+    // Where LigninDB builds the checkpoint at the target, and what its
+    // removal of the target takes with it.
+    let beside = dir.path().join("checkpoint.creating");
+    filled(&live, EngineKind::Lignin, v);
+    let db = open(&live, EngineKind::Lignin);
+
+    // A database of RocksDB there, which the type opens under that name:
+    // made by RocksDB's own engine, written through the type, and closed.
+    filled_by_rocksdb_itself(&beside, v);
+    let through = open(&beside, EngineKind::RocksDb);
+    (through
+        .insert(TREE, b"through", item(9), None, None, v)
+        .unwrap())
+    .expect("an item");
+    through.flush().expect("a flush");
+    drop(through);
+    let before = files(&beside);
+
+    // No checkpoint is made at the target, and none is removed there by a
+    // removal that names LigninDB, where there is none.
+    beside_a_database_of_rocksdb(db.create_checkpoint(&target), &target);
+    assert!(!target.exists());
+    assert_eq!(files(&beside), before);
+    let removed = EitherEngine::delete_checkpoint_of(EngineKind::Lignin, &target);
+    beside_a_database_of_rocksdb(removed, &target);
+    assert!(!target.exists());
+    assert_eq!(files(&beside), before);
+
+    // Nor is a checkpoint of LigninDB that is at the target removed, by a
+    // removal that names no engine or by one that names LigninDB: it stays
+    // as it is, and so does the database beside it.
+    let made = dir.path().join("made");
+    db.create_checkpoint(&made).expect("a checkpoint");
+    fs::rename(&made, &target).expect("a rename");
+    let found = EitherEngine::found_at(&target).expect("a look");
+    assert_eq!(found, Some(EngineKind::Lignin));
+    let removals: [(&str, fn(&Path) -> Result<(), Error>); 3] = [
+        ("unnamed", |path| EitherEngine::delete_checkpoint(path)),
+        ("named", |path| {
+            EitherEngine::delete_checkpoint_of(EngineKind::Lignin, path)
+        }),
+        ("of GroveDb", |path| {
+            Either::delete_checkpoint_with_engine(path)
+        }),
+    ];
+    let at_the_target = files(&target);
+    for (which, remove) in removals {
+        beside_a_database_of_rocksdb(remove(&target), &target);
+        assert_eq!(files(&target), at_the_target, "{which}");
+        assert_eq!(files(&beside), before, "{which}");
+    }
+
+    // With an entry of LigninDB's among RocksDB's, the listing says
+    // neither engine, and its error is the answer of each call.
+    fs::create_dir(beside.join("wal")).expect("an entry of LigninDB's name");
+    let of_both = |refused: Result<(), Error>| {
+        let words = refusal(refused);
+        assert!(words.contains("entries of both engines"), "{words}");
+        assert_eq!(files(&target), at_the_target);
+    };
+    of_both(db.create_checkpoint(&target));
+    for (_, remove) in removals {
+        of_both(remove(&target));
+    }
+    fs::remove_dir(beside.join("wal")).expect("a removal");
+    assert_eq!(files(&beside), before);
+
+    // The database of RocksDB is the one that was written.
+    let kept = dir.path().join("kept");
+    fs::rename(&beside, &kept).expect("a rename");
+    let opened = open(&kept, EngineKind::RocksDb);
+    assert!(holds_the_item(&opened, v));
+    let read = opened.get(TREE, b"through", None, v).unwrap();
+    assert_eq!(read.ok(), Some(item(9)));
+    drop(opened);
+
+    // Where the name beside the target is a file's, LigninDB is called as
+    // before: its removal takes the checkpoint and leaves the file, and
+    // its creation answers for the file itself.
+    fs::write(&beside, b"no directory").expect("a file");
+    EitherEngine::delete_checkpoint(&target).expect("a removal by LigninDB");
+    assert!(!target.exists());
+    match db.create_checkpoint(&target) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => {
+            assert!(words.contains("is not a directory of its own"), "{words}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fs::read(&beside).expect("the file"), b"no directory");
+    fs::remove_file(&beside).expect("a removal");
+
+    // And where a directory is there in which no entry says RocksDB,
+    // LigninDB is called as before, and its own rule answers. What a
+    // creation left there, its lock file and the directory it built in
+    // with a part of a checkpoint, says no engine: a creation builds in
+    // it, and a removal takes it with the checkpoint or without one.
+    let left = || {
+        let built = beside.join(lignindb::checkpoint::BUILDING_DIR_NAME);
+        fs::create_dir_all(built.join("seg")).expect("the directories");
+        fs::write(built.join("MANIFEST"), b"cut short").expect("a file");
+        fs::write(beside.join("LOCK"), b"").expect("a file");
+        assert_eq!(EitherEngine::found_at(&beside).expect("a look"), None);
+    };
+    left();
+    db.create_checkpoint(&target).expect("a checkpoint");
+    assert!(!beside.exists());
+    left();
+    EitherEngine::delete_checkpoint(&target).expect("a removal by LigninDB");
+    assert!(!target.exists() && !beside.exists());
+    left();
+    EitherEngine::delete_checkpoint_of(EngineKind::Lignin, &target).expect("a removal by LigninDB");
     assert!(!beside.exists());
 
-    // A database that RocksDB's own engine made under such a name is
-    // returned by no open of the type, of a database or of a checkpoint,
-    // and is as it was after each.
-    drop(RocksDbEngine::open(&beside).expect("a database of RocksDB"));
-    let before = files(&beside);
-    let refused_and_as_before = |words: String| {
-        reserved(words);
-        assert_eq!(files(&beside), before);
+    // What no creation left there, with no entry of an engine and with
+    // entries that say LigninDB, is not LigninDB's to take by its rule: a
+    // creation is refused in LigninDB's words, a removal that finds no
+    // checkpoint finds nothing that a creation left either, and a removal
+    // of a checkpoint takes the checkpoint and passes the directory over.
+    // It is as it was after each.
+    let not_left: [fn(&Path); 2] = [
+        |beside| fs::write(beside.join("left"), b"by somebody").expect("a file"),
+        |beside| {
+            fs::write(beside.join("MANIFEST"), b"cut short").expect("a file");
+            fs::create_dir(beside.join("seg")).expect("a directory");
+        },
+    ];
+    let of_lignindb = |refused: Result<(), Error>, said: &str| match refused {
+        Err(Error::StorageError(StorageError::StorageError(words))) => {
+            assert!(words.contains(said), "{words}")
+        }
+        other => panic!("{other:?}"),
     };
-    let opened = EitherEngine::open_with(&beside, &EngineChoice::RocksDb);
-    refused_and_as_before(refusal(opened));
-    let opened = EitherEngine::open_checkpoint_with(&beside, &EngineChoice::RocksDb);
-    refused_and_as_before(refusal(opened));
-    refused_and_as_before(refusal(Either::open_with_engine(&beside)));
-    refused_and_as_before(refusal(Either::open_checkpoint_with_engine(&beside)));
-    // It is removed as a database of RocksDB.
-    EitherEngine::delete_checkpoint(&beside).expect("a removal by RocksDB");
-    assert!(!beside.exists());
+    for (said, fill) in [None, Some(EngineKind::Lignin)].into_iter().zip(not_left) {
+        fs::create_dir(&beside).expect("a directory");
+        fill(&beside);
+        assert_eq!(EitherEngine::found_at(&beside).expect("a look"), said);
+        let before = files(&beside);
+
+        of_lignindb(
+            db.create_checkpoint(&target),
+            "which no creation of a checkpoint puts into its staging directory",
+        );
+        assert!(!target.exists());
+        assert_eq!(files(&beside), before, "{said:?}");
+        of_lignindb(
+            EitherEngine::delete_checkpoint_of(EngineKind::Lignin, &target),
+            "is not a directory of its own",
+        );
+        assert_eq!(files(&beside), before, "{said:?}");
+        for (which, remove) in removals {
+            placed(&db, &target);
+            remove(&target).expect("a removal by LigninDB");
+            assert!(!target.exists(), "{which}");
+            assert_eq!(files(&beside), before, "{which} {said:?}");
+        }
+        fs::remove_dir_all(&beside).expect("a removal");
+    }
+
+    // A checkpoint under a name that ends in `.creating` in another
+    // spelling than the one LigninDB builds under. LigninDB removes it as
+    // a database, and takes what is beside it under that name with
+    // `.creating` added: a database of RocksDB there refuses each removal,
+    // and both are as they were.
+    let dir = tempfile::tempdir().expect("a directory");
+    let (live, target) = (dir.path().join("live"), dir.path().join(RESERVED[1]));
+    let beside = dir.path().join(format!("{}.creating", RESERVED[1]));
+    filled(&live, EngineKind::Lignin, v);
+    placed(&open(&live, EngineKind::Lignin), &target);
+    filled_by_rocksdb_itself(&beside, v);
+    let (at_the_target, before) = (files(&target), files(&beside));
+    for (which, remove) in removals {
+        beside_a_database_of_rocksdb(remove(&target), &target);
+        assert_eq!(files(&target), at_the_target, "{which}");
+        assert_eq!(files(&beside), before, "{which}");
+    }
+}
+
+/// A checkpoint of the database `db` of LigninDB at `target`, made under
+/// another name and given that one.
+fn placed(db: &Either, target: &Path) {
+    let made = target.with_file_name("made");
+    db.create_checkpoint(&made).expect("a checkpoint");
+    fs::rename(&made, target).expect("a rename");
+}
+
+#[test]
+fn lignindb_is_called_for_a_checkpoint_beside_a_database_of_rocksdb_it_does_not_take() {
+    let v = GroveVersion::latest();
+    let removals: [fn(&Path) -> Result<(), Error>; 2] = [
+        |path| EitherEngine::delete_checkpoint(path),
+        |path| EitherEngine::delete_checkpoint_of(EngineKind::Lignin, path),
+    ];
+
+    // LigninDB takes the directory beside a checkpoint path only where the
+    // directory above lists the name, byte for byte, as a directory of
+    // its own. A database of RocksDB under another spelling of the name,
+    // and one that a link of the name leads to, are not LigninDB's to
+    // take: a removal and a creation at the path are LigninDB's own, and
+    // the database is as it was.
+    for linked in [false, true] {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (live, target) = (dir.path().join("live"), dir.path().join("checkpoint"));
+        let beside = dir.path().join("checkpoint.creating");
+        filled(&live, EngineKind::Lignin, v);
+        let db = open(&live, EngineKind::Lignin);
+        let of_rocksdb = match linked {
+            true => dir.path().join("of RocksDB"),
+            false => dir.path().join("checkpoint.CREATING"),
+        };
+        filled_by_rocksdb_itself(&of_rocksdb, v);
+        if linked {
+            std::os::unix::fs::symlink(&of_rocksdb, &beside).expect("a link");
+        }
+        let before = files(&of_rocksdb);
+        // Whether the name LigninDB builds under leads to that database:
+        // through the link, or on a file system that takes the two
+        // spellings for one name.
+        let leads_to_it = beside.exists();
+        assert!(leads_to_it || !linked);
+        if leads_to_it {
+            let found = EitherEngine::found_at(&beside).expect("a look");
+            assert_eq!(found, Some(EngineKind::RocksDb));
+        }
+
+        for remove in removals {
+            placed(&db, &target);
+            remove(&target).expect("a removal by LigninDB");
+            assert!(!target.exists(), "{linked}");
+            assert_eq!(files(&of_rocksdb), before, "{linked}");
+        }
+        // LigninDB builds under no name that is taken, and answers so
+        // itself; where the name is free, it makes the checkpoint.
+        match (leads_to_it, db.create_checkpoint(&target)) {
+            (true, Err(Error::StorageError(StorageError::StorageError(words)))) => {
+                assert!(words.contains("is not a directory of its own"), "{words}")
+            }
+            (false, Ok(())) => assert!(holds_the_item(
+                &Either::open_checkpoint_with_engine(&target).expect("a checkpoint"),
+                v
+            )),
+            other => panic!("{linked} {other:?}"),
+        }
+        assert_eq!(files(&of_rocksdb), before, "{linked}");
+        assert_eq!(beside.is_symlink(), linked);
+    }
+
+    // A path whose own last name ends in `.creating`. LigninDB makes no
+    // checkpoint there, and its removal of such a path is of that
+    // directory alone: what is beside it under the name with `.creating`
+    // added once more is not looked for, and a database of RocksDB there
+    // is as it was.
+    let dir = tempfile::tempdir().expect("a directory");
+    let (live, left) = (dir.path().join("live"), dir.path().join(RESERVED[0]));
+    let beside = dir.path().join(format!("{}.creating", RESERVED[0]));
+    filled(&live, EngineKind::Lignin, v);
+    let db = open(&live, EngineKind::Lignin);
+    filled_by_rocksdb_itself(&beside, v);
+    let before = files(&beside);
+
+    let words = refusal(db.create_checkpoint(&left));
+    assert!(
+        words.contains("has a name that checkpoints are built under"),
+        "{words}"
+    );
+    assert!(!left.exists());
+    // What a creation left there: its lock file, and the directory it
+    // built in with a part of a checkpoint. No entry of it says an
+    // engine, so the removal that names none calls no engine for it, and
+    // the one that names LigninDB removes it.
+    let built = left.join(lignindb::checkpoint::BUILDING_DIR_NAME);
+    fs::create_dir_all(&built).expect("the directories");
+    fs::write(built.join("MANIFEST"), b"cut short").expect("a file");
+    fs::write(left.join("LOCK"), b"").expect("a file");
+    let as_left = files(&left);
+    match removals[0](&left) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => assert!(
+            words.contains("has no entry of a database of either engine"),
+            "{words}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(files(&left), as_left);
+    removals[1](&left).expect("a removal by LigninDB");
+    assert!(!left.exists());
+    assert_eq!(files(&beside), before);
+
+    // What no creation left there, with an entry that says LigninDB for
+    // the removal that names no engine: each removal is LigninDB's, which
+    // does not take the directory for what a creation left, and it is as
+    // it was.
+    fs::create_dir(&left).expect("a directory");
+    fs::write(left.join("MANIFEST"), b"by somebody").expect("a file");
+    let as_left = files(&left);
+    for remove in removals {
+        match remove(&left) {
+            Err(Error::StorageError(StorageError::StorageError(words))) => assert!(
+                words.contains("which no creation of a checkpoint puts into its staging directory"),
+                "{words}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(files(&left), as_left);
+        assert_eq!(files(&beside), before);
+    }
 }
 
 /// The keys a cursor shows from its first record on.

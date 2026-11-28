@@ -25,6 +25,7 @@ use super::{
     report::Cause,
     write::{HostedWrite, NodeWrite, Target, ValueWrite, Write},
 };
+use crate::node::{NodePage, NodeRef};
 
 /// The page of a cell that is in none: a node the write creates and has not
 /// placed yet, or a node it deletes.
@@ -279,6 +280,19 @@ struct Stored {
 }
 
 impl Stored {
+    /// What `node` holds in its page. `key` is the key the write gives the
+    /// node, where it gives one.
+    fn of(node: &NodeRef<'_>, key: Option<&[u8]>) -> Self {
+        Self {
+            len: node.cell().encoded_len(),
+            links: Side::BOTH.map(|side| node.link(side).map(|link| link.child)),
+            hosted: node.hosted_roots().len(),
+            roots: node.hosted_roots().collect(),
+            value_len: node.value().stored_len(),
+            same_key: key.is_none_or(|key| key == node.key()),
+        }
+    }
+
     /// The cells the stored cell points at.
     fn children(&self) -> impl Iterator<Item = CellAddress> + '_ {
         self.links
@@ -315,6 +329,372 @@ pub(super) struct Plan<'w> {
     known: HashMap<CellAddress, usize, Mixing>,
     page_of: HashMap<PageId, usize, Mixing>,
     removed: HashSet<CellAddress, Mixing>,
+    /// How many cells the plan has read that the write does not write
+    /// ([`Self::take_in`]): what a walk is held to ([`held`]).
+    #[cfg(any(test, feature = "held_reads"))]
+    taken: usize,
+}
+
+impl Plan<'_> {
+    fn page(&mut self, id: PageId) -> usize {
+        let pages = &mut self.pages;
+        *self.page_of.entry(id).or_insert_with(|| {
+            pages.push(PagePlan::of(Some(id), pages.len()));
+            pages.len() - 1
+        })
+    }
+
+    fn cell(&mut self, origin: Option<CellAddress>) -> usize {
+        let home = origin.map_or(NOWHERE, |address| self.page(address.page()));
+        let cell = self.cells.len();
+        self.cells.push(Cell {
+            origin,
+            home,
+            page: home,
+            len: 0,
+            read: false,
+            parent: None,
+            via: None,
+            node: None,
+            removed: false,
+            free: false,
+            anchored: false,
+            kids: Kids::new(),
+            cause: None,
+        });
+        if let Some(address) = origin {
+            self.known.insert(address, cell);
+        }
+        cell
+    }
+
+    /// The cell at `address`, which a link or pointer names.
+    fn existing(&mut self, address: CellAddress) -> Result<usize, FragmentError> {
+        if self.removed.contains(&address) {
+            return Err(WriteError::Removed { address }.into());
+        }
+        Ok(match self.known.get(&address) {
+            Some(cell) => *cell,
+            None => self.cell(Some(address)),
+        })
+    }
+
+    fn adopt(&mut self, parent: usize, kid: usize, via: Via) -> Result<(), FragmentError> {
+        let cell = &mut self.cells[kid];
+        if kid == parent || cell.parent.is_some() || cell.free {
+            let address = cell.origin;
+            return Err(WriteError::TwoPointers { address }.into());
+        }
+        cell.parent = Some(parent);
+        cell.via = Some(via);
+        self.cells[parent].kids.push(Kid { cell: kid, via });
+        Ok(())
+    }
+
+    /// Takes in what was read of `cell`, a cell the write does not write:
+    /// its length and what it points at.
+    ///
+    /// A hosted root that the write lets go of (`dropped`) is not among
+    /// that: it stays in its page (D1), so the pointer of a host that the
+    /// write does not write names nothing here, and keeps its bytes.
+    fn take_in(
+        &mut self,
+        cell: usize,
+        stored: &Stored,
+        dropped: &HashSet<CellAddress, Mixing>,
+    ) -> Result<(), FragmentError> {
+        #[cfg(any(test, feature = "held_reads"))]
+        {
+            self.taken += 1;
+        }
+        let entry = &mut self.cells[cell];
+        entry.len = stored.len;
+        entry.read = true;
+        for (side, child) in Side::BOTH.into_iter().zip(stored.links) {
+            if let Some(child) = child {
+                let known = self.cells.len();
+                let kid = self.existing(child)?;
+                if kid < known {
+                    self.below(cell, kid)?;
+                }
+                self.adopt(cell, kid, Via::Link(side))?;
+            }
+        }
+        for (position, root) in stored.roots.iter().enumerate() {
+            if let Some(root) = root.filter(|root| !dropped.contains(root)) {
+                let known = self.cells.len();
+                let kid = self.existing(root)?;
+                if kid < known {
+                    self.below(cell, kid)?;
+                }
+                self.adopt(cell, kid, Via::Hosted(position as u8))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a pointer that `cell` stores to `kid` if `kid` is above
+    /// `cell`: one of the cells that lead to it, parent by parent.
+    ///
+    /// [`Self::adopt`] refuses a pointer to a cell that has a parent, and
+    /// one of a cell to itself. A cell above that has none, a node of the
+    /// write that nothing in the write points at, it would take, and the
+    /// cells would then lead to each other in a circle that no walk comes
+    /// out of. The circle of [`WriteError::Cycle`] is of the nodes a write
+    /// states, and is looked for before a cell the write does not write is
+    /// read.
+    ///
+    /// Only a cell that the plan knew before the pointer was read, and
+    /// that points at something, can be above another. Whoever takes a
+    /// cell in asks this of such a cell alone ([`Self::take_in`]): for a
+    /// cell that the pointer is the first to name, nothing is asked. The
+    /// cells that lead to `cell` end, since every pointer that could have
+    /// closed a circle of them was refused here or by the write's own
+    /// check.
+    fn below(&self, cell: usize, kid: usize) -> Result<(), FragmentError> {
+        if self.cells[kid].kids.is_empty() {
+            return Ok(());
+        }
+        let mut above = self.cells[cell].parent;
+        while let Some(at) = above {
+            if at == kid {
+                let address = self.cells[kid].origin;
+                return Err(WriteError::TwoPointers { address }.into());
+            }
+            above = self.cells[at].parent;
+        }
+        Ok(())
+    }
+
+    /// The kids of `cell` that the plan has in `page`, in their order.
+    fn kids_in(&self, cell: usize, page: usize) -> impl Iterator<Item = usize> + '_ {
+        let kids = self.cells[cell].kids.iter().map(|kid| kid.cell);
+        kids.filter(move |kid| self.cells[*kid].page == page)
+    }
+}
+
+/// A walk over the cells of one fragment that counts their bytes
+/// ([`Planner::fragment_bytes`]).
+struct Walk {
+    /// The page of the fragment, as the plan has it.
+    page: usize,
+    /// The bytes at which the walk ends.
+    limit: usize,
+    /// The bytes of the cells that were counted, with their slots.
+    bytes: usize,
+    /// The cells the walk has come to and not counted: the last one is
+    /// counted next.
+    pending: Vec<usize>,
+    /// Whether the count has reached the limit.
+    done: bool,
+    /// The cells that were counted, in their order: what the walk is held
+    /// to ([`held`]).
+    #[cfg(any(test, feature = "held_reads"))]
+    counted: Vec<usize>,
+    /// How many cells the walk read in a step it was already in.
+    #[cfg(any(test, feature = "held_reads"))]
+    read_along: usize,
+    /// How many cells the plan had read when the walk began
+    /// ([`Plan::taken`]), and how many the walk took in ([`Self::take`]).
+    #[cfg(any(test, feature = "held_reads"))]
+    taken_before: usize,
+    #[cfg(any(test, feature = "held_reads"))]
+    took: usize,
+}
+
+impl Walk {
+    /// The cell that is counted next, or none when the walk has ended.
+    fn next(&mut self) -> Option<usize> {
+        match self.done {
+            true => None,
+            false => self.pending.pop(),
+        }
+    }
+
+    /// Counts `cell`, which the plan has read, and comes to its kids in
+    /// the page unless the count ends the walk.
+    fn count(&mut self, plan: &Plan<'_>, cell: usize) {
+        #[cfg(any(test, feature = "held_reads"))]
+        self.counted.push(cell);
+        self.bytes += plan.cells[cell].len + SLOT;
+        self.done = self.bytes >= self.limit;
+        if !self.done {
+            self.pending.extend(plan.kids_in(cell, self.page));
+        }
+    }
+
+    /// Takes into the plan what was read of `cell`, which the walk has come
+    /// to and the plan had not read, and counts it. A walk reads no cell
+    /// in another way.
+    fn take(
+        &mut self,
+        plan: &mut Plan<'_>,
+        dropped: &HashSet<CellAddress, Mixing>,
+        cell: usize,
+        stored: &Stored,
+    ) -> Result<(), FragmentError> {
+        plan.take_in(cell, stored, dropped)?;
+        #[cfg(any(test, feature = "held_reads"))]
+        {
+            self.took += 1;
+        }
+        self.count(plan, cell);
+        Ok(())
+    }
+
+    /// Goes on from `cell`, which the plan has not read and which is in
+    /// the page `view` shows, for as long as the walk needs nothing but
+    /// this page: each cell it comes to is counted, after it is read from
+    /// `view` if the plan has not read it, in the order and with the
+    /// outcome of reading and counting them one by one.
+    ///
+    /// Returns a cell that hosts, with what its page holds of it, when
+    /// the walk came to one that is not read: it is neither taken into
+    /// the plan nor counted. Otherwise the walk has ended, or the cell it
+    /// counts next is in another page.
+    fn along(
+        &mut self,
+        plan: &mut Plan<'_>,
+        dropped: &HashSet<CellAddress, Mixing>,
+        view: &NodePage<'_>,
+        mut cell: usize,
+    ) -> Result<Option<(usize, CellAddress, Stored)>, FragmentError> {
+        loop {
+            let address = plan.cells[cell]
+                .origin
+                .expect("a node the write creates is known");
+            let node = view.node(address.slot());
+            let stored = node.map(|node| Stored::of(&node, None));
+            let stored = stored.ok_or(WriteError::NoNode { address })?;
+            if stored.hosted > 0 {
+                return Ok(Some((cell, address, stored)));
+            }
+            self.take(plan, dropped, cell, &stored)?;
+            cell = loop {
+                let Some(next) = self.next() else {
+                    return Ok(None);
+                };
+                let origin = plan.cells[next].origin;
+                if plan.cells[next].read {
+                    self.count(plan, next);
+                } else if origin.is_some_and(|origin| origin.page() == address.page()) {
+                    #[cfg(any(test, feature = "held_reads"))]
+                    {
+                        self.read_along += 1;
+                    }
+                    break next;
+                } else {
+                    self.pending.push(next);
+                    return Ok(None);
+                }
+            };
+        }
+    }
+}
+
+/// The check of the feature `held_reads`, which is on in tests: the walk
+/// that counts the bytes of a fragment is held to the walk it stands for.
+#[cfg(any(test, feature = "held_reads"))]
+pub(super) mod held {
+    use std::cell::Cell;
+
+    use super::{Plan, Walk, SLOT};
+
+    /// What was held on one thread.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Walks {
+        /// The walks that were held.
+        pub walks: u64,
+        /// Those that ended because the count reached their limit.
+        pub ended_at_limit: u64,
+        /// The cells that walks read in a step they were already in.
+        pub read_along: u64,
+        /// How many times a walk left a step at a cell that hosts.
+        pub left_at_host: u64,
+    }
+
+    thread_local! {
+        static WALKS: Cell<Walks> = const {
+            Cell::new(Walks {
+                walks: 0,
+                ended_at_limit: 0,
+                read_along: 0,
+                left_at_host: 0,
+            })
+        };
+    }
+
+    /// What was held on this thread since it began.
+    #[cfg(test)]
+    pub(crate) fn walks() -> Walks {
+        WALKS.get()
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static LAST: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// The cells that the walk which was held last on this thread
+    /// counted, in their order.
+    #[cfg(test)]
+    pub(super) fn last_counted() -> Vec<usize> {
+        LAST.with_borrow(Vec::clone)
+    }
+
+    pub(super) fn left_at_a_host() {
+        let mut walks = WALKS.get();
+        walks.left_at_host += 1;
+        WALKS.set(walks);
+    }
+
+    /// Makes the walk under `root` again over the plan as `walk` left it,
+    /// a cell at a time and with no read: the walk that takes a step for
+    /// each cell.
+    ///
+    /// It runs over what the plan holds of each cell. So it holds the
+    /// order of a walk and where it ends, and cannot hold a length to the
+    /// cell's page: the tests that count against pages made by hand do
+    /// (`a_walk_counts_what_its_page_holds_in_one_step`).
+    ///
+    /// # Panics
+    ///
+    /// If it comes to a cell the plan has not read; if it does not count
+    /// the cells that `walk` counted, in the same order and to the same
+    /// bytes; or if the plan read a cell while `walk` went on that `walk`
+    /// did not take in and count ([`Walk::take`]).
+    pub(super) fn cell_by_cell(plan: &Plan<'_>, root: usize, walk: &Walk) {
+        let mut bytes = 0;
+        let mut counted = Vec::with_capacity(walk.counted.len());
+        let mut pending = vec![root];
+        while let Some(cell) = pending.pop() {
+            assert!(plan.cells[cell].read, "cell {cell} is counted and not read");
+            counted.push(cell);
+            bytes += plan.cells[cell].len + SLOT;
+            if bytes >= walk.limit {
+                break;
+            }
+            pending.extend(plan.kids_in(cell, walk.page));
+        }
+        assert_eq!(
+            (bytes, &counted),
+            (walk.bytes, &walk.counted),
+            "the fragment under cell {root}, counted to {}",
+            walk.limit
+        );
+        assert_eq!(
+            plan.taken - walk.taken_before,
+            walk.took,
+            "the cells read while the fragment under cell {root} was counted"
+        );
+        let mut walks = WALKS.get();
+        walks.walks += 1;
+        walks.ended_at_limit += u64::from(walk.done);
+        walks.read_along += walk.read_along as u64;
+        WALKS.set(walks);
+        #[cfg(test)]
+        LAST.with_borrow_mut(|last| last.clone_from(&walk.counted));
+    }
 }
 
 struct Planner<'p, 'w, P> {
@@ -339,6 +719,69 @@ struct Planner<'p, 'w, P> {
     dropped: HashSet<CellAddress, Mixing>,
 }
 
+impl<'p, 'w, P: Pages> Planner<'p, 'w, P> {
+    /// A planner of `write` that has read nothing.
+    fn new(layout: &Layout, hints: &'p Hints, pages: &'p mut P, write: &'w Write<'w>) -> Self {
+        let named = (write.nodes.len() + write.removed.len()).min(SIZED_FOR);
+        Self {
+            layout: *layout,
+            hints,
+            pages,
+            plan: Plan {
+                write,
+                cells: Vec::new(),
+                pages: Vec::new(),
+                of_node: Vec::new(),
+                roots: Vec::new(),
+                unpointed: Vec::new(),
+                unmarked: Vec::new(),
+                known: HashMap::with_capacity_and_hasher(KNOWN_FOR_ONE * named, Mixing::default()),
+                page_of: HashMap::with_capacity_and_hasher(
+                    PAGES_FOR_ONE * named,
+                    Mixing::default(),
+                ),
+                removed: HashSet::with_capacity_and_hasher(
+                    write.removed.len().min(SIZED_FOR),
+                    Mixing::default(),
+                ),
+                #[cfg(any(test, feature = "held_reads"))]
+                taken: 0,
+            },
+            held: Vec::new(),
+            shrunk: Vec::new(),
+            queue: Vec::new(),
+            stuck: Vec::new(),
+            stated: Vec::new(),
+            met_behind: false,
+            dropped: write.dropped.iter().copied().collect(),
+        }
+    }
+}
+
+/// For the tests of a walk: what the plan of `write` counts of the fragment
+/// under the cell at `root`, up to `limit` ([`Planner::fragment_bytes`]),
+/// once it has read the cells that `write` names and before any rule has
+/// run. Returns the bytes as the rules are given them, and where the cells
+/// that were counted are in the pages, in the order they were counted.
+#[cfg(test)]
+pub(super) fn counted<P: Pages>(
+    layout: &Layout,
+    pages: &mut P,
+    write: &Write<'_>,
+    root: CellAddress,
+    limit: usize,
+) -> Result<(usize, Vec<CellAddress>), FragmentError> {
+    let hints = Hints::new();
+    let mut planner = Planner::new(layout, &hints, pages, write);
+    planner.build()?;
+    let root = planner.plan.known[&root];
+    let bytes = planner.fragment_bytes(root, limit)?;
+    let at = |cell: usize| planner.plan.cells[cell].origin;
+    let cells = held::last_counted().into_iter().map(at);
+    let cells = cells.map(|at| at.expect("a cell of the pages"));
+    Ok((bytes, cells.collect()))
+}
+
 /// Plans `write` on the pages as they are.
 pub(super) fn plan<'w, P: Pages>(
     layout: &Layout,
@@ -346,34 +789,7 @@ pub(super) fn plan<'w, P: Pages>(
     pages: &mut P,
     write: &'w Write<'w>,
 ) -> Result<Plan<'w>, FragmentError> {
-    let named = (write.nodes.len() + write.removed.len()).min(SIZED_FOR);
-    let mut planner = Planner {
-        layout: *layout,
-        hints,
-        pages,
-        plan: Plan {
-            write,
-            cells: Vec::new(),
-            pages: Vec::new(),
-            of_node: Vec::new(),
-            roots: Vec::new(),
-            unpointed: Vec::new(),
-            unmarked: Vec::new(),
-            known: HashMap::with_capacity_and_hasher(KNOWN_FOR_ONE * named, Mixing::default()),
-            page_of: HashMap::with_capacity_and_hasher(PAGES_FOR_ONE * named, Mixing::default()),
-            removed: HashSet::with_capacity_and_hasher(
-                write.removed.len().min(SIZED_FOR),
-                Mixing::default(),
-            ),
-        },
-        held: Vec::new(),
-        shrunk: Vec::new(),
-        queue: Vec::new(),
-        stuck: Vec::new(),
-        stated: Vec::new(),
-        met_behind: false,
-        dropped: write.dropped.iter().copied().collect(),
-    };
+    let mut planner = Planner::new(layout, hints, pages, write);
     let (order, lens, takes, let_go) = planner.build()?;
     planner.place(&order, &lens, takes)?;
     planner.cap()?;
@@ -741,14 +1157,6 @@ impl<P: Pages> Planner<'_, '_, P> {
         Ok(())
     }
 
-    fn page(&mut self, id: PageId) -> usize {
-        let pages = &mut self.plan.pages;
-        *self.plan.page_of.entry(id).or_insert_with(|| {
-            pages.push(PagePlan::of(Some(id), pages.len()));
-            pages.len() - 1
-        })
-    }
-
     fn fresh(&mut self) -> usize {
         let order = self.plan.pages.len();
         self.plan.pages.push(PagePlan::of(None, order));
@@ -786,56 +1194,30 @@ impl<P: Pages> Planner<'_, '_, P> {
         key: Option<&[u8]>,
     ) -> Result<Stored, FragmentError> {
         let stored = self.pages.read(address.page(), |view| {
-            view.node(address.slot()).map(|node| Stored {
-                len: node.cell().encoded_len(),
-                links: Side::BOTH.map(|side| node.link(side).map(|link| link.child)),
-                hosted: node.hosted_roots().len(),
-                roots: node.hosted_roots().collect(),
-                value_len: node.value().stored_len(),
-                same_key: key.is_none_or(|key| key == node.key()),
-            })
+            let node = view.node(address.slot());
+            node.map(|node| Stored::of(&node, key))
         })?;
-        let mut stored = stored.ok_or(WriteError::NoNode { address })?;
+        let stored = stored.ok_or(WriteError::NoNode { address })?;
+        Ok(self.followed(address, stored))
+    }
+
+    /// What the cell at `address` holds, as the plan follows it: a host
+    /// that is behind has no root (T3).
+    fn followed(&mut self, address: CellAddress, mut stored: Stored) -> Stored {
         if stored.hosted > 0 && self.pages.host_is_behind(address) {
             self.met_behind = true;
             stored.roots.clear();
         }
-        Ok(stored)
+        stored
     }
 
     fn cell(&mut self, origin: Option<CellAddress>) -> usize {
-        let home = origin.map_or(NOWHERE, |address| self.page(address.page()));
-        let cell = self.plan.cells.len();
-        self.plan.cells.push(Cell {
-            origin,
-            home,
-            page: home,
-            len: 0,
-            read: false,
-            parent: None,
-            via: None,
-            node: None,
-            removed: false,
-            free: false,
-            anchored: false,
-            kids: Kids::new(),
-            cause: None,
-        });
-        if let Some(address) = origin {
-            self.plan.known.insert(address, cell);
-        }
-        cell
+        self.plan.cell(origin)
     }
 
     /// The cell at `address`, which a link or pointer names.
     fn existing(&mut self, address: CellAddress) -> Result<usize, FragmentError> {
-        if self.plan.removed.contains(&address) {
-            return Err(WriteError::Removed { address }.into());
-        }
-        Ok(match self.plan.known.get(&address) {
-            Some(cell) => *cell,
-            None => self.cell(Some(address)),
-        })
+        self.plan.existing(address)
     }
 
     fn target(
@@ -854,15 +1236,7 @@ impl<P: Pages> Planner<'_, '_, P> {
     }
 
     fn adopt(&mut self, parent: usize, kid: usize, via: Via) -> Result<(), FragmentError> {
-        let cell = &mut self.plan.cells[kid];
-        if kid == parent || cell.parent.is_some() || cell.free {
-            let address = cell.origin;
-            return Err(WriteError::TwoPointers { address }.into());
-        }
-        cell.parent = Some(parent);
-        cell.via = Some(via);
-        self.plan.cells[parent].kids.push(Kid { cell: kid, via });
-        Ok(())
+        self.plan.adopt(parent, kid, via)
     }
 
     /// Reads a cell the write does not write: its length and what it points
@@ -879,22 +1253,7 @@ impl<P: Pages> Planner<'_, '_, P> {
             .origin
             .expect("a node the write creates is known");
         let stored = self.stored(address, None)?;
-        let entry = &mut self.plan.cells[cell];
-        entry.len = stored.len;
-        entry.read = true;
-        for (side, child) in Side::BOTH.into_iter().zip(stored.links) {
-            if let Some(child) = child {
-                let kid = self.existing(child)?;
-                self.adopt(cell, kid, Via::Link(side))?;
-            }
-        }
-        for (position, root) in stored.roots.iter().enumerate() {
-            if let Some(root) = root.filter(|root| !self.dropped.contains(root)) {
-                let kid = self.existing(root)?;
-                self.adopt(cell, kid, Via::Hosted(position as u8))?;
-            }
-        }
-        Ok(())
+        self.plan.take_in(cell, &stored, &self.dropped)
     }
 
     /// Takes a cell out of the page the plan has it in.
@@ -1010,8 +1369,7 @@ impl<P: Pages> Planner<'_, '_, P> {
 
     /// The kids of `cell` that the plan has in `page`, in their order.
     fn kids_in(&self, cell: usize, page: usize) -> impl Iterator<Item = usize> + '_ {
-        let kids = self.plan.cells[cell].kids.iter().map(|kid| kid.cell);
-        kids.filter(move |kid| self.plan.cells[*kid].page == page)
+        self.plan.kids_in(cell, page)
     }
 
     /// The root of the fragment `cell` is in.
@@ -1042,19 +1400,68 @@ impl<P: Pages> Planner<'_, '_, P> {
 
     /// The bytes of the fragment under `root` with their slots, counted up
     /// to `limit`.
+    ///
+    /// The cells of the fragment that the plan has not read are read as
+    /// the walk comes to them, as [`Self::read`] reads a cell. They are
+    /// cells of one page, so the walk stays in one step on that page for
+    /// as long as it can ([`Walk::along`]), where a read of each by itself
+    /// is a step for each. It leaves the step at a cell that hosts: whether
+    /// a host is behind is asked of the pages (T3), which answer between
+    /// two steps.
+    ///
+    /// What is read of a cell, and what follows from it, is what a step
+    /// for that cell alone gives, on pages that show a page alike in every
+    /// step of a plan. Pages that fail a step by how many were taken can
+    /// fail at another cell than they would with a step for each, or not
+    /// fail: the walk takes fewer steps where a step reads more than one
+    /// cell.
+    ///
+    /// In tests, and in a build with the feature `held_reads`, a walk that
+    /// ends with a count is held to the walk cell by cell over the plan as
+    /// it left it (`held::cell_by_cell`).
     fn fragment_bytes(&mut self, root: usize, limit: usize) -> Result<usize, FragmentError> {
-        let page = self.plan.cells[root].page;
-        let mut bytes = 0;
-        let mut pending = vec![root];
-        while let Some(cell) = pending.pop() {
-            self.read(cell)?;
-            bytes += self.plan.cells[cell].len + SLOT;
-            if bytes >= limit {
-                break;
+        let mut walk = Walk {
+            page: self.plan.cells[root].page,
+            limit,
+            bytes: 0,
+            pending: vec![root],
+            done: false,
+            #[cfg(any(test, feature = "held_reads"))]
+            counted: Vec::new(),
+            #[cfg(any(test, feature = "held_reads"))]
+            read_along: 0,
+            #[cfg(any(test, feature = "held_reads"))]
+            taken_before: self.plan.taken,
+            #[cfg(any(test, feature = "held_reads"))]
+            took: 0,
+        };
+        while let Some(cell) = walk.next() {
+            if self.plan.cells[cell].read {
+                walk.count(&self.plan, cell);
+                continue;
             }
-            pending.extend(self.kids_in(cell, page));
+            let address = self.plan.cells[cell]
+                .origin
+                .expect("a node the write creates is known");
+            let Self {
+                pages,
+                plan,
+                dropped,
+                ..
+            } = self;
+            let host = pages.read(address.page(), |view| {
+                walk.along(plan, dropped, &view, cell)
+            })??;
+            if let Some((host, address, stored)) = host {
+                #[cfg(any(test, feature = "held_reads"))]
+                held::left_at_a_host();
+                let stored = self.followed(address, stored);
+                walk.take(&mut self.plan, &self.dropped, host, &stored)?;
+            }
         }
-        Ok(bytes)
+        #[cfg(any(test, feature = "held_reads"))]
+        held::cell_by_cell(&self.plan, root, &walk);
+        Ok(walk.bytes)
     }
 
     /// Moves the fragment under `root` to the page `to`.

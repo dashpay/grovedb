@@ -24,7 +24,7 @@ use lignin_store::{
 use lignin_tree::{
     hash::{HashRules, Refusal},
     node::NodeRef,
-    value::{TreeValues, ValueSource},
+    value::{CarriedValues, TreeValues, ValueSource},
 };
 
 use super::{
@@ -105,6 +105,9 @@ struct Logged {
     value_bytes: u64,
     /// The value pointers the group lists as released, in ascending order.
     released: Vec<ValuePointer>,
+    /// The values the group repeats for cells and entries that were
+    /// carried to another page.
+    carried: CarriedValues,
 }
 
 /// What the install of a commit did to the pages.
@@ -699,7 +702,10 @@ impl<'s> Committer<'s> {
         }
         drop(lock);
 
-        self.state.count(Counted::Published { group_len });
+        self.state.count(Counted::Published {
+            group_len,
+            carried: logged.carried,
+        });
         let began = Instant::now();
         path.versions.reclaim();
         self.state.spent(Spent::Reclaiming, began);
@@ -774,6 +780,11 @@ impl<'s> Committer<'s> {
         values.log_values(tree, source, &mut group)?;
         flat.log_values(&mut group)?;
         let value_bytes = group.encoded_len() as u64;
+        let (cells, entries) = (values.values_carried(), flat.values_carried());
+        let carried = CarriedValues {
+            values: cells.values + entries.values,
+            bytes: cells.bytes + entries.bytes,
+        };
 
         let written = tree.written().filter(|(_, copy)| !copy.is_unchanged());
         let mut pages: Vec<(PageId, PageEntry<'_, 't>)> = written
@@ -821,6 +832,7 @@ impl<'s> Committer<'s> {
             unchanged_flat,
             value_bytes,
             released,
+            carried,
         })
     }
 

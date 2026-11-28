@@ -29,6 +29,8 @@ use crate::{
 
 mod commands;
 mod dumps;
+#[cfg(feature = "migrate")]
+mod migrate_source;
 
 /// The subtree that the root's element under [`DOCS_KEY`] hosts.
 const DOCS: Subtree = Subtree::new([7; 32]);

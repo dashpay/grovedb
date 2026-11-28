@@ -13,7 +13,9 @@ use std::sync::OnceLock;
 
 use grovedb_version::version::GroveVersion;
 use lignin_testkit::bench::{
-    cli, compare, machine::Perf, run, EngineChoice, Report, RowKind, RunOptions, Settings,
+    cli, compare,
+    machine::{Perf, StorageReads},
+    run, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 /// Whether `perf` counts the instructions of a thread here: what the probe
@@ -48,6 +50,7 @@ fn small(scratch: std::path::PathBuf) -> Settings {
         seed: 3,
         documents: 2_000,
         owners: 10,
+        churn: 0,
         measured_creates: 200,
         updates: 100,
         deletes: 100,
@@ -88,9 +91,10 @@ const TIME_ROWS: [&str; 8] = [
 
 /// The rows whose values follow the schedule: where a log file starts,
 /// when background work ran, what the rest of the process wrote.
-const MEASURED_ROWS: [&str; 12] = [
+const MEASURED_ROWS: [&str; 13] = [
     "bytes_logged_per_transition",
     "physical_bytes_per_transition",
+    "physical_bytes_to_flushed",
     "flush_bytes_per_transition",
     "compaction_bytes_per_transition",
     "process_write_bytes_per_transition",
@@ -103,10 +107,34 @@ const MEASURED_ROWS: [&str; 12] = [
     "references_proof_pages_missed",
 ];
 
+/// Whether `id` is a row of what the system counted of the process's
+/// reads, over a write phase or over the timed reads of one kind.
+fn is_system_read_count(id: &str) -> bool {
+    ["process_read_bytes", "process_read_calls", "device_read"]
+        .iter()
+        .any(|count| id.contains(count))
+}
+
+/// Whether `id` is a row of what a write phase left on disk: the size at
+/// its end, and the dead shares of its start and end.
+fn is_space_of_a_phase(id: &str) -> bool {
+    id == "size_on_disk_at_end" || id.ends_with("_at_start") || id.ends_with("_at_end")
+}
+
+/// Whether `id` is a row of the pages a write phase asked its pool for.
+fn is_page_count_of_a_phase(id: &str) -> bool {
+    ["page_reads_per_transition", "pages_asked_per_transition"].contains(&id)
+}
+
 fn kind_of(id: &str) -> RowKind {
     if TIME_ROWS.contains(&id) {
         RowKind::Time
-    } else if MEASURED_ROWS.contains(&id) || is_detail(id) {
+    } else if MEASURED_ROWS.contains(&id)
+        || is_detail(id)
+        || is_system_read_count(id)
+        || is_page_count_of_a_phase(id)
+        || is_space_of_a_phase(id)
+    {
         RowKind::Measured
     } else {
         RowKind::Count
@@ -120,6 +148,7 @@ fn is_detail(id: &str) -> bool {
     GAUGE_IDS.contains(&id)
         || id
             .strip_suffix("_per_transition")
+            .or_else(|| id.strip_suffix("_to_flushed"))
             .is_some_and(|detail| DETAIL_IDS.contains(&detail))
 }
 
@@ -269,6 +298,12 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         for row in &report.engines[0].rows {
             assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
         }
+        let flushed = |id: &str| {
+            let rows = &report.engines[0].rows;
+            rows.iter()
+                .any(|row| row.id == id && row.phase == "flushed")
+        };
+        assert!(flushed("physical_bytes_to_flushed"));
     }
     let counted = count_rows(&first);
     assert_eq!(
@@ -376,6 +411,10 @@ fn a_run_of_both_engines_gives_one_grove_and_the_same_charges() {
             let row = lignindb.row(id, phase).unwrap();
             assert_eq!(row.value, rocksdb.row(id, phase).unwrap().value, "{id}");
         }
+    }
+    for detail in lignin_testkit::bench::lignindb::DETAIL_IDS {
+        let id = format!("{detail}_to_flushed");
+        assert!(lignindb.row(&id, "flushed").is_some(), "no row {id}");
     }
     for (id, phase) in [
         ("point_get", "warm"),
@@ -507,7 +546,22 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
         // rows more for each kind of read: LigninDB does, RocksDB does not.
         let (pages, ids): (Vec<&str>, Vec<&str>) = (read.rows.iter())
             .map(|row| row.id.as_str())
+            .filter(|id| !is_system_read_count(id))
             .partition(|id| id.contains("_pages_"));
+        // What the system counts of the process's reads is a row for each
+        // kind of read, where the system counts it.
+        let counted = StorageReads::now();
+        for kind in ["point_get", "point_query_proof", "references_proof"] {
+            for (count, given) in [
+                ("process_read_bytes", counted.process_bytes.is_some()),
+                ("process_read_calls", counted.process_calls.is_some()),
+                ("device_reads", counted.device_reads.is_some()),
+                ("device_read_bytes", counted.device_bytes.is_some()),
+            ] {
+                let row = read.row(&format!("{kind}_{count}"), "settled");
+                assert_eq!(row.is_some(), given, "{kind}_{count}");
+            }
+        }
         assert_eq!(
             ids,
             [
@@ -614,6 +668,233 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
         (&again.workload, &again.method),
         (&reads.workload, &reads.method)
     );
+}
+
+/// The writes at size are measured over a copy of the databases a run
+/// kept. The stream goes on where the load ended, so the grove at the end
+/// is the one a whole run with the same writes ends with, GroveDB charges
+/// every phase what it charges it there, and the kept databases are as
+/// they were, for the next call.
+#[test]
+fn the_writes_at_size_are_measured_over_a_copy_of_a_kept_database() {
+    let scratch = tempfile::tempdir().unwrap();
+    let kept = scratch.path().join("kept");
+    let whole = scratch.path().join("whole");
+    let sizes = "--documents 400 --owners 2 --point-reads 4 --reference-reads 2 --warmup-reads 3 \
+                 --cold-reads 1 --checkpoints 1 --reopens 1 --label test --commit 0123";
+    let writes = "--creates 40 --updates 20 --deletes 20";
+    let engines = if cfg!(grovedb_engine_seam) {
+        "--engine rocksdb --engine lignindb"
+    } else {
+        "--engine rocksdb"
+    };
+    let call = |command: &str, dir: &std::path::Path, name: &str, rest: &str| -> Report {
+        let out = scratch.path().join(name);
+        let args: Vec<String> = format!(
+            "{command} --scratch {} --out {} {engines} {sizes} {rest}",
+            dir.display(),
+            out.display()
+        )
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+        cli::main_with(&args).unwrap();
+        Report::from_json(&std::fs::read_to_string(&out).unwrap()).unwrap()
+    };
+
+    // Nothing is kept yet.
+    let args: Vec<String> = format!("writes --scratch {} {engines} {sizes}", kept.display())
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let refused = cli::main_with(&args).unwrap_err();
+    assert!(
+        refused.to_string().starts_with("no kept database at "),
+        "{refused}"
+    );
+
+    let loaded = call(
+        "run",
+        &kept,
+        "kept.json",
+        "--keep --creates 0 --updates 0 --deletes 0",
+    );
+    let ran = call("run", &whole, "whole.json", writes);
+
+    // While one call has the copy of an engine, a second is refused: it
+    // would remove the copy under the first.
+    let lock = std::fs::File::create(kept.join("rocksdb-writes.lock")).unwrap();
+    lock.try_lock().unwrap();
+    // What stands for the first call's copy is not touched by the second.
+    let copy = kept.join("rocksdb-writes");
+    std::fs::create_dir(&copy).unwrap();
+    std::fs::write(copy.join("in-use"), b"the first call's").unwrap();
+    let args: Vec<String> = format!("writes --scratch {} {engines} {sizes}", kept.display())
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let refused = cli::main_with(&args).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("another `writes` call is measuring over the copy of rocksdb"),
+        "{refused}"
+    );
+    assert_eq!(
+        std::fs::read(copy.join("in-use")).unwrap(),
+        b"the first call's"
+    );
+    drop(lock);
+
+    let wrote = call("writes", &kept, "writes.json", writes);
+    assert_eq!(wrote.engines.len(), ran.engines.len());
+    for ((wrote, ran), loaded) in wrote.engines.iter().zip(&ran.engines).zip(&loaded.engines) {
+        assert_eq!(wrote.engine, ran.engine);
+        assert_eq!(wrote.root_hash_after_load, loaded.root_hash_after_load);
+        assert_eq!(wrote.root_hash_after_load, ran.root_hash_after_load);
+        assert_eq!(wrote.root_hash_at_end, ran.root_hash_at_end);
+        let phases: Vec<(&str, u64)> = (wrote.phases.iter())
+            .map(|totals| (totals.phase.as_str(), totals.transitions))
+            .collect();
+        assert_eq!(phases, [("create", 40), ("update", 20), ("delete", 20)]);
+        assert!(wrote
+            .rows
+            .iter()
+            .all(|row| ["create", "update", "delete"].contains(&row.phase.as_str())));
+        for (phase, _) in phases {
+            // The same operations on the same grove: the same charges.
+            for id in [
+                "logical_bytes_per_transition",
+                "seeks_per_transition",
+                "hashes_per_transition",
+                "loaded_bytes_per_transition",
+            ] {
+                let (here, there) = (wrote.row(id, phase), ran.row(id, phase));
+                assert_eq!(here.unwrap().value, there.unwrap().value, "{id} {phase}");
+            }
+            assert!(wrote.row("wall_per_transition", phase).unwrap().value > 0.0);
+            // An engine that counts the pages its pool is asked for has
+            // them for a transition: LigninDB does, RocksDB does not.
+            let pages = wrote.row("page_reads_per_transition", phase);
+            let asked = wrote.row("pages_asked_per_transition", phase);
+            match wrote.engine.as_str() {
+                "rocksdb" => assert!(pages.is_none() && asked.is_none()),
+                _ => assert!(asked.unwrap().value >= pages.unwrap().value),
+            }
+        }
+        assert_eq!(
+            (&wrote.disk_after_load, &wrote.disk_after_flush),
+            (&None, &None)
+        );
+        // The copy is gone, and the kept database is still there.
+        assert!(kept.join(&wrote.engine).is_dir());
+        assert!(!kept.join(format!("{}-writes", wrote.engine)).exists());
+    }
+    // The report says what was measured: the writes, and no timed read,
+    // no cold read, no checkpoint and no reopen, whatever the options
+    // named.
+    let said = (&wrote.workload, &wrote.method);
+    assert_eq!(
+        (said.0.measured_creates, said.0.updates, said.0.deletes),
+        (40, 20, 20)
+    );
+    assert_eq!(
+        (
+            said.1.point_reads,
+            said.1.reference_reads,
+            said.1.cold_reads
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!((said.1.checkpoints, said.1.reopens), (0, 0));
+    // The second engine's rows carry their ratio to RocksDB's.
+    if let Some(second) = wrote.engines.get(1) {
+        assert!(second
+            .row("wall_per_transition", "create")
+            .unwrap()
+            .ratio_to_rocksdb
+            .is_some());
+    }
+
+    // A second call starts from the same kept state and ends on the same
+    // grove; with `--keep` its copy stays, and the next call replaces it.
+    let again = call("writes", &kept, "again.json", &format!("{writes} --keep"));
+    for (again, wrote) in again.engines.iter().zip(&wrote.engines) {
+        assert_eq!(again.root_hash_after_load, wrote.root_hash_after_load);
+        assert_eq!(again.root_hash_at_end, wrote.root_hash_at_end);
+        assert!(kept.join(format!("{}-writes", again.engine)).is_dir());
+    }
+    let third = call(
+        "writes",
+        &kept,
+        "third.json",
+        "--creates 20 --updates 0 --deletes 0",
+    );
+    for (third, wrote) in third.engines.iter().zip(&wrote.engines) {
+        assert_eq!(third.root_hash_after_load, wrote.root_hash_after_load);
+        assert_ne!(third.root_hash_at_end, wrote.root_hash_at_end);
+        let phases: Vec<&str> = (third.phases.iter())
+            .map(|totals| totals.phase.as_str())
+            .collect();
+        assert_eq!(phases, ["create"]);
+        assert!(!kept.join(format!("{}-writes", third.engine)).exists());
+    }
+
+    // The churn is the first of the creates as a phase of its own: the
+    // same stream, so the same grove at the end. Each phase says the size
+    // at its end, and LigninDB's the dead shares at its start and end.
+    let churned = call(
+        "writes",
+        &kept,
+        "churned.json",
+        "--churn 20 --creates 20 --updates 20 --deletes 20",
+    );
+    assert_eq!(churned.workload.churn, 20);
+    let names = |report: &Report| -> Vec<String> {
+        report
+            .engines
+            .iter()
+            .map(|engine| engine.engine.clone())
+            .collect()
+    };
+    assert_eq!(names(&churned), names(&wrote));
+    for (churned, wrote) in churned.engines.iter().zip(&wrote.engines) {
+        assert_eq!(churned.root_hash_at_end, wrote.root_hash_at_end);
+        let phases: Vec<(&str, u64)> = (churned.phases.iter())
+            .map(|totals| (totals.phase.as_str(), totals.transitions))
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                ("churn", 20),
+                ("create", 20),
+                ("update", 20),
+                ("delete", 20)
+            ]
+        );
+        for (phase, _) in phases {
+            let size = churned.row("size_on_disk_at_end", phase).unwrap();
+            assert!(size.value > 0.0, "{phase}");
+            for at in ["start", "end"] {
+                let value = |id: &str| {
+                    churned
+                        .row(&format!("{id}_at_{at}"), phase)
+                        .map(|row| row.value)
+                };
+                match churned.engine.as_str() {
+                    "rocksdb" => assert_eq!(value("value_log_dead_share"), None),
+                    _ => {
+                        for share in ["segment_dead_share", "value_log_dead_share"] {
+                            let share = value(share).unwrap();
+                            assert!((0.0..=1.0).contains(&share), "{phase} {at}");
+                        }
+                        assert!(value("segments_size").unwrap() > 0.0, "{phase} {at}");
+                        assert!(value("value_log_size").unwrap() > 0.0, "{phase} {at}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

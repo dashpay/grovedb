@@ -387,10 +387,14 @@ fn a_rewrite_is_refused_while_a_write_transaction_holds_a_private_copy_of_the_pa
     }
 }
 
-/// The pages, with something that happens between the cleaner's look at
-/// them and its first rewrite.
+/// The pages, with a commit between the cleaner's look at them and its
+/// first rewrite, as the pages that most commits change have while commits
+/// come back to back. The steps on the pages the commit superseded are
+/// refused and tried again with a fresh look ([`BUSY_RETRIES`]): the cells
+/// the commit left take the new pointers, and the values it replaced or
+/// removed are gone.
 #[test]
-fn a_move_is_abandoned_when_a_commit_superseded_the_page_after_the_cleaner_looked() {
+fn a_move_whose_page_a_commit_superseded_after_the_look_is_made_with_a_fresh_look() {
     let mut run = started(7);
     run.commit(&[
         put(1, 10, 40),
@@ -413,36 +417,28 @@ fn a_move_is_abandoned_when_a_commit_superseded_the_page_after_the_cleaner_looke
     run.db()
         .commit_prepared(txn)
         .expect("the commit is installed");
+    assert_eq!(BUSY_RETRIES, 3);
     let cleaned = run.db().install(copies).unwrap();
     assert_eq!(
         cleaned,
         Cleaned {
-            moved: 1,
+            moved: 3,
             unowned: 0,
-            gone: 0,
-            busy: 4,
-            live: 2,
+            gone: 2,
+            busy: 0,
+            live: 0,
             copied_bytes: 40 + 50 + 60 + 20 + 30 + 5 * 18,
         },
-        "only the page the commit left alone took its rewrite"
+        "the cells the commit left took their rewrites on a fresh look"
     );
     assert_eq!(run.db().pages.latest(), 2);
-    assert_eq!(
-        [30, 31].map(|key| pointer_of(run.db(), 3, key)),
-        before,
-        "the cells the commit did not touch still hold the old pointers"
-    );
+    let after = [30, 31].map(|key| pointer_of(run.db(), 3, key));
+    for (now, was) in after.iter().zip(&before) {
+        assert_ne!(now, was);
+        assert_ne!(now.file(), file_id(1));
+    }
     assert_ne!(pointer_of(run.db(), 5, 50).file(), file_id(1));
-    run.check_session();
-    assert_eq!(run.db().values.cleanable(0).len(), 1);
-
-    let cleaned = run.clean(file_id(1)).unwrap();
-    assert_eq!(
-        (cleaned.moved, cleaned.unowned, cleaned.live),
-        (2, 3, 0),
-        "a fresh pass finds the two owners the commit left"
-    );
-    let moved = pointer_of(run.db(), 3, 30);
+    let moved = after[0];
     run.check_session();
 
     run.flush().unwrap();

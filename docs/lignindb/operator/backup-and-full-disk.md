@@ -359,9 +359,12 @@ runs: `GroveDb::<LigninEngine>::delete_checkpoint_with_engine(path)`, or
 chooses the engine at the open. `GroveDb::delete_checkpoint` deletes
 with the build's default engine, which is RocksDB in a build of both
 engines unless the build sets it otherwise ([engine.md](../engine.md#the-default-engine)).
-LigninDB's deletion can remove more than a checkpoint, the directory
-`path.creating` beside it among what it removes: it is given the
-checkpoint's path and nothing else. It removes the database that is at
+LigninDB's deletion can remove more than a checkpoint, the staging
+directory `path.creating` that a creation left beside it among what it
+removes: it is given the checkpoint's path and nothing else. A directory
+of that name that holds anything but an empty `LOCK` and a directory
+`checkpoint.creating` it passes over: once it reads that, it does
+nothing more with the directory. It removes the database that is at
 that path when it runs, whatever made it: it cannot tell a checkpoint
 from another database, and nothing keeps the path from leading to
 another directory meanwhile. So the application makes its checkpoints
@@ -419,7 +422,7 @@ directory by its identity and removes what is left.
 | Left | What it is | What to do |
 | --- | --- | --- |
 | a copy that `cp` or `sync` did not finish, with or without a `MANIFEST` | a copy that was cut short: `cp` writes the files in no set order, so its manifest says nothing of the rest | remove it, and copy again |
-| a directory whose name ends in `.creating`, beside a checkpoint's path | what a creation of a checkpoint at that path left, when it was cut short or failed, where one was made there. It is never opened, and it holds disk space. The name alone does not say who made the directory | the engine takes any directory of that name for a creation's, whoever made it. Remove it only where you know that nothing but checkpoints of GroveDB is ever made under that name at that path, and that none is being made now; otherwise remove nothing you cannot account for. Keep nothing of your own under a name that ends in `.creating`: a creation at the path takes over whatever such a directory holds, and the deletion of a checkpoint at the path removes it |
+| a directory whose name ends in `.creating`, beside a checkpoint's path | the staging directory that a creation of a checkpoint at that path left, when it was cut short or failed, where one was made there: it holds an empty `LOCK`, a directory `checkpoint.creating` with the part of a checkpoint that was built, both, or nothing. It is never opened, and what was built in it holds disk space. After a power cut that follows a creation closely it can be beside the checkpoint that was made, empty or with its `LOCK` | the engine takes a directory of that name for a creation's only where it holds nothing but those two entries: the next creation at the path removes what was built in it and builds there, and the deletion of a checkpoint at the path removes it. One that holds anything else, a database among it, is left as it is by both, and a creation at the path is refused for it ([its message](messages.md#at-a-checkpoint)). Keep nothing of your own in a directory `checkpoint.creating` under such a name: what is there goes with it. Remove such a directory by hand only where you know that nothing but checkpoints of GroveDB is ever made under that name at that path, and that none is being made now |
 | a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short, where that entry is a manifest and a deletion of this directory was under way: a deletion renames the manifest to that name before it removes any file. The names alone do not say that a deletion was meant | where you know that this directory was being deleted, the deletion of [the checkpoint](#delete-the-checkpoint-of-a-backup) finishes it (it refuses the directory where the entry is no manifest). Where you do not know that, delete and rename nothing: some of its files may be gone, and the database is restored from a backup |
 | a directory that holds both `MANIFEST.deleting` and `MANIFEST` | no deletion leaves this, since it renames the manifest first: something else made one of the two entries, and either can be the database's manifest | remove and rename nothing, and do not open the directory: restore the database from a backup, or report it with what each entry is. The deletion of [the checkpoint](#delete-the-checkpoint-of-a-backup) would remove the whole database: it goes by the manifest it finds, not by the entry's name |
 
@@ -562,7 +565,7 @@ again when room is back. It is set by `Options::reserve`
 ([tuning](tuning.md)), in bytes, and **is 0 by default: no reserve**.
 How large it should be has not been measured for a node's database; the
 design text's first estimate is one log file and one segment at their
-configured lengths, 128 MiB with the defaults
+configured lengths, 80 MiB with the defaults
 ([section 5.3](../disk-full-and-backup.md#53-how-much-room-is-a-little)).
 
 ### The log grows and does not shrink

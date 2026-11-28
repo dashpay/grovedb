@@ -98,6 +98,8 @@ struct State {
     next_page: u32,
     /// The tree pages of the latest version.
     pages: BTreeSet<PageId>,
+    /// What each commit's group repeated for carried cells.
+    carried: Vec<CarriedValues>,
 }
 
 /// A store on a simulated file system, with what the tasks after this one
@@ -162,6 +164,7 @@ impl Db {
                 owners: 0,
                 next_page: 1,
                 pages: BTreeSet::new(),
+                carried: Vec::new(),
             }),
         }
     }
@@ -245,6 +248,7 @@ impl Db {
         values
             .log_values(&mut pages, &source, &mut group)
             .expect("the values");
+        state.carried.push(values.values_carried());
         let mut ids: Vec<(PageId, bool)> = pages
             .copies
             .keys()
@@ -529,6 +533,12 @@ impl Db {
             })
             .collect();
         assert_eq!(counted, expected);
+    }
+
+    /// What the group of each commit repeated for carried cells, in the
+    /// order of the commits.
+    fn carried(&self) -> Vec<CarriedValues> {
+        self.state.borrow().carried.clone()
     }
 
     /// The groups of the log, each as its values (owner, name and bytes),

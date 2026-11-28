@@ -1,0 +1,57 @@
+#!/usr/bin/env bpftrace
+/*
+ * Which files ext4 is asked to read into the page cache, by name.
+ *
+ * ext4 is asked for the pages that the page cache does not hold through two operations: its
+ * read-ahead, for a window of pages, and its read of one folio. A read system call and a fault
+ * on a mapping both come here, so the reads of an engine that reads with `pread` and of one that
+ * maps its files are counted the same way. Each call is counted, with its pages, under the name
+ * of the file and of the directory it is in, taken from the open file the read came through. A
+ * count by inode number will not do: ext4 gives the number of a deleted file to the next new
+ * one, and a database deletes and makes files all the time.
+ *
+ * What is counted is what ext4 was asked for: a call, and the pages of its window (one for a
+ * folio that is read alone, which is its size where a folio is one page, as ext4 has them in the
+ * kernels this was run on). It is not what reached the device: the block layer merges and
+ * splits, and a hole in a file is filled with no read.
+ *
+ * The maps are printed when the script is ended (SIGINT); `@attached` is among them, so that an
+ * output with no read in it can be told from no output. `@all_calls` and `@all_pages` count the
+ * same events with no name: a map by name holds a bounded number of names, and a name that
+ * found no room is missing from it, which the sums then show. read-split.py puts kinds to the
+ * names and compares the sums.
+ * The probes are of every process of the machine, so the machine is otherwise at rest.
+ */
+BEGIN
+{
+	@attached = 1;
+}
+
+/* Said once, when the probes below are in place and events are being read. */
+interval:ms:100
+{
+	if (@ready == 0) {
+		printf("probes ready\n");
+		@ready = 1;
+	}
+}
+
+kprobe:ext4_readahead
+{
+	$rac = (struct readahead_control *)arg0;
+	$d = $rac->file->f_path.dentry;
+	@calls[str($d->d_parent->d_name.name), str($d->d_name.name)] = count();
+	@pages[str($d->d_parent->d_name.name), str($d->d_name.name)] = sum($rac->_nr_pages);
+	@all_calls = count();
+	@all_pages = sum($rac->_nr_pages);
+}
+
+kprobe:ext4_read_folio
+{
+	$file = (struct file *)arg0;
+	$d = $file->f_path.dentry;
+	@calls[str($d->d_parent->d_name.name), str($d->d_name.name)] = count();
+	@pages[str($d->d_parent->d_name.name), str($d->d_name.name)] = sum(1);
+	@all_calls = count();
+	@all_pages = sum(1);
+}

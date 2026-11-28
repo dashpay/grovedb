@@ -1933,6 +1933,7 @@ fn inside_a_commit(steps: &[Step]) -> Within {
                     within.checkpoints += did.segments.1;
                     for pass in did.values {
                         within.cleaned.extend(pass.cleaned);
+                        within.cleaned.extend(pass.swept);
                         within.dropped_under_the_pin.extend(pass.dropped);
                     }
                 }

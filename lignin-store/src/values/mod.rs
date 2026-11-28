@@ -257,8 +257,14 @@
 //!    stores the rewrite with the pages, installs the pointer and calls
 //!    [`PointerRewrite::install`], which takes one value off the old file's
 //!    count and adds one to the new file's, inside that step. If not,
-//!    nothing is installed and nothing is counted: the copy is dead space
-//!    and the value is tried again in a later pass.
+//!    nothing is installed and nothing is counted. A step refused as busy
+//!    ([`Refusal::Busy`]) is tried again after a fresh look
+//!    ([`ValueOwners::find`]), up to [`BUSY_RETRIES`] times, and a try that
+//!    is taken installs the copy already made. A fresh look that finds no
+//!    cell of the page holding the pointer ends the tries, and the value is
+//!    counted as gone, as for [`Refusal::OwnerGone`]. After the last
+//!    refusal as busy the copy is dead space and the value stays where it
+//!    was, for a later pass.
 //!
 //! A move takes no commit version (PV6). The pass never removes a value and
 //! never decides that a file is empty: only the count does. A file whose
@@ -437,7 +443,10 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-pub use clean::{Cleaned, CopiedValues, Installed, PointerRewrite, Refusal, Rewrite, ValueOwners};
+pub use clean::{
+    Cleaned, CopiedValues, Installed, PointerRewrite, Refusal, Rewrite, ValueOwners, BUSY_RETRIES,
+    BUSY_RETRY_WAIT,
+};
 pub use counts::{ChangeMark, FileCount, ValueChange};
 pub use error::{Miscount, OwnersError, ValueStoreError};
 pub(crate) use store::net;

@@ -11,6 +11,7 @@ mod converted;
 mod drops;
 mod enters;
 mod errors;
+mod evaluate;
 mod handles;
 mod hashes;
 mod histories;
@@ -166,7 +167,7 @@ impl<'s> World<'s> {
 
     /// Tells the model of `tx` the writes of `batch`, which was applied
     /// with the first-write version `first_write`.
-    fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
+    pub(crate) fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
         let mut model = tx.model.borrow_mut();
         // Which subtree is below which before each write of the batch,
         // and which Merk has a node: its drops and clears come before its
