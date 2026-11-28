@@ -764,7 +764,8 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
         run.other_threads_cpu_ns as f64 / 1e3,
         n,
         "the process's CPU clock less the measuring thread's, from the phase's first block \
-         to the end of the background work it set off: the engine's background threads",
+         to the end of the background work it set off: the engine's background threads, and \
+         under --perf the harness's threads that read perf's replies",
     ));
     if let Some(written) = totals.process_write_bytes {
         rows.push(measured_row(
