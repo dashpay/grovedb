@@ -35,7 +35,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     engine::{timed, Block, Counters, Detail, Engine, EngineSettings, Space},
-    machine::{self, ColdMethod, Perf, StorageReads},
+    machine::{self, ColdMethod, CpuClocks, Perf, StorageReads},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
         WorkloadSpec,
@@ -457,6 +457,10 @@ struct PhaseRun {
     /// The size of the database directory at the phase's end, once the
     /// background work the phase set off is idle.
     size_at_end: u64,
+    /// Nanoseconds the process's threads other than the measuring one ran
+    /// from the phase's first block to the end of the background work it
+    /// set off.
+    other_threads_cpu_ns: u64,
     /// The counters and the details as the reading that ended the phase
     /// gave them, from which a span that follows the phase is counted.
     ended: (Counters, Vec<Detail>),
@@ -518,6 +522,7 @@ fn write_phase<E: Engine>(
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
     let reads_before = StorageReads::now();
+    let cpu_before = CpuClocks::now();
     while totals.transitions < transitions {
         let block = next_block(stream);
         let Some((Op::Commit, ops)) = block.split_last() else {
@@ -562,6 +567,7 @@ fn write_phase<E: Engine>(
     }
     // Flushes and compactions the phase set off are counted in it.
     engine.wait_for_background()?;
+    let other_threads_cpu_ns = CpuClocks::now().others_since(&cpu_before);
     let ended = engine.counters()?;
     totals.counters = ended.since(&counters_before);
     let ended_details = engine.details()?;
@@ -588,6 +594,7 @@ fn write_phase<E: Engine>(
         gauges,
         space,
         size_at_end,
+        other_threads_cpu_ns,
         ended: (ended, ended_details),
     })
 }
@@ -750,6 +757,16 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             ));
         }
     }
+    rows.push(measured_row(
+        "other_threads_cpu_per_transition",
+        phase,
+        "us",
+        run.other_threads_cpu_ns as f64 / 1e3,
+        n,
+        "the process's CPU clock less the measuring thread's, from the phase's first block \
+         to the end of the background work it set off: the engine's background threads, and \
+         under --perf the harness's threads that read perf's replies",
+    ));
     if let Some(written) = totals.process_write_bytes {
         rows.push(measured_row(
             "process_write_bytes_per_transition",
@@ -1983,9 +2000,19 @@ mod tests {
                 },
             )),
             size_at_end: 12_345,
+            other_threads_cpu_ns: 3_000,
             ended: (Counters::default(), Vec::new()),
         };
         let rows = count_rows(&run, "lignindb");
+        let others = rows
+            .iter()
+            .find(|row| row.id == "other_threads_cpu_per_transition")
+            .expect("the row of the other threads' CPU");
+        assert_eq!(
+            (others.value, others.unit.as_str(), others.kind),
+            (1.5, "us", RowKind::Measured)
+        );
+        assert!(others.source.contains("background threads"));
         let gauge = rows
             .iter()
             .find(|row| row.id == "log_held_max")
@@ -2333,5 +2360,150 @@ mod tests {
             assert_eq!(logical_bytes(&other, grove_version), 0);
             assert!(!is_transition(&other), "{other:?}");
         }
+    }
+
+    /// A thread of an engine that runs `nanos` of CPU and ends: what it ran,
+    /// by its own clock.
+    fn spin(nanos: u64) -> u64 {
+        std::thread::spawn(move || {
+            let start = CpuClocks::now().thread;
+            loop {
+                let ran = CpuClocks::now().thread - start;
+                if ran >= nanos {
+                    return ran;
+                }
+            }
+        })
+        .join()
+        .expect("the spinning thread")
+    }
+
+    /// An engine whose background work is threads that run a known CPU
+    /// time: one at every commit, and one in the wait for background work.
+    struct Spinning {
+        dir: tempfile::TempDir,
+        commits: std::cell::Cell<u64>,
+        spun: std::cell::Cell<u64>,
+    }
+
+    struct SpinningBlock<'a>(&'a Spinning);
+
+    const SPUN_AT_COMMIT: u64 = 10_000_000;
+    const SPUN_IN_WAIT: u64 = 20_000_000;
+
+    impl Block for SpinningBlock<'_> {
+        fn apply(&mut self, _op: &Op, _: &GroveVersion) -> Result<OperationCost, BenchError> {
+            Ok(OperationCost::default())
+        }
+
+        fn commit(self) -> Result<(), BenchError> {
+            self.0.commits.set(self.0.commits.get() + 1);
+            self.0.spun.set(self.0.spun.get() + spin(SPUN_AT_COMMIT));
+            Ok(())
+        }
+    }
+
+    impl Engine for Spinning {
+        type Block<'a> = SpinningBlock<'a>;
+
+        const NAME: &'static str = "spinning";
+
+        fn open(_dir: &Path) -> Result<Self, BenchError> {
+            Ok(Spinning {
+                dir: tempfile::tempdir().expect("a directory"),
+                commits: Default::default(),
+                spun: Default::default(),
+            })
+        }
+
+        fn dir(&self) -> &Path {
+            self.dir.path()
+        }
+
+        fn begin_block(&self) -> SpinningBlock<'_> {
+            SpinningBlock(self)
+        }
+
+        fn settle(&mut self) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn read(&self, _op: &Op, _: &GroveVersion) -> Result<OperationCost, BenchError> {
+            Ok(OperationCost::default())
+        }
+
+        fn prove(
+            &self,
+            _query: &PathQuery,
+            _: &GroveVersion,
+        ) -> Result<(Vec<u8>, OperationCost), BenchError> {
+            Ok(Default::default())
+        }
+
+        fn root_hash(&self, _: &GroveVersion) -> Result<[u8; 32], BenchError> {
+            Ok([0; 32])
+        }
+
+        fn checkpoint(&self, _target: &Path) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn flush(&self) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn wait_for_background(&mut self) -> Result<(), BenchError> {
+            self.spun.set(self.spun.get() + spin(SPUN_IN_WAIT));
+            Ok(())
+        }
+
+        fn counters(&mut self) -> Result<Counters, BenchError> {
+            Ok(Counters::default())
+        }
+    }
+
+    /// The other threads' CPU of a write phase covers what the engine's
+    /// threads ran from the phase's first commit to the end of its wait for
+    /// background work. Each part is 10 ms or more, and the reading thread's
+    /// own run between the two clocks of a reading is microseconds, so a
+    /// span that left out the first commit, or the wait, falls below the
+    /// bound.
+    #[test]
+    fn the_other_threads_cpu_of_a_phase_is_its_commits_and_its_wait() {
+        let mut engine = Spinning::open(Path::new("")).unwrap();
+        let workload = Documents {
+            documents: 60,
+            owners: 3,
+            ..Documents::reference()
+        };
+        let mut stream = workload.stream(1);
+        let settings = Settings::reference(PathBuf::new());
+        let run = write_phase(
+            &mut engine,
+            &mut stream,
+            "load",
+            40,
+            &settings,
+            GroveVersion::latest(),
+        )
+        .unwrap();
+        let commits = engine.commits.get();
+        assert!(commits >= 2, "{commits} commits");
+        let spun = engine.spun.get();
+        assert!(spun >= commits * SPUN_AT_COMMIT + SPUN_IN_WAIT);
+        assert!(
+            run.other_threads_cpu_ns + 5_000_000 >= spun,
+            "{} ns counted of the {spun} ns the engine's threads ran",
+            run.other_threads_cpu_ns
+        );
+        let rows = count_rows(&run, Spinning::NAME);
+        let row = rows
+            .iter()
+            .find(|row| row.id == "other_threads_cpu_per_transition")
+            .expect("the row");
+        assert_eq!(
+            row.value,
+            run.other_threads_cpu_ns as f64 / 1e3 / run.totals.transitions as f64
+        );
     }
 }

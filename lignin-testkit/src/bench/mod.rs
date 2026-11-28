@@ -13,10 +13,11 @@
 //!
 //! Count rows are equal in every run of one commit with the same
 //! [`Settings`], on any machine.
-//! Measured rows ([`RowKind::Measured`]) are bytes and sizes that are not:
-//! `bytes_logged_per_transition`, `physical_bytes_per_transition`,
-//! `flush_bytes_per_transition`, `compaction_bytes_per_transition`,
-//! `process_write_bytes_per_transition`, `size_on_disk`, and every row an
+//! Measured rows ([`RowKind::Measured`]) are bytes, sizes and CPU times
+//! that are not: `bytes_logged_per_transition`,
+//! `physical_bytes_per_transition`, `flush_bytes_per_transition`,
+//! `compaction_bytes_per_transition`, `process_write_bytes_per_transition`,
+//! `other_threads_cpu_per_transition`, `size_on_disk`, and every row an
 //! engine adds for one of its [`Detail`]s. Where a log file
 //! starts, what a flush or compaction writes and in which phase it is seen,
 //! which obsolete files are gone, and what the rest of the process wrote
@@ -39,6 +40,7 @@
 //! | `size_on_disk` | `at-size`, `flushed` | B | file lengths in the database directory |
 //! | `point_proof_bytes`, `references_proof_bytes` | `warm` | B | proof lengths |
 //! | `wall_per_transition` | write phases | µs | apply time over transitions |
+//! | `other_threads_cpu_per_transition` | write phases | µs | [`machine::CpuClocks`]: the CPU of the process's threads other than the measuring one, from the phase's first block to the end of its background work |
 //! | `block_commit` | write phases | ms | transaction commit |
 //! | `bulk_load` | `load` | s | apply and commit time of the load |
 //! | `point_get`, `point_query_proof`, `references_proof` | `warm`, `cold` | µs | one read |

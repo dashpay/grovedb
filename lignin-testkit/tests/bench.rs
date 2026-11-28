@@ -91,13 +91,14 @@ const TIME_ROWS: [&str; 8] = [
 
 /// The rows whose values follow the schedule: where a log file starts,
 /// when background work ran, what the rest of the process wrote.
-const MEASURED_ROWS: [&str; 13] = [
+const MEASURED_ROWS: [&str; 14] = [
     "bytes_logged_per_transition",
     "physical_bytes_per_transition",
     "physical_bytes_to_flushed",
     "flush_bytes_per_transition",
     "compaction_bytes_per_transition",
     "process_write_bytes_per_transition",
+    "other_threads_cpu_per_transition",
     "size_on_disk",
     "point_get_pages_asked",
     "point_get_pages_missed",
