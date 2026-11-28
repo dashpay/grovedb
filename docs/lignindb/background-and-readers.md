@@ -184,11 +184,45 @@ Pages read through a snapshot (`scaling.rs`), on the 48 processors beside a writ
 
 PERF-07-F1. 3.2 left open why an append to the log waits while files other than the log are synced, and whether RocksDB's commits on the same machine wait as well.
 
-**The tables of this section are those of `campaign.sh` on a machine of the plan's reference class** (16 dedicated processors, a local NVMe disk, ext4), **and each has its place below, marked, until that run is made.** No figure of another machine is in this section. The mechanism of 3.5.2 was traced in a Linux guest (Linux 6.8, ext4 with `data=ordered` and `relatime`) of a machine that ran other work beside it; the counts and the times of that trace are in the pull request of the task, as figures of that guest.
+**The tables of this section are those of `campaign.sh` on machines of the plan's reference class**, from two runs of it at its defaults (100,000 blocks a run, two rounds, the backgrounds `quiet` and `heavy`, traced runs of 30,000 blocks). Each run was made on four rented machines of one kind, each running nothing else: a `c-16-intel` droplet (16 dedicated processors, Intel Xeon Platinum 8358 under KVM, 32 GB, a local NVMe disk under ext4 with `relatime`, `discard`, `commit=30` and a journal of 64 MiB, Linux 6.8.0 on x86-64, Ubuntu 24.04, bpftrace 0.20.2, rustc 1.100.0). A campaign is of one machine, so each run is four campaigns: H1 made the runs of 3.5.1 under `quiet` and H2 under `heavy`, H3 the second file system under `quiet` and then every traced run, and H4 the second file system under `heavy`. No table compares rows of two machines. The four machines of a run built its three binaries alike, byte for byte, and each experiment's binary differs from the base only in the libraries its patch reaches (`lignin_io` and `lignin_store`, and what is built on them).
+
+- **The run of record** measures the engine of `118a58059`, in the region `nyc1`. Its engine crates are those of `588668e1f`, which has PERF-08's cleaner of the value log and its log files of 16 MiB; the engine the scoring run measures (PERF-09) differs from them only by the read-only `lignindb::Db::space`, and the engine changes merged after `118a58059` are in none of these tables. Binaries: base `6135bb3b…dc4b77c1`, the log allocated ahead `ad61d6d8…93882e75`, fewer syncs `40c69860…aa16a7da` (sha256). The median sync of a 4 KiB append (`fdatasync`, of 1,000) on the file system of the runs: 0.28, 0.27, 0.25 and 0.23 ms on H1 to H4. 3.5.1 to 3.5.3 are of this run.
+- **The first run** measures `f4eb8bccc`, the engine before PERF-08 (and before PERF-05-F2 and the checkpoint changes of OPS-03-F1 and OPS-03-F3), in the region `nyc3`; the median sync was 0.29, 0.34, 0.34 and 0.27 ms on H1 to H4. Its tables are in 3.5.4 and decide nothing.
+
+In every run of percentiles of both (the 56 rows of an engine in a run, in each of the two), at most 0.03% of the sleeps of 500 µs of the harness's probe were late by a millisecond or more, and none by 5 ms. The preflight of each run found the user stacks whole on these machines: in the run of record 1,647 of 1,647 waits of LigninDB inside a block reached the harness, and 93 of 93 of RocksDB; no traced run dropped a stack. The mechanism of 3.5.2 was first traced in a Linux guest (Linux 6.8, ext4 with `data=ordered` and `relatime`) of a machine that ran other work beside it; the counts and the times of that trace are in the pull request of the task, as figures of that guest.
 
 #### 3.5.1 Both engines in one run
 
-> **Place of a table of the reference class:** "The commit of a block, on the file system of the runs" of `tables.md`: for each engine and background, the median, the 99th and the 99.9th percentile and the longest commit of each run of 100,000 blocks, the 99th and the 99.9th percentile and the longest of the commit's time off a processor, and the median of the runs with their range.
+##### The run of record: the commit of a block on both engines, `quiet` (H1) and `heavy` (H2)
+
+The runs of the control: one binary, the base, under its two names `base` and `base-again`, two rounds each; every run has both engines, one after the other, and the order of the engines is turned from round to round. 100,000 blocks a run, a pause of 5 ms after each commit. The median of four runs is the mean of the two middle runs' figures.
+
+| Engine | Background | Run | Round | Median, µs | 99%, µs | 99.9%, µs | Longest, µs | Off a processor: 99%, µs | 99.9%, µs | longest, µs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| LigninDB | quiet | base | 1 | 1,469 | 2,006 | 2,293 | 3,046 | 94 | 118 | 447 |
+| LigninDB | quiet | base-again | 1 | 1,451 | 1,929 | 2,190 | 2,900 | 92 | 120 | 514 |
+| LigninDB | quiet | base | 2 | 1,424 | 1,891 | 2,156 | 2,796 | 85 | 111 | 569 |
+| LigninDB | quiet | base-again | 2 | 1,450 | 1,934 | 2,209 | 2,887 | 86 | 111 | 343 |
+| **LigninDB** | **quiet** | **median of 4 (range)** | | 1,451 (1,424 to 1,469) | 1,932 (1,891 to 2,006) | **2,200** (2,156 to 2,293) | **2,894** (2,796 to 3,046) | 89 (85 to 94) | 115 (111 to 120) | 481 (343 to 569) |
+| RocksDB | quiet | base | 1 | 2,611 | 3,265 | 3,954 | 5,619 | 0 | 17 | 3,078 |
+| RocksDB | quiet | base-again | 1 | 2,582 | 3,209 | 4,164 | 8,585 | 0 | 16 | 6,352 |
+| RocksDB | quiet | base | 2 | 2,592 | 3,224 | 4,074 | 5,739 | 0 | 15 | 3,185 |
+| RocksDB | quiet | base-again | 2 | 2,608 | 3,294 | 4,089 | 5,666 | 0 | 16 | 1,747 |
+| **RocksDB** | **quiet** | **median of 4 (range)** | | 2,600 (2,582 to 2,611) | 3,245 (3,209 to 3,294) | **4,082** (3,954 to 4,164) | **5,703** (5,619 to 8,585) | 0 (0 to 0) | 16 (15 to 17) | 3,132 (1,747 to 6,352) |
+| LigninDB | heavy | base | 1 | 1,442 | 2,147 | 2,529 | 3,466 | 141 | 454 | 1,558 |
+| LigninDB | heavy | base-again | 1 | 1,426 | 2,122 | 2,538 | 3,929 | 140 | 462 | 2,311 |
+| LigninDB | heavy | base | 2 | 1,292 | 1,900 | 2,270 | 2,995 | 141 | 456 | 1,165 |
+| LigninDB | heavy | base-again | 2 | 1,299 | 1,885 | 2,272 | 9,840 | 118 | 399 | 8,498 |
+| **LigninDB** | **heavy** | **median of 4 (range)** | | 1,363 (1,292 to 1,442) | 2,011 (1,885 to 2,147) | **2,401** (2,270 to 2,538) | **3,698** (2,995 to 9,840) | 141 (118 to 141) | 455 (399 to 462) | 1,935 (1,165 to 8,498) |
+| RocksDB | heavy | base | 1 | 2,043 | 13,513 | 18,227 | 49,065 | 5 | 5,214 | 46,684 |
+| RocksDB | heavy | base-again | 1 | 2,045 | 13,528 | 18,735 | 51,357 | 5 | 6,269 | 48,949 |
+| RocksDB | heavy | base | 2 | 1,931 | 12,916 | 17,037 | 36,671 | 5 | 5,799 | 34,177 |
+| RocksDB | heavy | base-again | 2 | 1,935 | 13,033 | 17,071 | 52,724 | 4 | 6,035 | 50,530 |
+| **RocksDB** | **heavy** | **median of 4 (range)** | | 1,989 (1,931 to 2,045) | 13,273 (12,916 to 13,528) | **17,649** (17,037 to 18,735) | **50,211** (36,671 to 52,724) | 5 (4 to 5) | 5,917 (5,214 to 6,269) | 47,817 (34,177 to 50,530) |
+
+**LigninDB's tail is not worse than RocksDB's on this class, quiet or heavy.** At the 99.9th percentile LigninDB's commit took 2,200 µs under `quiet` and 2,401 µs under `heavy`, RocksDB's 4,082 and 17,649 µs; the longest commit of a run took LigninDB 2,894 and 3,698 µs and RocksDB 5,703 and 50,211 µs (medians of the four runs). In each of the eight runs LigninDB's 99.9th percentile and its longest commit were below RocksDB's of the same run. Under `heavy` the harness asks RocksDB for a flush of its memtables at most once in ten blocks (section 5, item 5); in each of its four runs there, its three longest commits were off a processor for 92 to 96% of their time. LigninDB's longest commit under `heavy` was 9,840 µs in one run, 8,498 µs of it off a processor; in the other three it was 3.0 to 3.9 ms.
+
+Every table of `campaign.sh` of both runs, its reports and its traces are kept with the evidence of PERF-07-F2; the rows above are those of "The commit of a block, on the file system of the runs".
 
 #### 3.5.2 What a long commit waits for
 
@@ -217,7 +251,7 @@ and is woken at `journal_end_buffer_io_sync`, from the end of a request to the d
 
 **Two more ways into the journal from the same call.** Where the journal has no room for the change, the writing thread goes for the journal's checkpoint (`__jbd2_log_wait_for_space`) and waits: for the checkpoint's lock, or inside it (`jbd2_log_do_checkpoint`) for a buffer that is being written, for the journal's superblock (`jbd2_write_superblock`), for a flush of the device (`blkdev_issue_flush`). Who held the lock or had the buffer written the trace does not say. From the same place the kernel can also have the thread wait for a commit (`jbd2_log_wait_commit`); it was seen in the traces, rarely. And where the journal's running transaction is being closed for its commit, a write that needs it waits for the next one (`wait_transaction_locked`).
 
-**RocksDB's commits meet the same wait.** The `write` of a commit to RocksDB's log has the same stack in the trace, and so has the `fallocate` with which RocksDB sets room aside for its log. How often each engine meets it is the tables' to say: in the traces it went with how long the commits of the journal took in that run, and a run of RocksDB with long ones had more such waits than a run of LigninDB with short ones. In that run a commit also waited inside RocksDB, on a condition variable of its commit (`OptimisticTransaction::CommitWithParallelValidate`), from the beginning of a background thread's sync of a log file to its end. What the traces show to differ between the engines in every run is how often the journal commits: more often for LigninDB. GroveDB asks RocksDB for no sync at a commit (`WriteOptions::default()`), and every sync of RocksDB that the trace lists in the measured blocks was made by one of its background threads: of table files, of log files, of its own manifest and of the names of its directory. LigninDB's background threads sync several files for every block that is committed at this pace. Of each traced run, `tables.md` gives the commits of each journal in the measured blocks, and of LigninDB's the syncs a block by what they are of.
+**RocksDB's commits meet the same wait.** The `write` of a commit to RocksDB's log has the same stack in the trace, and so has the `fallocate` with which RocksDB sets room aside for its log. How often each engine meets it on the reference class is in the tables below: on those machines RocksDB's commit met it and LigninDB's did not. In the guest's traces it went with how long the commits of the journal took in that run, and a run of RocksDB with long ones had more such waits than a run of LigninDB with short ones. In that run a commit also waited inside RocksDB, on a condition variable of its commit (`OptimisticTransaction::CommitWithParallelValidate`), from the beginning of a background thread's sync of a log file to its end. What the traces show to differ between the engines in every run is how often the journal commits: more often for LigninDB. GroveDB asks RocksDB for no sync at a commit (`WriteOptions::default()`), and every sync of RocksDB that the trace lists in the measured blocks was made by one of its background threads: of table files, of log files, of its own manifest and of the names of its directory. LigninDB's background threads sync several files for every block that is committed at this pace. Of each traced run, `tables.md` gives the commits of each journal in the measured blocks, and of LigninDB's the syncs a block by what they are of.
 
 **A read waits the same way.** A `pread64` of the measuring thread, during the operations of a block and seldom in a commit, has the stack from `ext4_dirty_inode` down, under `touch_atime` and `filemap_read`: with `relatime`, a file that was changed since it was last read gets a new time of access at the next read, and a segment that is appended to is such a file.
 
@@ -225,7 +259,37 @@ and is woken at `journal_end_buffer_io_sync`, from the end of a request to the d
 
 **The allocator.** During the operations of a block, and less often in a commit, the measuring thread waited for the lock of the C library's allocator (`__lll_lock_wait_private` under `malloc`, `realloc` and `free`), with the threads of the cleaner and of write-back as the waking threads. The harness is built with the system's allocator.
 
-> **Place of the tables of the reference class:** "What the measuring thread waited for, in the traced runs" of `tables.md`, for LigninDB and RocksDB under each background: the waits by what they were for, with their number, their time in all and the longest; and for the waits in a write to a file of the log, the syncs under way at a moment of the wait and, apart from them, the syncs that waited for the commit of the journal that the wait began in.
+##### The run of record: what the measuring thread waited for (H3)
+
+Traced runs of 30,000 blocks of the base, one engine each, on the file system of the runs; the waits of the measuring thread of a millisecond or more inside a block, by what `waits.py` reads them to be.
+
+| Run | Where | What the thread waited for | Waits | In all, ms | Longest, ms |
+| --- | --- | --- | --- | --- | --- |
+| LigninDB, `quiet` | the operations | a lock of the engine, or a condition it waits on | 86 | 107.9 | 1.8 |
+| LigninDB, `heavy` | the operations | a lock of the engine, or a condition it waits on | 8 | 8.7 | 1.3 |
+| LigninDB, `heavy` | the operations | `pread64`: ext4 writes the file's times to the journal, which is writing that block of inodes | 2 | 6.8 | 4.7 |
+| RocksDB, `quiet` | the commit | taken off the processor while it could run | 1 | 2.0 | 2.0 |
+| RocksDB, `quiet` | the operations | taken off the processor while it could run | 1 | 2.8 | 2.8 |
+| RocksDB, `heavy` | the commit | `fallocate`: ext4 writes the file's times to the journal, which is writing that block of inodes | 16 | 181.6 | 45.1 |
+| RocksDB, `heavy` | the commit | `write`: ext4 writes the file's times to the journal, which is writing that block of inodes | 11 | 128.9 | 26.5 |
+| RocksDB, `heavy` | the commit | `fallocate`: ext4 writes a change of the file to the journal, which is writing the block it changes | 1 | 7.7 | 7.7 |
+| RocksDB, `heavy` | the commit | taken off the processor while it could run | 1 | 3.0 | 3.0 |
+| RocksDB, `heavy` | the commit | `mprotect`, for the lock of the process's memory map | 1 | 2.2 | 2.2 |
+| RocksDB, `heavy` | the operations | taken off the processor while it could run | 3 | 14.9 | 6.0 |
+| RocksDB, `heavy` | the operations | a lock of the engine, or a condition it waits on | 3 | 10.6 | 8.4 |
+
+| Run | Commit of the block, µs: median, 99%, 99.9%, longest | Syncs a block | Commits of the journal in the measured blocks: a second, median, longest |
+| --- | --- | --- | --- |
+| LigninDB, `quiet` | 1,224, 1,683, 1,922, 2,333 | 5.47: 1.81 of the manifest's temporary file, 1.81 of the names of the database directory, 1.77 of a value-log file, 0.08 of others | 193.0, 0.23 ms, 7.3 ms |
+| LigninDB, `heavy` | 1,248, 1,827, 2,175, 2,609 | 11.43: 3.25, 3.25 and 2.02 of those, 1.01 of a segment, 0.65 of a log file, 0.41 of a table checkpoint, 0.84 of the names of the four directories | 393.2, 0.22 ms, 40.5 ms |
+| RocksDB, `quiet` | 2,424, 3,018, 3,446, 4,497 | | 3.1, 0.35 ms, 2.3 ms |
+| RocksDB, `heavy` | 1,919, 12,340, 16,290, 48,130 | | 36.8, 0.26 ms, 61.8 ms |
+
+The syncs a block are LigninDB's, counted by the harness's file layer; GroveDB asks RocksDB for no sync at a commit. In LigninDB's traced run under `heavy`, 416 more waits (1,042 ms in all) were between two blocks, where a traced run reads the engine's counts (section 2); they are in no row.
+
+**The waits in a write to a file of the log.** LigninDB had none of a millisecond in either traced run, nor in any of the seven other traced runs of LigninDB (3.5.3). RocksDB under `heavy` had 28 (318.2 ms in all), in the `write` or the `fallocate` for a file of its log, each of them for a commit of the ext4 journal by the frames it blocked in, and each begun while a commit of that journal was under way. A sync of the process had a moment in common with 3 of the 28, of the names of RocksDB's directory, where waits begun at moments taken at random would have had 3.0; for 3 of the 28, a sync of the names of RocksDB's directory had asked to wait for the commit of the journal that the wait began in, before it ended. Which sync the other 25 commits of the journal were begun for the trace does not say.
+
+**What a long commit waited for on this machine, against the mechanism above.** In 30,000 traced blocks under each background LigninDB's commit did not once wait a millisecond. Its waits of a millisecond or more were in the operations of a block: for a lock of the engine or a condition it waits on, with write-back's thread as the waking thread (all 86 in the run that follows every thread of the process), and twice in a read, where ext4 stamps the file's time of access. The wait this section describes, an append held at `file_modified` while the journal writes the block of inodes, is on this machine RocksDB's: under `heavy` its commit met it 28 times, the longest for 45 ms, in a write or an allocation for its log. LigninDB's journal committed 193 to 393 times a second at a median of 0.22 to 0.23 ms, and the longest commit of the journal took 7.3 and 40.5 ms; none of those commits held an append to LigninDB's log for a millisecond. The mechanism stands as the cause of a long commit when the journal commits while an append stamps the log's file; on a disk whose syncs take a quarter of a millisecond, LigninDB's appends did not meet it in these runs. No read of the measuring thread in the traced runs of LigninDB on ext4 waited for its page from the device: every read that waited was at a stamp of the file's time, the store being held in the system's cache, so what a read of several blocks from the device costs is not measured here.
 
 #### 3.5.3 Three experiments
 
@@ -235,20 +299,87 @@ Each is held to one rule: it lowers the 99.9th percentile of LigninDB's commit b
 
 1. **The log's file allocated ahead** (`log-allocated-ahead.patch`, `LIGNIN_LOG_ALLOCATE=fallocate`). When a log file is created, its target length is allocated once (`fallocate`) and the file has that length from then on. An append is written at the place the log ends at: below the target length it extends nothing, and one that goes past it extends the file as before. What 3.5.2 says of it before any table: the append waits where the file's time is stamped, and a file that is allocated ahead has its time stamped like any other, so this change by itself leaves the wait where it is. It can take the second way away, the one at the write's end. A mount with `lazytime` does not take the first away either on the kernel that was traced (Linux 6.8): a write to a file there had the same stack from `file_modified` down to the journal, with the log allocated ahead and without. A campaign traces a run on such a mount with the log allocated ahead and one without, and makes no table of percentiles there.
 
-   > **Place of a table of the reference class, and of one sentence, kept or not and why:** "The control and the two experiments", row `allocated`, of `tables.md`, with the waits of the traced runs `allocated-*`, `lignindb-*-on-ext4-lazytime` and `allocated-*-on-ext4-lazytime`.
+   The run of record (H1 under `quiet`, H2 under `heavy`; 99.9th percentile of LigninDB's commit, µs):
+
+   | Background | Rows | Runs | Median (range) | Below the control's median by | The control's runs are apart by | By more than that |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | quiet | `base`, `base-again` (the control) | 4 | 2,200 (2,156 to 2,293) | | 138 | |
+   | quiet | `allocated` | 2 | 2,196 (2,191 to 2,201) | 4 | 138 | no |
+   | heavy | `base`, `base-again` (the control) | 4 | 2,401 (2,270 to 2,538) | | 268 | |
+   | heavy | `allocated` | 2 | 2,488 (2,440 to 2,535) | −87 | 268 | no |
+
+   The traced runs under `quiet` (H3), 30,000 blocks each: `allocated-quiet` (the log allocated ahead) had no wait of a millisecond in a write to the log, nor had `lignindb-quiet` (3.5.2); on ext4 with `lazytime`, in a file of the measured file system, neither `allocated-quiet-on-ext4-lazytime` nor `lignindb-quiet-on-ext4-lazytime` had one. Their waits of a millisecond were in the operations, for a lock of the engine (107, 101 and 113, of at most 1.9 ms) and, in `lignindb-quiet-on-ext4-lazytime`, twice off the processor while it could run.
+
+   **Not kept.** With the log allocated ahead, the 99.9th percentile of the commit is 4 µs below the control's median under `quiet` and 87 µs above it under `heavy`, where the control's own four runs are 138 and 268 µs apart; and on this machine there was no wait for it to take away, since no traced run, with the log allocated ahead or without, had an append wait a millisecond. So nothing of it is built, and section 4, item 2 stays what a kept form would have to bring.
 
 2. **Fewer syncs in a turn of write-back** (`fewer-syncs.patch`, `LIGNIN_COVER_BYTES=1048576`). A turn of write-back's loop appends the pending values to the value log, syncs that file and replaces the manifest, which is a sync of the manifest's temporary file and one of the directory's names, before it gives a page a pointer to a value. With the patch a turn of the background loop leaves the pending values where they are while fewer than a megabyte of them are held and more are held than at the turn before, so one such set of three syncs covers the values of several turns. A turn that finds no more than the one before covers what is there, and so does a pass that may leave no page for a later one. The values that a regrouping copies, and what the cleaner moves, are covered as before: the patch does not reach them, and the cleaner is outside this task.
 
-   > **Place of a table of the reference class, and of one sentence, kept or not and why:** "The control and the two experiments", row `covered`, of `tables.md`, with the syncs a block of the traced runs `lignindb-*` and `covered-*`.
+   The run of record (H1 under `quiet`, H2 under `heavy`; 99.9th percentile of LigninDB's commit, µs):
 
-3. **A second file system.** XFS beside ext4, both made by the campaign in files of the measured file system, so that the two differ in the file system and in nothing under it. No code. What a trace on XFS showed of the mechanism: where the write stamps the file's time, and where a read stamps the time of access, the thread waited for the lock of the inode (`xfs_ilock` under `xfs_vn_update_time`). Less often a read waited at `xfs_ilock` called from `xfs_file_buffered_read`, which is before the read and not at a time's stamping. Those were all the places in the file system at which the thread left the processor for a millisecond inside a measured block. What the holder of that lock waited for was not traced. The need is the same and the wait is at another place; whether it is shorter is the table's to say.
+   | Background | Rows | Runs | Median (range) | Below the control's median by | The control's runs are apart by | By more than that |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | quiet | `base`, `base-again` (the control) | 4 | 2,200 (2,156 to 2,293) | | 138 | |
+   | quiet | `covered` | 2 | 2,463 (2,437 to 2,488) | −263 | 138 | no |
+   | heavy | `base`, `base-again` (the control) | 4 | 2,401 (2,270 to 2,538) | | 268 | |
+   | heavy | `covered` | 2 | 2,632 (2,527 to 2,737) | −232 | 268 | no |
 
-   > **Place of a table of the reference class, and of one sentence:** "A second file system: XFS against ext4" of `tables.md`, where the control is ext4 under its two names (rows `ext4` and `ext4-again`) and the row held against it is `xfs`, with the waits of the traced runs `lignindb-*-on-ext4` and `lignindb-*-on-xfs`.
+   The syncs a block of the traced runs under `quiet` (H3), 30,000 blocks each: `covered-quiet` 2.69 (0.88 of the manifest's temporary file, 0.88 of the names of the database directory, 0.85 of a value-log file, 0.08 of others) against 5.47 of `lignindb-quiet` (1.81, 1.81, 1.77 and 0.08); the journal committed 92.2 times a second against 193.0. Its commit's time off a processor was longer (99.9%: 341 µs against 88), and its commit waited once for a lock of the engine (1.3 ms), where the base's did not wait.
+
+   **Not kept.** Fewer syncs in a turn of write-back halves the syncs of a block and the commits of the journal, and the 99.9th percentile of the commit is 263 µs above the control's median under `quiet` and 232 µs above it under `heavy`, where the control's runs are 138 and 268 µs apart: worse by more than the control's spread under `quiet`, and nowhere lower. Nothing of it is built.
+
+3. **A second file system.** XFS beside ext4, both made by the campaign in files of the measured file system, so that the two differ in the file system and in nothing under it. No code. What a trace on XFS showed of the mechanism: where the write stamps the file's time, and where a read stamps the time of access, the thread waited for the lock of the inode (`xfs_ilock` under `xfs_vn_update_time`). Less often a read waited at `xfs_ilock` called from `xfs_file_buffered_read`, which is before the read and not at a time's stamping. Those were all the places in the file system at which the thread left the processor for a millisecond inside a measured block. What the holder of that lock waited for was not traced. The need is the same and the wait is at another place; on the reference class the table below finds no difference beyond the control's spread.
+
+   The run of record (H3 under `quiet`, H4 under `heavy`; the file systems in files of the measured one, through loop devices with direct I/O; ext4 there has a journal of 512 MiB; 99.9th percentile of LigninDB's commit, µs):
+
+   | Background | Rows | Runs | Median (range) | Below the control's median by | The control's runs are apart by | By more than that |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | quiet | `ext4`, `ext4-again` (the control) | 4 | 2,256 (2,121 to 2,534) | | 413 | |
+   | quiet | `xfs` | 2 | 2,144 (2,120 to 2,167) | 113 | 413 | no |
+   | heavy | `ext4`, `ext4-again` (the control) | 4 | 2,258 (2,214 to 2,310) | | 96 | |
+   | heavy | `xfs` | 2 | 2,317 (2,288 to 2,345) | −59 | 96 | no |
+
+   The median sync of a 4 KiB append there: on ext4 0.71 ms (H3) and 0.60 ms (H4), on XFS 0.36 and 0.31 ms. The traced runs under `quiet` (H3), 30,000 blocks each: `lignindb-quiet-on-ext4` waited a millisecond or more 134 times, all for a lock of the engine in the operations; `lignindb-quiet-on-xfs` 88 times for a lock of the engine, 11 times taken off the processor while it could run, and 4 times in a read where XFS stamps the file's time and waits for the lock of the inode (`xfs_ilock`, 11.2 ms in all, the longest 3.9 ms). Neither had a wait in a write to the log, and the commit's 99.9th percentile in them was 1,945 µs on ext4 and 1,843 µs on XFS.
+
+   **Not kept.** XFS is 113 µs below the ext4 control's median under `quiet` and 59 µs above it under `heavy`, where the control's runs are 413 and 96 µs apart: within the spread of one binary on one file system under both backgrounds. On XFS a read waited a millisecond for the inode's lock four times where on ext4 no read waited a millisecond, and on neither did an append to the log wait.
+
+#### 3.5.4 The first run: the engine before the cleaner's change
+
+The same command, at the same defaults, split over four machines in the same way, on `f4eb8bccc`: the engine before PERF-08 changed the cleaner of the value log and the length of the log's files, and before PERF-05-F2 and the checkpoint changes of OPS-03-F1 and OPS-03-F3. Region `nyc3`; the median sync of a 4 KiB append was 0.29, 0.34, 0.34 and 0.27 ms on H1 to H4. Binaries: base `951041ab…59b9dfdb1`, the log allocated ahead `f13ad086…7f8351e1`, fewer syncs `2b099ebd…09be1a373`. These tables decide nothing.
+
+The commit of a block, medians of the four runs of the control (range), µs:
+
+| Engine | Background | Median | 99% | 99.9% | Longest | Off a processor: 99% | 99.9% | longest |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| LigninDB | quiet | 1,678 (1,660 to 1,702) | 2,163 (2,138 to 2,257) | 2,450 (2,426 to 2,555) | 3,724 (3,021 to 6,239) | 106 (102 to 114) | 410 (394 to 435) | 2,010 (665 to 4,398) |
+| RocksDB | quiet | 3,088 (3,076 to 3,097) | 3,794 (3,766 to 3,799) | 4,193 (4,157 to 4,273) | 5,769 (5,155 to 36,012) | 0 (0 to 0) | 22 (19 to 24) | 2,224 (270 to 33,399) |
+| LigninDB | heavy | 1,796 (1,789 to 1,800) | 2,605 (2,581 to 2,616) | 3,157 (3,122 to 3,229) | 8,303 (6,147 to 9,802) | 206 (193 to 231) | 607 (587 to 692) | 5,178 (3,030 to 5,479) |
+| RocksDB | heavy | 2,600 (2,597 to 2,615) | 18,564 (18,378 to 18,618) | 25,042 (24,121 to 25,538) | 48,715 (37,581 to 78,987) | 7 (6 to 8) | 5,454 (4,385 to 7,209) | 45,740 (33,651 to 76,042) |
+
+In each of its eight runs of the control LigninDB's 99.9th percentile was below RocksDB's of the same run, and so was its longest commit in seven: in one run under `quiet` LigninDB's longest took 6,239 µs and RocksDB's 6,003 µs.
+
+The experiments, 99.9th percentile of LigninDB's commit, µs:
+
+| Background | Rows | Median (range) | Below the control's median by | The control's runs are apart by | By more than that |
+| --- | --- | --- | --- | --- | --- |
+| quiet | `base`, `base-again` (the control) | 2,450 (2,426 to 2,555) | | 129 | |
+| quiet | `allocated` | 2,442 (2,439 to 2,445) | 8 | 129 | no |
+| quiet | `covered` | 2,776 (2,724 to 2,828) | −326 | 129 | no |
+| heavy | `base`, `base-again` (the control) | 3,157 (3,122 to 3,229) | | 107 | |
+| heavy | `allocated` | 3,209 (3,098 to 3,321) | −52 | 107 | no |
+| heavy | `covered` | 3,266 (3,255 to 3,277) | −109 | 107 | no |
+| quiet | `ext4`, `ext4-again` (the control) | 2,402 (2,332 to 2,591) | | 258 | |
+| quiet | `xfs` | 2,565 (2,534 to 2,595) | −163 | 258 | no |
+| heavy | `ext4`, `ext4-again` (the control) | 3,216 (3,113 to 3,323) | | 210 | |
+| heavy | `xfs` | 3,177 (3,136 to 3,217) | 39 | 210 | no |
+
+The traced runs (H3, 30,000 blocks each): of LigninDB's nine, one had a wait of a millisecond in a write to the log, on XFS (2.0 ms, at the inode's lock); RocksDB under `heavy` had 49 (360.8 ms in all, the longest 27.9 ms) in the `write` or the `fallocate` for its log, at the journal as in the run of record. The preflight found the user stacks whole (2,576 of 2,576 waits of LigninDB inside a block, 91 of 91 of RocksDB).
+
+**What moved in the tail.** From the first run to the run of record LigninDB's 99.9th percentile went from 2,450 to 2,200 µs under `quiet` and from 3,157 to 2,401 µs under `heavy`, and its median from 1,678 to 1,451 and from 1,796 to 1,363 µs: lower by more than either run's control is apart (129 and 138 µs under `quiet`, 107 and 268 under `heavy`). That is not the cleaner's change alone. The engine between the two runs changed by more (Merk's handle of PERF-05-F2, the checkpoints' staging), and the two runs are on machines of two regions, on which RocksDB, whose path through a commit is the same code in both runs, moved as well: its 99.9th percentile from 4,193 to 4,082 µs under `quiet` and from 25,042 to 17,649 µs under `heavy`, its median from 3,088 to 2,600 and from 2,600 to 1,989 µs. Within each run, LigninDB's 99.9th percentile was 0.58 and then 0.54 of RocksDB's under `quiet`, and 0.13 and 0.14 under `heavy`. LigninDB's syncs a block stayed where they were (5.45 and 5.47 under `quiet`, 11.58 and 11.43 under `heavy`, in the traced runs). What the tables show of the cleaner's change is that with it the tail is no longer: on these machines it is shorter, and it stays below RocksDB's by about as much as before.
 
 ## 4. What is open
 
-1. **A slow append to the log** (3.2, 3.5). It waits inside the file layer's call where ext4 stamps the file's time, while the journal writes a commit or has no room (3.5.2), and nothing in the engine is built against it. **The tables of 3.5 are to be made on a machine of the reference class** with `campaign.sh`, and with them the three sentences of 3.5.3. Whether an append waits for a flush on a device whose flush takes milliseconds is to be measured on such a device: the file layer of the harness makes a sync longer, and not the file system's own part of it.
-2. **What a kept form of the log allocated ahead has to bring**, if a table of the reference class earns it. The patch keeps the handle's own count of where the file ends and writes there; a kept form has to say what a failed append leaves in a file that is longer than what was appended, where today the engine reads the file's length to find out (`LogStore::append_checked`), and what the next session finds of a file that was allocated and not filled. A reader of the log ends at the first record that is not whole, and zeros are no record (`log-format.md`, LG31), so a tail that was allocated and never written ends the log where it should with no change of the format. A kept form has to show that by a test and by both crash campaigns of `crash-tests.md`, the store's (`lignin-ci.sh crash`) and the engine's (`lignin-ci.sh crash-engine`), each ending clean; the fault-injecting file layer of `lignin-io` has to model the allocation call; and the Miri and loom jobs of `ci.md` have to pass where `lignin-io` or the buffer pool is touched (`lignin-ci.sh miri`, `lignin-ci.sh loom`). No format version changes. If the reader turned out to need a change of the format to end at such a tail, the work stops there and is reported with the figures.
+1. **A slow append to the log** (3.2, 3.5). It waits inside the file layer's call where ext4 stamps the file's time, while the journal writes a commit or has no room (3.5.2), and nothing in the engine is built against it. On the machines of the reference class (3.5) no traced run of LigninDB had an append wait a millisecond, and RocksDB's commit under `heavy` did; none of the three experiments of 3.5.3 is kept. Whether an append waits for a flush on a device whose flush takes milliseconds is to be measured on such a device: the file layer of the harness makes a sync longer, and not the file system's own part of it.
+2. **What a kept form of the log allocated ahead has to bring**, if a later table earns it: on the reference class none did (3.5.3). The patch keeps the handle's own count of where the file ends and writes there; a kept form has to say what a failed append leaves in a file that is longer than what was appended, where today the engine reads the file's length to find out (`LogStore::append_checked`), and what the next session finds of a file that was allocated and not filled. A reader of the log ends at the first record that is not whole, and zeros are no record (`log-format.md`, LG31), so a tail that was allocated and never written ends the log where it should with no change of the format. A kept form has to show that by a test and by both crash campaigns of `crash-tests.md`, the store's (`lignin-ci.sh crash`) and the engine's (`lignin-ci.sh crash-engine`), each ending clean; the fault-injecting file layer of `lignin-io` has to model the allocation call; and the Miri and loom jobs of `ci.md` have to pass where `lignin-io` or the buffer pool is touched (`lignin-ci.sh miri`, `lignin-ci.sh loom`). No format version changes. If the reader turned out to need a change of the format to end at such a tail, the work stops there and is reported with the figures.
 3. **The locks a commit waits for** (3.5.2): which thread holds the lock on the counts of live values, write-back's record of commits and the log's lock for milliseconds, and during what.
 4. **The allocator's lock** (3.5.2), which the committing thread waits for beside the cleaner and write-back. Which allocations and frees meet was not looked for, nor what another allocator makes of it.
 5. **A read that changes its file's time of access** (3.5.2). A file layer that opens its files with `O_NOATIME`, or a file system mounted with `noatime`, has no such change; neither was measured.
