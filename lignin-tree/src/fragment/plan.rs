@@ -412,15 +412,21 @@ impl Plan<'_> {
         entry.read = true;
         for (side, child) in Side::BOTH.into_iter().zip(stored.links) {
             if let Some(child) = child {
+                let known = self.cells.len();
                 let kid = self.existing(child)?;
-                self.below(cell, kid)?;
+                if kid < known {
+                    self.below(cell, kid)?;
+                }
                 self.adopt(cell, kid, Via::Link(side))?;
             }
         }
         for (position, root) in stored.roots.iter().enumerate() {
             if let Some(root) = root.filter(|root| !dropped.contains(root)) {
+                let known = self.cells.len();
                 let kid = self.existing(root)?;
-                self.below(cell, kid)?;
+                if kid < known {
+                    self.below(cell, kid)?;
+                }
                 self.adopt(cell, kid, Via::Hosted(position as u8))?;
             }
         }
@@ -438,11 +444,13 @@ impl Plan<'_> {
     /// states, and is looked for before a cell the write does not write is
     /// read.
     ///
-    /// Only a cell that points at something is above another, and a cell
-    /// that is first met by this pointer points at nothing yet: the cells
-    /// that lead to `cell` are gone through for no other. They end, since
-    /// every pointer that could have closed a circle of them was refused
-    /// here or by the write's own check.
+    /// Only a cell that the plan knew before the pointer was read, and
+    /// that points at something, can be above another. Whoever takes a
+    /// cell in asks this of such a cell alone ([`Self::take_in`]): for a
+    /// cell that the pointer is the first to name, nothing is asked. The
+    /// cells that lead to `cell` end, since every pointer that could have
+    /// closed a circle of them was refused here or by the write's own
+    /// check.
     fn below(&self, cell: usize, kid: usize) -> Result<(), FragmentError> {
         if self.cells[kid].kids.is_empty() {
             return Ok(());

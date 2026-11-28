@@ -1320,6 +1320,30 @@ fn a_pointer_back_to_a_cell_above_is_refused_with_that_cells_address() {
     };
     assert_eq!(error, WriteError::TwoPointers { address: Some(m) });
     assert_eq!(mem.shadow.records.len(), from, "no page was changed");
+
+    // The pointer of a host is refused as a link is. Another page: `m`
+    // over `h` and `x`, where `h` hosts a Merk whose root it says is `m`.
+    let mut mem = Mem::new(SIZE);
+    let page = mem.create().expect("a page");
+    let above = CellAddress::new(page, slot(3));
+    let h = stored_host(
+        &mut mem,
+        page,
+        b"h",
+        31,
+        [None, None],
+        &[Some(above)],
+        false,
+    );
+    let x = stored_cell(&mut mem, page, b"x", 95, [None, None], false);
+    let m = stored_cell(&mut mem, page, b"m", 5, [Some(h), Some(x)], true);
+    assert_eq!(m, above);
+    let mut nodes = Vec::new();
+    let write = kept(m, b"m", &mut nodes);
+    for limit in [taken(&mem, &[m, x, h]) + 1, usize::MAX] {
+        let error = refused(counted(&layout, &mut mem, &write, m, limit));
+        assert_eq!(error, WriteError::TwoPointers { address: Some(m) });
+    }
 }
 
 #[test]
