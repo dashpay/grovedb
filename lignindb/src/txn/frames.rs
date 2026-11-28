@@ -14,7 +14,7 @@ use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
     bulk::{HostedLoad, LinkLoad, LoadCounters, LoadParams, Loader, NodeLoad},
     directory::{
-        Directory, DirectoryError, Dropped, Entry, Host, MerkId, Prefix, Rekey, RekeyPlan,
+        Directory, DirectoryError, Dropped, Entry, Host, MerkId, Pending, Prefix, Rekey, RekeyPlan,
         Restated, Root, RootChange,
     },
     drop::{self, DropError, Flats, Leaving as Left},
@@ -123,9 +123,16 @@ pub(crate) mod probe {
     use std::cell::Cell;
 
     use lignin_format::CellAddress;
-    use lignin_tree::directory::RootChange;
+    use lignin_tree::directory::{RootChange, Settled};
 
     thread_local! {
+        static SETTLED: Cell<Settled> = const {
+            Cell::new(Settled {
+                records: 0,
+                leaves: 0,
+                leaf_writes: 0,
+            })
+        };
         static PANIC: Cell<bool> = const { Cell::new(false) };
         static TAKEN: Cell<u64> = const { Cell::new(0) };
         static CHAINED: Cell<u64> = const { Cell::new(0) };
@@ -164,6 +171,25 @@ pub(crate) mod probe {
     /// The counts of this thread since they were last taken.
     pub(crate) fn lost_counts() -> Lost {
         LOST.replace(Lost::default())
+    }
+
+    /// Adds what one batch settled of its records in the directory
+    /// (`Directory::settle`). A batch that put none adds nothing.
+    pub(super) fn settled(batch: Settled) {
+        let mut settled = SETTLED.get();
+        settled.records += batch.records;
+        settled.leaves += batch.leaves;
+        settled.leaf_writes += batch.leaf_writes;
+        SETTLED.set(settled);
+    }
+
+    /// What the batches that this thread applied to frames settled in
+    /// the directory since the counts were last taken, summed: the
+    /// records, the leaves they changed, and the images of leaves that
+    /// were written for them. A batch that is applied again where frames
+    /// are made again is counted again.
+    pub(crate) fn take_settled() -> Settled {
+        SETTLED.replace(Settled::default())
     }
 
     /// The next write panics once the tree pages have taken its batch,
@@ -2585,6 +2611,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             drops: &path.flat_drops,
             at: self.base,
         };
+        // The records that the batch puts into the directory are kept
+        // here until all of them are made, and are then written, each
+        // leaf of the directory once (`Directory::settle`). Every write
+        // of the directory below reads through them, and nothing else
+        // reads the directory before they are settled. They are of this
+        // call: a refusal drops them with it, and no page of the
+        // directory has anything of them.
+        let mut pending = Pending::new();
         let report = match (merks.is_empty(), view.leaving.is_empty()) {
             (true, true) => Ok(Report::default()),
             (false, true) => (self.held.kept.fragments)
@@ -2607,6 +2641,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     &mut self.held.lent.tree,
                     &mut self.held.lent.values,
                     &mut self.held.lent.directory,
+                    &mut pending,
                     &mut flats,
                     &write,
                     &leaving,
@@ -2657,7 +2692,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // told below, under the prefixes the Merks have then.
         let rekeyed = match &view.rekey {
             Some(plan) => {
-                let left = drop::rekey(&mut self.held.lent.directory, &mut flats, plan);
+                let directory = &mut self.held.lent.directory;
+                let left = drop::rekey(directory, &mut pending, &mut flats, plan);
                 self.held
                     .lent
                     .dropped
@@ -2693,7 +2729,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             })
             .collect();
         if !restated.is_empty() {
-            match self.held.lent.directory.restate(flats.pages, &restated) {
+            let directory = &self.held.lent.directory;
+            match directory.restate_in(&mut pending, &*flats.pages, &restated) {
                 Ok(()) => untouched = false,
                 Err(error) if untouched && refuses(&error) => return Err(Refused::clean(error)),
                 Err(error) => return Err(Refused::dirty(error)),
@@ -2707,13 +2744,15 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 position: host.position,
             });
             let prefix = enter.subtree.as_bytes();
-            match drop::enter(
+            let entered = drop::enter(
                 &self.held.lent.directory,
+                &mut pending,
                 &mut flats,
                 prefix,
                 enter.tree_type,
                 host,
-            ) {
+            );
+            match entered {
                 Ok(_) => untouched = false,
                 Err(DropError::Directory(error)) if untouched && refuses(&error) => {
                     return Err(Refused::clean(error));
@@ -2750,13 +2789,17 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         #[cfg(all(test, not(loom)))]
         probe::count(&changes);
         if !changes.is_empty() {
-            (self
-                .held
-                .lent
-                .directory
-                .set_roots(&mut *self.flat, &changes))
-            .map_err(Refused::dirty)?;
+            let directory = &self.held.lent.directory;
+            let stated = directory.set_roots_in(&mut pending, &*self.flat, &changes);
+            stated.map_err(Refused::dirty)?;
         }
+        // Every record of the batch is made: the leaves of the directory
+        // are written, each once.
+        let directory = &self.held.lent.directory;
+        let settled = directory.settle(&mut *self.flat, pending);
+        let _settled = settled.map_err(Refused::dirty)?;
+        #[cfg(all(test, not(loom)))]
+        probe::settled(_settled);
         let unlinked = (0..total).filter(|node| !reach.linked[*node]).collect();
         // The handles in the order of the batch: those the write reports,
         // and for a batch with a load the nodes of each load among them,

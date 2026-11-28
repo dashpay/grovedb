@@ -753,7 +753,31 @@ element where the first has not.
 As built, the directory's part is at most four records: the entry goes,
 with the record of the root if the Merk has a root and the record of the
 host if it has a host, and a record of the dropped Merk takes their place
-(`lignin-tree::directory`).
+(`lignin-tree::directory`). They are records of the batch that drops the
+Merk, with those of everything else the batch enters, moves, clears and
+names a root of: a batch writes the directory's keyspace once for all the
+records it puts there, and not once a record (`lignin-tree::directory`,
+"The records of a batch"). The bound is in images of leaves: **at most one
+image for each leaf that takes records, and one more for each further
+piece of a leaf that is cut.** A leaf that is left with no record is freed
+and takes none; where that leaves one leaf below the root, the root takes
+what it holds, which is the image the freed leaf did not take. The pages
+that are copied are more than those leaves: a cut and a merge copy the
+branches above them, and a merge copies the leaf beside, which need hold
+no changed key. A record that is put with the value it has, in its page,
+has its leaf copied before the batch finds that it needs no image; only a
+leaf whose changes are all deletes of keys that are not there is not
+copied.
+
+On a store with a page that is damaged or cannot be read, an operation
+answers for the records and the pages it needs, and a damaged page beside
+those is the checker's to find (`lignindb::verify`). So "the directory
+holds what the same calls leave when each is written by itself, and each
+call answers as it does then" is said of the pages both need. A batch
+reads other pages beside its records than calls that are written one by
+one do: it changes records in place where those take a record out and put
+it again, and so does not look at the leaf beside a leaf that such a
+delete would leave short.
 
 A second exception, as built (D6, `lignin-tree::drop`): **the dropped
 Merk's own flat records go with the drop.** The record that a drop leaves

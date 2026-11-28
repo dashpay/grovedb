@@ -297,6 +297,93 @@ fn a_drop_that_is_refused_changes_nothing() {
     grove.check(&db);
 }
 
+/// A clear and a drop of a Merk with no node read the first Merk that
+/// the directory has below it, whole: a record of it that is damaged
+/// refuses both, and nothing is changed. So does a bucket of long keys
+/// where its record would be, which no directory has: it is not passed as
+/// if no Merk were below.
+#[test]
+fn a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does() {
+    for bucket in [false, true] {
+        a_merk_with_no_node_and_damage_below_it(bucket);
+    }
+}
+
+/// [`a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does`]
+/// with the record of the Merk below damaged, or with a `bucket` of long
+/// keys under the id and no Merk below.
+fn a_merk_with_no_node_and_damage_below_it(bucket: bool) {
+    let db = Db::new();
+    let mut txn = db.begin();
+    let mut grove = Grove::new(&db, &mut txn);
+    grove.flush(&mut txn);
+    let (empty, below) = ([0x11; 32], [0x12; 32]);
+    let root_prefix = grove.merks[0].prefix;
+    let directory = &mut grove.directory;
+    let above = Host {
+        parent: &root_prefix,
+        key: b"empty",
+        position: 0,
+    };
+    let id = directory
+        .add(&mut txn.flat, &empty, b"tree", Some(above))
+        .expect("entered");
+    let inside = Host {
+        parent: &empty,
+        key: b"inside",
+        position: 0,
+    };
+    let tree = *directory.tree();
+    let key = if bucket {
+        // A key under the id that is longer than a page stores, and so
+        // than any key of a directory.
+        let long = vec![b'k'; tree.config().key_limit()];
+        crate::directory::record::child_key(id, 0, &long)
+    } else {
+        directory
+            .add(&mut txn.flat, &below, b"tree", Some(inside))
+            .expect("entered");
+        // The record of the host of the Merk below holds no prefix and id.
+        crate::directory::record::child_key(id, 0, b"inside")
+    };
+    tree.put(&mut txn.flat, &key, b"no record")
+        .expect("a record");
+    db.commit(txn);
+
+    let layout = Layout::new(db.size, LayoutParams::default()).expect("a layout");
+    for leaving in [Leaving::Cleared(&empty), Leaving::Dropped(&empty)] {
+        let mut txn = db.begin();
+        let mut directory = grove.directory(&db);
+        let at = txn.tree.at;
+        let error = unlink(
+            &mut Fragments::new(layout),
+            &mut txn.tree,
+            &mut txn.values,
+            &mut directory,
+            &mut Flats {
+                pages: &mut txn.flat,
+                columns: &grove.columns,
+                drops: &grove.drops,
+                at,
+            },
+            &Write::default(),
+            &[leaving],
+        )
+        .expect_err("refused");
+        let reported = match &error {
+            DropError::Directory(DirectoryError::Damaged { key: at, .. }) => !bucket && *at == key,
+            DropError::Directory(DirectoryError::Flat(FlatError::Damaged { what, .. })) => {
+                bucket && what.contains("bucket")
+            }
+            _ => false,
+        };
+        assert!(reported, "{error}");
+        assert!(txn.tree.changed().is_empty());
+        assert_eq!(txn.flat.written().count(), 0);
+        db.roll_back(txn);
+    }
+}
+
 /// Pages with cells as these tests give them, and a dropped Merk whose
 /// root is a cell of the first.
 struct Crafted {

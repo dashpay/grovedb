@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::{column::Flats, error::DropError};
 use crate::{
-    directory::{Directory, Dropped, Prefix, RekeyPlan},
+    directory::{Directory, Dropped, Pending, Prefix, RekeyPlan},
     flat::FlatPagesMut,
 };
 
@@ -32,14 +32,19 @@ use crate::{
 /// with the value written again, and nothing for their cells. A
 /// transaction that makes its pages again makes the call again.
 ///
-/// The plan was made of `directory` as it is now. After an error the
-/// caller rolls the operation's scope back.
+/// The plan was made of `directory` as the records in `pending` leave it.
+/// **The directory's records of the moves are put into `pending`**, and no
+/// page of the directory is changed: the caller settles them with the
+/// other records of its batch ([`Directory::settle`]). The columns are
+/// written here. After an error the caller rolls the operation's scope
+/// back.
 pub fn rekey<F: FlatPagesMut + ?Sized>(
     directory: &mut Directory,
+    pending: &mut Pending,
     flats: &mut Flats<'_, F>,
     plan: &RekeyPlan,
 ) -> Result<Vec<Dropped>, DropError> {
-    let rekeyed = directory.rekey_pairs(flats.pages, plan)?;
+    let rekeyed = directory.rekey_pairs_in(pending, flats.pages, plan)?;
     for prefix in plan.left().iter().chain(&rekeyed.displaced) {
         flats.unlink_subtree(prefix)?;
     }

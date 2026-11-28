@@ -52,7 +52,65 @@ use crate::{
 
 pub(super) use grove::Grove;
 
-use crate::flat::FlatTree;
+use crate::{
+    directory::{Host, MerkId, Pending, Prefix, RekeyPlan},
+    flat::FlatTree,
+    fragment::{Fragments, Values, Write},
+};
+
+/// The drop ([`super::unlink`]) with the directory's records settled at
+/// once, as a batch of that one operation settles them.
+pub(super) fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
+    fragments: &mut Fragments,
+    pages: &mut P,
+    values: &mut V,
+    directory: &mut Directory,
+    flats: &mut Flats<'_, F>,
+    write: &Write<'_>,
+    leaving: &[Leaving<'_>],
+) -> Result<Unlink, DropError> {
+    let mut pending = Pending::new();
+    let done = super::unlink(
+        fragments,
+        pages,
+        values,
+        directory,
+        &mut pending,
+        flats,
+        write,
+        leaving,
+    )?;
+    directory.settle(flats.pages, pending)?;
+    Ok(done)
+}
+
+/// The enter ([`super::enter`]) with the directory's records settled at
+/// once.
+pub(super) fn enter<F: FlatPagesMut + ?Sized>(
+    directory: &Directory,
+    flats: &mut Flats<'_, F>,
+    prefix: &Prefix,
+    tree_type: &[u8],
+    host: Option<Host<'_>>,
+) -> Result<MerkId, DropError> {
+    let mut pending = Pending::new();
+    let id = super::enter(directory, &mut pending, flats, prefix, tree_type, host)?;
+    directory.settle(flats.pages, pending)?;
+    Ok(id)
+}
+
+/// The moves ([`super::rekey`]) with the directory's records settled at
+/// once.
+pub(super) fn rekey<F: FlatPagesMut + ?Sized>(
+    directory: &mut Directory,
+    flats: &mut Flats<'_, F>,
+    plan: &RekeyPlan,
+) -> Result<Vec<Dropped>, DropError> {
+    let mut pending = Pending::new();
+    let left = super::rekey(directory, &mut pending, flats, plan)?;
+    directory.settle(flats.pages, pending)?;
+    Ok(left)
+}
 
 /// What an operation of these tests holds while it reads.
 pub(super) struct Guard;

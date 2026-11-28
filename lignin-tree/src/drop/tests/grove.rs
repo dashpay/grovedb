@@ -13,10 +13,10 @@ use lignin_format::{
 };
 use lignin_store::load::LoadBuffers;
 
-use super::{flat_records, Counted, Db, Txn, Writer, GUARD};
+use super::{enter, flat_records, unlink, Counted, Db, Txn, Writer, GUARD};
 use crate::{
     directory::{Directory, Dropped, Host, Prefix, Root, RootChange},
-    drop::{enter, unlink, Column, FlatDrops, Flats, Leaving},
+    drop::{Column, FlatDrops, Flats, Leaving},
     flat::{FlatPages, FlatTree},
     fragment::{
         Fragments, HostedWrite, Layout, LayoutParams, LinkWrite, NodeWrite, Report, RootWrite,

@@ -239,6 +239,14 @@
 //!   deletes or rewrites the host, and states the roots that the write
 //!   carried to the directory afterwards, as after any write. It writes
 //!   the hosts that are behind first. It enters every Merk with [`enter`].
+//!   **It gives the three calls of an operation, [`unlink`], [`rekey`] and
+//!   [`enter`], one set of pending records of the directory**
+//!   ([`Pending`](crate::directory::Pending)), states its roots among
+//!   them, and settles them once
+//!   ([`Directory::settle`](crate::directory::Directory::settle)): the
+//!   calls put the directory's records there and write the tree pages and
+//!   the columns themselves. Each reads the directory as the records of
+//!   the calls before it leave it.
 //!   It gives both every column ([`Flats`]), and the version it reads at:
 //!   a transaction that makes its pages again over a newer base
 //!   (`transactions.md` WT7) makes these calls again with that base.

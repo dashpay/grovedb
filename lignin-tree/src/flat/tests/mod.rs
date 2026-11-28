@@ -2,13 +2,17 @@ mod cursor;
 mod errors;
 mod keys;
 mod log;
+mod many;
 mod model;
 mod moves;
 mod shape;
 mod steps;
 pub(crate) mod store;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+};
 
 use lignin_format::{
     flat_page::{common_prefix_len, FlatPage, FlatValue},
@@ -19,8 +23,10 @@ use lignin_format::{
 use lignin_io::sim::SimRng;
 
 use super::{
+    leaf_images_written, leaf_pieces_cut,
     log::{is_changed, push_changes},
-    Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Look, Revision,
+    Changes, Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Look, Revision,
+    Written,
 };
 
 const V1: FormatVersion = FormatVersion::V1;
@@ -80,6 +86,14 @@ struct Mem {
     next_value: u64,
     next_offset: u64,
     revision: u64,
+    /// How many images of leaves were written, and how many pages were
+    /// taken.
+    leaf_writes: u64,
+    takes: u64,
+    /// The page of each image of a leaf that was written, in order.
+    leaf_pages: Vec<PageId>,
+    /// The page of each read, in order.
+    reads: RefCell<Vec<PageId>>,
     /// A step of background work that is made just before the page is
     /// taken: it gives the image the page has from then on.
     step_before_take: Option<(PageId, Vec<u8>)>,
@@ -104,6 +118,10 @@ impl Mem {
             next_value: 0,
             next_offset: 20,
             revision: 0,
+            leaf_writes: 0,
+            takes: 0,
+            leaf_pages: Vec::new(),
+            reads: RefCell::default(),
             step_before_take: None,
         }
     }
@@ -253,6 +271,7 @@ impl FlatPages for Mem {
     type Page<'a> = &'a [u8];
 
     fn page(&self, page: PageId) -> Result<&[u8], FlatError> {
+        self.reads.borrow_mut().push(page);
         let image = self.pages.get(&page).ok_or(FlatError::Freed { page })?;
         Ok(image)
     }
@@ -307,6 +326,7 @@ impl FlatPagesMut for Mem {
             self.base.insert(page, image);
         }
         self.taken.insert(page);
+        self.takes += 1;
         Ok(self.page(page)?.to_vec())
     }
 
@@ -318,6 +338,10 @@ impl FlatPagesMut for Mem {
         let read = FlatPage::decode(image, V1).expect("a well-formed page");
         assert_eq!((read.id(), read.as_bytes().len()), (page, image.len()));
         assert!(image.len() <= self.config.capacity());
+        self.leaf_writes += u64::from(read.leaf().is_some());
+        if read.leaf().is_some() {
+            self.leaf_pages.push(page);
+        }
         self.pages.insert(page, image.to_vec());
         for (_, place) in self.places(page) {
             if let ValuePlace::Pending(pending) = place {

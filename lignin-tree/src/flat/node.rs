@@ -342,10 +342,16 @@ impl Layout {
     /// any two entries fit one page.
     ///
     /// Where one cut is enough, it is put where the two runs are nearest
-    /// in length, unless the entry in position `added` is a new one that
-    /// goes on a run of keys ([`Self::run_end`]). With more cuts each run
-    /// is as long as it can be.
-    pub(super) fn cuts(&self, capacity: usize, skip: usize, added: Option<usize>) -> Vec<usize> {
+    /// in length, unless the entries in the positions `added`, from its
+    /// first to its last, are new ones that go on a run of keys
+    /// ([`Self::run_end`]). With more cuts each run is as long as it can
+    /// be.
+    pub(super) fn cuts(
+        &self,
+        capacity: usize,
+        skip: usize,
+        added: Option<(usize, usize)>,
+    ) -> Vec<usize> {
         let count = self.entries();
         let mut cuts = Vec::new();
         let mut start = 0;
@@ -370,25 +376,27 @@ impl Layout {
         cuts
     }
 
-    /// A cut for keys that arrive in order: where the new entry in
-    /// position `added` ends a run of keys, the cut that keeps the run
-    /// together, so that the keys which follow it find room at the end of
-    /// their page and pages are left full.
+    /// A cut for keys that arrive in order: where the new entries in the
+    /// positions from `first` to `last`, which stand beside each other,
+    /// end a run of keys, the cut that keeps the run together, so that the
+    /// keys which follow it find room at the end of their page and pages
+    /// are left full.
     ///
-    /// The new entry ends a run when at least two keys stand before it in
-    /// the page, and the key after it shares less with it than all of them
-    /// do, or there is no key after it. The cut is behind the new entry,
-    /// or before it if the run is a page already.
-    fn run_end(&self, added: usize, capacity: usize) -> Option<usize> {
-        let run = self.shared.get(..added)?.iter().copied().min()?;
-        if added < 2 || self.shared.get(added).is_some_and(|&next| next >= run) {
+    /// The new entries end a run when at least two keys stand before the
+    /// last of them in the page, and the key after it shares less with it
+    /// than all of them do, or there is no key after it. The cut is behind
+    /// the last new entry, or before it if the run is a page already, or
+    /// before the nearest new entry before that which leaves two pages.
+    fn run_end(&self, (first, last): (usize, usize), capacity: usize) -> Option<usize> {
+        let run = self.shared.get(..last)?.iter().copied().min()?;
+        if last < 2 || self.shared.get(last).is_some_and(|&next| next >= run) {
             return None;
         }
+        // The greatest cut at which the first run fits is the one to ask
+        // the second run of: a cut before it leaves a longer second run.
         let count = self.entries();
-        let fits = |start, end| self.run_len(start, end) <= capacity;
-        [added + 1, added]
-            .into_iter()
-            .find(|&cut| cut < count && fits(0, cut) && fits(cut, count))
+        let cut = (last + 1).min(self.fit(0, capacity)).min(count - 1);
+        (cut >= first.max(1) && self.run_len(cut, count) <= capacity).then_some(cut)
     }
 
     /// The one cut that leaves two runs nearest in length.
@@ -419,6 +427,78 @@ impl Layout {
             .filter(|&(_, first, second)| first <= capacity && second <= capacity)
             .min_by_key(|&(_, first, second)| first.abs_diff(second))
             .map(|(cut, ..)| cut)
+    }
+}
+
+/// A count for the tests of how often a leaf is written: in a test build
+/// of this crate, and in a build with the feature `held_reads`.
+#[cfg(any(test, feature = "held_reads"))]
+pub(super) mod written {
+    use std::cell::Cell;
+
+    thread_local! {
+        static LEAVES: Cell<u64> = const { Cell::new(0) };
+        static PIECES: Cell<u64> = const { Cell::new(0) };
+        static FAIL_AFTER: Cell<Option<u64>> = const { Cell::new(None) };
+        static FAILED_AT: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn count() {
+        LEAVES.set(LEAVES.get() + 1);
+    }
+
+    /// Has the write of an image of a leaf fail, once, on this thread:
+    /// the one after `images` more have been written. It is for a test of
+    /// what a write that fails half way leaves, and nothing else arms it.
+    pub fn fail_leaf_image_after(images: u64) {
+        FAIL_AFTER.set(Some(images));
+    }
+
+    /// What [`leaf_images_written`] said when the fault that a test armed
+    /// ([`fail_leaf_image_after`]) was last made on this thread, taken
+    /// once: how many images the thread had written before the one that
+    /// failed. `None` where no fault was made since it was last taken.
+    pub fn leaf_images_at_the_fault() -> Option<u64> {
+        FAILED_AT.take()
+    }
+
+    /// Whether the image that is about to be written is the one a test
+    /// has fail.
+    pub(super) fn fails() -> bool {
+        match FAIL_AFTER.get() {
+            Some(0) => {
+                FAIL_AFTER.set(None);
+                FAILED_AT.set(Some(LEAVES.get()));
+                true
+            }
+            Some(left) => {
+                FAIL_AFTER.set(Some(left - 1));
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Notes that a leaf was cut `cuts` times: into that many pieces
+    /// beside its first.
+    pub(in crate::flat) fn cut(cuts: usize) {
+        PIECES.set(PIECES.get() + cuts as u64);
+    }
+
+    /// How many further pieces the leaves that this thread cut were cut
+    /// into, since it began: for each leaf that had outgrown its image
+    /// and was written as several, their number less one.
+    pub fn leaf_pieces_cut() -> u64 {
+        PIECES.get()
+    }
+
+    /// How many images of leaves this thread has handed to the pages of
+    /// flat keyspaces since it began, whichever keyspace and whichever
+    /// call: every image that the keyspace's code builds for a leaf and
+    /// that its pages took. A step of background work builds its images
+    /// elsewhere and is not counted.
+    pub fn leaf_images_written() -> u64 {
+        LEAVES.get()
     }
 }
 
@@ -453,7 +533,15 @@ pub(super) fn write_leaf<P: FlatPagesMut + ?Sized>(
             KeyRef::Whole(key) => image.push(key, value)?,
         }
     }
-    pages.write(page, &image.finish())
+    #[cfg(any(test, feature = "held_reads"))]
+    if written::fails() {
+        let what = "an image of a leaf whose write a test has fail";
+        return Err(FlatError::Damaged { page, what });
+    }
+    pages.write(page, &image.finish())?;
+    #[cfg(any(test, feature = "held_reads"))]
+    written::count();
+    Ok(())
 }
 
 /// Writes the branch `page` of `level` with the first child `first` and

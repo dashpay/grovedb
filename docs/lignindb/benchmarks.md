@@ -691,6 +691,24 @@ cargo test --release -p lignin-testkit --test bench batches_of_ten_thousand -- -
 
 It is no part of a `lignin-bench` report.
 
+As measured on 26 November 2026, before and after a batch came to write each
+leaf of the subtree directory once for the records it puts there (TXN-03;
+`lignin-tree::directory`, "The records of a batch"). Both are release builds
+on one host that other work shared, each from a clean export of its commit in
+a target directory of its own, run in turns (after, before, before, after),
+ten rounds each. A ratio is of the two engines in one round:
+
+| Batch | LigninDB applies, before | after | Of RocksDB's time, before | after |
+| --- | --- | --- | --- | --- |
+| moves | 1,027 to 1,317 ms | 384 to 511 ms | 7.3 to 9.5 | 2.7 to 3.1 |
+| mixed | 88 to 134 ms | 98 to 125 ms | 1.4 to 1.9 | 1.5 to 1.7 |
+
+RocksDB applied the moves in 127 to 170 ms and the mixed batch in 57 to 81
+ms. The mixed batch enters, moves and drops no subtree, so it puts few
+records into the directory, and it is as it was. The commits are within
+each other's spread: LigninDB commits the moves in 25 to 60 ms where it
+did in 20 to 69 ms.
+
 ## RocksDB baseline and the plan's recorded values
 
 These are the count and measured rows of the reference run, on

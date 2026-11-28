@@ -25,9 +25,19 @@ impl Error for Malformed {}
 /// writer's pages are then no state of the directory, and whoever owns them
 /// gives them up, as after a failed write of any flat keyspace
 /// (`transactions.md` WT10). Every other error is a refusal, and a write
-/// that is refused has changed no page, with the exceptions that
-/// [`Directory::rekey`](super::Directory::rekey) and
-/// [`Directory::rekey_pairs`](super::Directory::rekey_pairs) state.
+/// that is refused has changed no page and put no pending record, with
+/// the exception that [`Directory::rekey`](super::Directory::rekey)
+/// states.
+///
+/// **An operation answers for the records and the pages it needs.** It
+/// reports a record that is damaged, or a page that cannot be read, where
+/// it reads that record or that page for its answer. A damaged page
+/// beside those is no error of the operation:
+/// [`Directory::check`](super::Directory::check) finds it. So the same
+/// calls can end otherwise on a damaged store when they are made as one
+/// batch and when each is settled by itself, because the two read other
+/// pages beside their records (the module documentation, "The records of
+/// a batch", says which).
 #[derive(Debug)]
 pub enum DirectoryError {
     /// The flat keyspace the directory is kept in failed.

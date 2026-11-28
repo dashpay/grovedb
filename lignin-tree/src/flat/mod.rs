@@ -1,8 +1,9 @@
 //! The flat keyspace: a B+tree of flat pages for ordered data that is not
 //! part of a Merk tree.
 //!
-//! - [`FlatTree`] is one keyspace: get, put, delete, range delete and a
-//!   [`Cursor`], over keys and values of any length.
+//! - [`FlatTree`] is one keyspace: get, put, delete, range delete, a
+//!   write of many keys and a [`Cursor`], over keys and values of any
+//!   length.
 //! - [`FlatPages`] and [`FlatPagesMut`] are what the tree asks of whoever
 //!   holds its pages: a reader at one version, and the one writer of a
 //!   write transaction.
@@ -172,6 +173,41 @@
 //! other page is. A range delete that finds nothing to remove copies no
 //! page and writes none, in the tree of a bucket as in any other. Unlinking a range without reading it is the
 //! subtree drop's (TREE-09).
+//!
+//! **A write of many keys hands a leaf one image** ([`FlatTree::write`]).
+//! It is given changes in the order of their keys ([`Changes`]): for each
+//! key the value it gets, or none where its record goes. It goes through
+//! the keys that a page stores as they are from the last to the first: it
+//! goes down to the leaf of the last key that is left, takes that leaf
+//! once, makes in it every change whose key lies in the leaf's key range,
+//! and writes what the leaf then holds, once; then it goes down again for
+//! the next key. What the leaf holds after all its changes is cut and
+//! looked at by the rules above, before it is written: a leaf that has
+//! outgrown its image is written as the pieces it needs; one that is left
+//! with no entry is freed and not written; one that lost an entry and is
+//! under a quarter of a page is merged with its neighbour in the one
+//! image that is written, or into the root where that leaves one leaf in
+//! the tree. So the write hands its pages at most one image for each
+//! leaf it changes and one more for each further piece of a cut, and no
+//! page but the root is handed two images of a leaf: the root is where a
+//! leaf that is left with no entry was one of its two children, and the
+//! root takes what the other holds while the write has keys of that one
+//! still to come to. A leaf is for that not merged with a neighbour to
+//! its left that the write has still to come to, and stays under a
+//! quarter of a page until a later write looks at it. A leaf in which no change changes anything (a delete of a key that
+//! is not there, a value that the key has already in its page) is not
+//! written, and is not taken where every change is such a delete; a key
+//! that gets the value it has is judged by the leaf as it is taken, as a
+//! put of it is. The keyspace holds afterwards what a put and a
+//! delete for each change leave it holding. Its pages can be other pages,
+//! because a leaf is cut and merged once for all it takes: where the new
+//! entries of a leaf stand beside each other and end a run of keys, the
+//! cut keeps the run together as it does for one key. A key that is kept
+//! in a bucket is written by itself, after the others, and what is said
+//! here of one image is not said of it. [`Written`] says how many leaves
+//! took changes and how many images of leaves were written for them. The
+//! subtree directory writes the records of one batch this way (TXN-03),
+//! and none of its keys is kept in a bucket.
 //!
 //! # Values
 //!
@@ -461,7 +497,11 @@ pub(crate) mod tests;
 
 pub use cursor::{Cursor, Look};
 pub use error::FlatError;
+#[cfg(any(test, feature = "held_reads"))]
+pub use node::written::{
+    fail_leaf_image_after, leaf_images_at_the_fault, leaf_images_written, leaf_pieces_cut,
+};
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};
-pub use tree::{FlatTree, Unlinked};
+pub use tree::{Changes, FlatTree, Unlinked, Written};

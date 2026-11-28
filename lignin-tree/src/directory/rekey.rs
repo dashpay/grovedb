@@ -13,6 +13,7 @@ use super::{
     read::damaged,
     read::Children,
     record::{child_key, decode_child, entry_key, Dropped, Entry, Fields, Host, MerkId, Prefix},
+    write::Pending,
     Directory,
 };
 use crate::flat::{FlatPages, FlatPagesMut};
@@ -70,10 +71,13 @@ impl Directory {
         P: FlatPagesMut + ?Sized,
         F: FnMut(&[Step<'_>]) -> Prefix,
     {
+        // The records of each Merk are written when they are made: the
+        // walk below reads the pages as the Merks before it left them.
+        let mut pending = Pending::new();
         let entry = self.live(pages, from)?;
-        let left = self.free(pages, to)?;
-        let place = self.below(pages, &host, Some((from, entry.id())))?;
-        self.host_is_free(pages, &host, &place)?;
+        let left = self.free(&pending, pages, to)?;
+        let place = self.below(&pending, pages, &host, Some((from, entry.id())))?;
+        self.host_is_free(&pending, pages, &host, &place)?;
         let fields = Fields {
             host: Some(host),
             lineage: &place.lineage,
@@ -85,8 +89,9 @@ impl Directory {
             self.tree.delete(pages, &was)?;
         }
         self.tree.delete(pages, &entry_key(from))?;
-        self.displace(pages, to, left.as_ref())?;
-        self.enter(pages, to, &moved, Some(&place.child))?;
+        self.displace(&mut pending, pages, to, left.as_ref())?;
+        Self::enter(&mut pending, to, &moved, Some(&place.child));
+        self.settle(pages, pending)?;
 
         let mut count = 1;
         let mut lineage = place.lineage;
@@ -122,7 +127,8 @@ impl Directory {
             let what = "a Merk in use hosts a Merk that has no entry";
             let nested = nested.ok_or_else(|| damaged(&old, what))?;
             self.tree.delete(pages, &old)?;
-            let left = self.free(pages, &prefix)?;
+            let mut pending = Pending::new();
+            let left = self.free(&pending, pages, &prefix)?;
             let host = Host {
                 parent: &parent_prefix,
                 key,
@@ -134,9 +140,10 @@ impl Directory {
                 ..nested.fields()
             };
             let moved = fields.encode()?;
-            self.displace(pages, &prefix, left.as_ref())?;
+            self.displace(&mut pending, pages, &prefix, left.as_ref())?;
             let record = child_key(parent, position, key);
-            self.enter(pages, &prefix, &moved, Some(&record))?;
+            Self::enter(&mut pending, &prefix, &moved, Some(&record));
+            self.settle(pages, pending)?;
 
             count += 1;
             lineage.extend_from_slice(&child.id.encode());
@@ -455,30 +462,76 @@ impl Directory {
     /// One entry is written for each Merk that moves, with the records
     /// that lead to it. A plan that was made of another state can be
     /// refused when it is half made ([`DirectoryError::Exists`],
-    /// [`DirectoryError::NotFound`], [`DirectoryError::NotEmpty`]): after
-    /// any error the writer's pages are given up.
+    /// [`DirectoryError::NotFound`], [`DirectoryError::NotEmpty`]): it has
+    /// then changed no page, as any call that is refused
+    /// ([`Self::rekey_pairs_in`]). After an error of the keyspace the
+    /// writer's pages are given up.
     pub fn rekey_pairs<P: FlatPagesMut + ?Sized>(
         &mut self,
         pages: &mut P,
         plan: &RekeyPlan,
     ) -> Result<Rekeyed, DirectoryError> {
+        let mut pending = Pending::new();
+        let rekeyed = self.rekey_pairs_in(&mut pending, pages, plan)?;
+        self.settle(pages, pending)?;
+        Ok(rekeyed)
+    }
+
+    /// [`Self::rekey_pairs`] among the records of a batch ([`Pending`]):
+    /// the plan was made of this directory as those records leave it, the
+    /// records of the re-keying are put beside them, and no page is
+    /// changed.
+    ///
+    /// A plan that was made of another state can be refused when it is
+    /// half made ([`DirectoryError::Exists`], [`DirectoryError::NotFound`],
+    /// [`DirectoryError::NotEmpty`]). **A re-keying that is refused has
+    /// put no record**, and the handle has the ids it had: the records are
+    /// made beside a copy of the pending ones, which takes their place
+    /// only once all of them are made.
+    pub fn rekey_pairs_in<P: FlatPages + ?Sized>(
+        &mut self,
+        pending: &mut Pending,
+        pages: &P,
+        plan: &RekeyPlan,
+    ) -> Result<Rekeyed, DirectoryError> {
+        let (mut made, dropped) = (pending.clone(), self.dropped.clone());
+        match self.rekey_pairs_among(&mut made, pages, plan) {
+            Ok(rekeyed) => {
+                *pending = made;
+                Ok(rekeyed)
+            }
+            Err(error) => {
+                self.dropped = dropped;
+                Err(error)
+            }
+        }
+    }
+
+    /// Puts the records of the re-keying that `plan` holds into
+    /// `pending`. After an error a part of them is there.
+    fn rekey_pairs_among<P: FlatPages + ?Sized>(
+        &mut self,
+        pending: &mut Pending,
+        pages: &P,
+        plan: &RekeyPlan,
+    ) -> Result<Rekeyed, DirectoryError> {
         let mut rekeyed = Rekeyed::default();
         for prefix in plan.left.iter().rev() {
-            rekeyed.left.push(self.unlink(pages, prefix)?);
+            rekeyed.left.push(self.unlink_in(pending, pages, prefix)?);
         }
         for planned in &plan.moved {
             if let Some(was) = planned.was.child_key() {
-                self.tree.delete(pages, &was)?;
+                pending.delete(&was);
             }
-            self.tree.delete(pages, &entry_key(&planned.from))?;
+            pending.delete(&entry_key(&planned.from));
         }
         for planned in &plan.moved {
-            let left = self.free(pages, &planned.to)?;
+            let left = self.free(pending, pages, &planned.to)?;
             if left.is_some() {
                 rekeyed.displaced.push(planned.to);
             }
-            self.displace(pages, &planned.to, left.as_ref())?;
-            self.enter(pages, &planned.to, &planned.now, Some(&planned.child))?;
+            self.displace(pending, pages, &planned.to, left.as_ref())?;
+            Self::enter(pending, &planned.to, &planned.now, Some(&planned.child));
         }
         Ok(rekeyed)
     }
