@@ -87,6 +87,7 @@
 //! | --- | --- |
 //! | `cache_mb` | [`Options::cache_size`] |
 //! | `log_file_mb` | [`Options::log_file_len`] |
+//! | `upkeep` | [`Options::upkeep`]: `changed` (the default) or `written` |
 //! | `chain_deltas` | [`FlushConfig::max_chain_deltas`] |
 //! | `chain_bytes` | [`FlushConfig::max_chain_bytes`] |
 //! | `segment_mb` | [`FlushConfig::segment_len`] |
@@ -135,7 +136,7 @@ use grovedb_costs::{CostContext, OperationCost};
 use grovedb_version::version::GroveVersion;
 use lignin_format::PageSize;
 use lignin_store::{cleaner::CleanerConfig, flush::FlushConfig};
-use lignindb::{db::DbStats, Options};
+use lignindb::{db::DbStats, options::Upkeep, Options};
 
 use super::{
     engine::{Block, Counters, Detail, Engine, EngineSettings, Space},
@@ -303,6 +304,13 @@ impl Tuning {
             match key {
                 "cache_mb" => options.cache_size = in_memory(key, value, MIB)?,
                 "log_file_mb" => options.log_file_len = Some(bytes(key, value, MIB)?),
+                "upkeep" => {
+                    options.upkeep = match value {
+                        "changed" => Upkeep::Changed,
+                        "written" => Upkeep::Written,
+                        _ => return Err(refused(key, "changed or written", value)),
+                    }
+                }
                 "pace" => {
                     pace = match value {
                         "free" => Pace::Free,
@@ -961,6 +969,8 @@ mod settings_tests {
         assert_eq!(defaults.pace, Pace::Free);
         assert_eq!(defaults.options.cache_size, Options::default().cache_size);
         assert_eq!(defaults.options.log_file_len, None);
+        assert_eq!(defaults.options.upkeep, Options::default().upkeep);
+        assert_eq!(defaults.options.upkeep, Upkeep::Changed);
         assert_eq!(
             (defaults.options.flush, defaults.options.cleaner),
             (None, None)
@@ -992,9 +1002,13 @@ mod settings_tests {
             "pace=block",
             "pace=free",
             "pace=block",
+            "upkeep=written",
         ]))
         .unwrap();
         assert_eq!(tuning.pace, Pace::Block);
+        assert_eq!(tuning.options.upkeep, Upkeep::Written);
+        let stated = Tuning::new(&settings(&["upkeep=written", "upkeep=changed"])).unwrap();
+        assert_eq!(stated.options.upkeep, Upkeep::Changed);
         assert_eq!(tuning.options.cache_size, 3 << 20);
         assert_eq!(tuning.options.log_file_len, Some(5 << 20));
         assert_eq!(
@@ -1093,6 +1107,10 @@ mod settings_tests {
             (
                 "pace=slow",
                 "the setting pace takes free or block, not \"slow\"",
+            ),
+            (
+                "upkeep=every",
+                "the setting upkeep takes changed or written, not \"every\"",
             ),
         ] {
             assert_eq!(

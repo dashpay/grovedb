@@ -454,7 +454,9 @@ the appends.
 
 `--set KEY=VALUE` opens LigninDB with one setting changed, in a run that
 measures LigninDB: a threshold of write-back or of the cleaner, the size of
-the buffer pool or of a log file, an idle time, or the harness's own `pace`.
+the buffer pool or of a log file, an idle time, the upkeep of the tree pages
+(`upkeep=written`, where a run is to measure L1 asked of every fragment a
+write holds; `tree-layout.md`, L4), or the harness's own `pace`.
 `bench/lignindb.rs` lists the keys and the option each sets. A report records
 the settings of its run (`method.engine_settings`), and `lignin-bench table`
 prints them. A key that names no setting, a value its setting cannot take,

@@ -289,6 +289,24 @@ impl Reclaim for Hook {
 mod no_sync;
 pub use no_sync::NoSync;
 
+/// The layout of the tests' store: the proposed one, with the upkeep that
+/// is proposed ([`Upkeep`](lignin_tree::fragment::Upkeep)). With
+/// `LIGNIN_TEST_UPKEEP=written` or `=changed` in the environment its
+/// writes measure the largest size under that value, which is how the
+/// tests of this crate are run under the one that is not proposed; any
+/// other value of the variable is refused.
+pub(crate) fn layout() -> Layout {
+    use lignin_tree::fragment::Upkeep;
+    static UPKEEP: std::sync::OnceLock<Upkeep> = std::sync::OnceLock::new();
+    let upkeep = UPKEEP.get_or_init(|| match std::env::var("LIGNIN_TEST_UPKEEP").as_deref() {
+        Err(_) => Upkeep::PROPOSED,
+        Ok("written") => Upkeep::Written,
+        Ok("changed") => Upkeep::Changed,
+        Ok(other) => panic!("LIGNIN_TEST_UPKEEP is {other:?}: `written` or `changed`"),
+    });
+    Layout::proposed_under(SIZE, *upkeep)
+}
+
 impl Db {
     /// An empty store with a pool of `frames` frames, in a directory of its
     /// own. Its first commit makes the flat keyspaces and the directory.
@@ -785,12 +803,7 @@ impl Db {
             load_files: &self.load_files,
             write_back: self.write_back(versions),
         };
-        WritePath::new(
-            store,
-            self.keyspaces(),
-            Layout::proposed(SIZE),
-            InlinePolicy::DEFAULT,
-        )
+        WritePath::new(store, self.keyspaces(), layout(), InlinePolicy::DEFAULT)
     }
 
     /// The read path of this store under its `versions`.

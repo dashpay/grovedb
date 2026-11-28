@@ -183,6 +183,7 @@ impl Tuning {
             cleaner: Some(self.cleaner),
             idle: self.idle,
             reserve: 0,
+            upkeep: lignindb::options::Upkeep::default(),
             vfs,
         }
     }

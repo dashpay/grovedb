@@ -2173,10 +2173,14 @@ fn gives_room_back(seed: u64, reserve: u64) -> Gave {
         "{context}: {full:?}"
     );
     // What is free beyond the bytes of the reserve is somebody else's.
-    let free = capacity - fs.used_bytes();
+    // Less than the reserve can be free, and the files can hold more than
+    // the capacity: the append that was refused can leave some of its
+    // sectors in its file (`SimVfs::set_capacity`). Where that is more
+    // than was free before it, nothing is somebody else's.
     let files = fs.used_bytes();
+    let beyond = capacity.saturating_sub(files).saturating_sub(reserve);
     let other = Reserve::of(options.vfs.clone(), Path::new("/"));
-    other.fill(free - reserve).expect("the rest of the device");
+    other.fill(beyond).expect("the rest of the device");
 
     let shared = &*db.shared;
     // No loop runs yet.

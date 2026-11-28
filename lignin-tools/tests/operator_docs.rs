@@ -38,7 +38,7 @@ use lignin_tools::args::{
     self, Unreachable, DEFAULT_CACHE, DEFAULT_COMPACT_TIMEOUT, DEFAULT_MIGRATE_BATCH,
     DEFAULT_MIGRATE_PROGRESS,
 };
-use lignindb::Options;
+use lignindb::{options::Upkeep, Options};
 
 mod document_text;
 
@@ -1643,6 +1643,7 @@ fn defaults() -> BTreeMap<String, String> {
         cleaner,
         idle,
         reserve,
+        upkeep,
         vfs: _,
     } = Options::default();
     // The file layer is a trait object: its default is held to the source
@@ -1673,6 +1674,10 @@ fn defaults() -> BTreeMap<String, String> {
     let stated_cleaner = match cleaner {
         None => "unset: the cleaner's defaults",
         Some(_) => "set",
+    };
+    let stated_upkeep = match upkeep {
+        Upkeep::Written => "every fragment a write holds",
+        Upkeep::Changed => "the fragments in which a write changed a cell",
     };
     let log_file_len = log_file_len.unwrap_or(LogOptions::default().target_file_len);
     let FlushConfig {
@@ -1727,6 +1732,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("Options::flush", stated_flush.to_owned()),
         ("Options::cleaner", stated_cleaner.to_owned()),
         ("Options::idle", duration(idle)),
+        ("Options::upkeep", stated_upkeep.to_owned()),
         (
             "Options::create_if_missing",
             ["no", "yes"][usize::from(create_if_missing)].to_owned(),

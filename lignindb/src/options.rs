@@ -13,6 +13,7 @@ use lignin_store::{
     recovery::{RecoveryOptions, DEFAULT_POOL_CAPACITY},
     wal::LogOptions,
 };
+pub use lignin_tree::fragment::Upkeep;
 
 /// How a database is opened ([`Db::open`](crate::Db::open)).
 ///
@@ -97,6 +98,56 @@ pub struct Options {
     /// the default, the session keeps none and touches no file of the
     /// reserve's two names.
     pub reserve: u64,
+    /// Which fragments of tree pages a write measures against the layout's
+    /// largest fragment size ([`Upkeep`], `tree-layout.md` L4).
+    ///
+    /// A write that changes one value gives a new hash to every node above
+    /// it, up to the root. With [`Upkeep::Changed`], the default, the
+    /// write measures the fragments in which it changed a cell: one it
+    /// created or carried, one of which a part has another length, one
+    /// that points at another cell than before. It passes over a cell
+    /// into which it only wrote a hash, whose fragment is as large as
+    /// before. With [`Upkeep::Written`] it measures the fragment of every
+    /// node it names, which is more work and left no better a layout on
+    /// the workloads that were measured (`tree-layout.md`, section 14.6).
+    ///
+    /// It decides where cells go from then on, and nothing else:
+    ///
+    /// - It is no part of the format (F5). A database is opened with
+    ///   either value, whichever it was written with, and nothing records
+    ///   which that was. A session may say another than the last one did.
+    /// - A node holds the same under either, so what is read of the
+    ///   database, and its hashes, do not depend on it.
+    /// - Every other rule of the layout is kept under either: a page never
+    ///   holds more than its capacity, and a small fragment still goes to
+    ///   its parent's page when that has room.
+    ///
+    /// What `Changed` leaves for later: a fragment that is above the
+    /// largest size after a write stays so until a write measures it
+    /// again, which is a write that changes a cell of it, or one that is
+    /// planned once more (below). Under `Written` every write that names
+    /// a node of it measures it, and what is left below a root that has
+    /// just gone up is measured in the same write where the write names a
+    /// node of it. Each measuring sends up one node at the most, so
+    /// neither value brings a fragment within the size in one write for
+    /// certain. Such a fragment is never larger than its page.
+    ///
+    /// Where a write finds no room: a write can be refused because a page
+    /// is full of cells it does not hold (`tree-layout.md`, T3), and
+    /// whether it finds room is up to where the cells are. With
+    /// `Changed`, a write whose first plan finds no room is planned once
+    /// more as `Written` plans it, with the pages and everything else as
+    /// they were, and the result of that plan is the answer. So `Changed`
+    /// refuses a write for room only where `Written` does on the same
+    /// inputs, and it takes some that `Written` refuses. Any other error
+    /// can be met under one value and not under the other ([`Upkeep`] has
+    /// the whole of it). Two databases that took the same writes under the
+    /// two values can hold their cells in other pages, and a later write
+    /// of that kind can then find room in one and not in the other.
+    ///
+    /// `Written` is there to compare the two, and to have more fragments
+    /// measured after the largest size was set lower.
+    pub upkeep: Upkeep,
     /// The file system the database is in. Tests pass a simulated one
     /// (`lignin_io::sim`).
     pub vfs: Arc<dyn Vfs>,
@@ -136,6 +187,7 @@ impl Default for Options {
             cleaner: None,
             idle: Self::DEFAULT_IDLE,
             reserve: 0,
+            upkeep: Upkeep::PROPOSED,
             vfs: Arc::new(StdVfs),
         }
     }
@@ -153,6 +205,7 @@ impl fmt::Debug for Options {
             .field("cleaner", &self.cleaner)
             .field("idle", &self.idle)
             .field("reserve", &self.reserve)
+            .field("upkeep", &self.upkeep)
             .finish_non_exhaustive()
     }
 }
@@ -175,6 +228,7 @@ mod tests {
         assert_eq!(options.cleaner, None);
         assert_eq!(options.idle, Duration::from_millis(100));
         assert_eq!(options.reserve, 0);
+        assert_eq!(options.upkeep, Upkeep::Changed);
     }
 
     /// What the store's recovery is told is what the options say: the
