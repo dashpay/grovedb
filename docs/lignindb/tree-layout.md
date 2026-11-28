@@ -166,14 +166,16 @@ In the reference workload a document node with two children is 205 bytes and
 a document leaf 119, with its 440-byte value out of line. A reference node is
 about 190 to 275 bytes with its value in the cell.
 
-**Every number in sections 14 and 15 was computed with the sizes of the
-right-hand column**, which the simulation assumed before the format existed
+**Every number in sections 14.1 to 14.5 and 15 was computed with the sizes
+of the right-hand column**, which the simulation assumed before the format
+existed
 (`CellCosts::assumed()`; the cell was `2 + 4 + key + 64 + feature type and
 aggregates + 40 for each link + 6 for each hosted root + value, or 16`,
 with the feature type and the aggregates as Merk's record has them, with
 varints).
-Those tables are not recomputed. The three targets of section 14.1 were
-measured again with the real sizes, and are still met:
+Those tables are not recomputed. Section 14.6 is computed with the sizes of
+FMT-02. The three targets of section 14.1 were measured again with the real
+sizes, and are still met:
 
 | Target | Required | With the assumed sizes | With the sizes of FMT-02 |
 | --- | --- | --- | --- |
@@ -426,8 +428,99 @@ apply there. The root of the grove has no parent: its fragment is not
 limited by L1 and may fill its page.
 
 L1 is applied once in a write, before 6.2. A fragment that V1 or M1 then
-takes above the largest size, by less than the small size, is cut by the
-next write that holds it.
+takes above the largest size, by less than the small size, is cut by a later
+write that measures it. L4 says which writes do.
+
+**L4. L1 is asked of the fragments in which the write changed a cell.** A
+write changes a cell when it creates or carries it, when it gives a part of
+it another length, and when it makes a link or a hosted-root pointer of it
+name another cell than before. A cell that is **rewritten in place**, with
+every part as long as it was and every pointer as it was, brings no fragment
+to L1. That is what a write does to each node above the one it changes: it
+writes a hash into the cell, and the fragment is as large as the write found
+it. So a write that puts one value into a tree measures the fragment the
+value arrives in, and not the fragments of the nodes above it whose hashes
+it rewrites.
+
+Whichever fragment a write made larger holds a cell that it changed: the
+cell that arrived, the cell that got longer, or the cell that now points at
+what it did not point at. A cell that a rule carries in the same write is
+changed too, so the fragment a root goes up into is measured (L3).
+
+Each cell that a write holds has one turn at L1, and a turn sends one root
+up at the most. A turn that is passed over is not made up for. So this value
+gives one thing up within a write. Where a root has gone up for a changed
+cell and what is left below it is still above the largest size, it is the
+turn of a node of the write between that root and the changed cell that
+sends the next root up. Those nodes are rewritten in place. Where L1 is
+asked of every fragment they have their turns; here they are passed over,
+and what is left stays above the size until a write measures it again: one
+that changes a cell of it, or one that is planned once more (below).
+
+Looking at the changed cell again in the place of those turns, until its
+fragment is within the size, was tried and is not done. It is not the same
+as the turns it stands for: it sends up roots that the other value leaves
+where they are.
+
+**A write that finds no room is planned once more, as for every fragment.** A
+page above its capacity is settled by the cells the write holds in it (6.2).
+A write that grows a node which nothing in it points at can hold none there
+that helps, and is then refused (T3). Which cells a write holds in which
+page when 6.2 runs is up to the turns of L1, so the two values can differ in
+it, in both directions. A turn that is passed over can be the one that
+brings a cell of the write into the full page, above cells it does not
+hold, which can then leave with it. And a turn can take the last such cell
+out of the page.
+
+So where the first plan of a write finds no room with L1 asked of the
+changed fragments, the write is planned once more with L1 asked of every
+fragment, with every other parameter, the pages, the hints and the hosts
+that are behind as they were, and the result of that plan is the answer. A
+plan changes no page, so the second finds what the first found. A write is
+therefore refused for room with L1 asked of the changed fragments only
+where it is, on the same inputs, with L1 asked of every fragment, and some
+writes find room with L1 asked of the changed fragments alone. The second
+plan has every turn of L1: a cell that is rewritten in place is not passed
+over in it. So what this rule passes over, it passes over in the first plan
+of a write.
+
+No more than that is held, in two ways. Any other error can be met under
+one value and not under the other: the two plans can read other pages and
+ask for other new pages, so a page that cannot be read or started can stop
+a write under one alone, and a write that names what is not there can be
+found out under one alone. And it is said of one write on the same inputs:
+two stores that took the same writes under the two values can hold their
+cells in other pages, as under any two settings of this section, and a
+later write of that kind can then find room in one and not in the other.
+
+Two families of writes on crowded pages hold it, four thousand of each,
+every write made under both values
+(`no_write_of_a_crowded_page_is_refused_for_room_under_what_changed_alone`):
+in one, 38 writes are refused with L1 asked of every fragment alone; in the
+other, 290 are taken because they are planned once more. The random writes
+of the planner's property tests are planned under both values as well.
+
+Two things are as they were, under either value. A root that L1 carried
+into a page has one turn there: what is left of the fragment it joined,
+once the root of that fragment has gone up, can stay above the size for a
+later write. And a small hosted Merk that goes up with its host (L2) has no
+turn of its own.
+
+This is a setting, the **upkeep** (section 12). Its other value asks L1 of
+every fragment the write holds, which is how this document first had it.
+
+L1 is the one rule that can be asked of fewer fragments, because whether a
+fragment is above the largest size is up to the cells of that fragment
+alone. Whether V1, M1 or M2 applies is not: a parent's page has room, or a
+page is below the merge threshold, once other writes have taken cells out of
+it. Those rules, and the choice of the fragment that leaves an overfull page
+(6.2), are for every fragment the write holds under either value. Section
+14.6 has what each value costs, and what it costs to restrict M1 as well.
+
+What L4 gives up: a fragment that a write leaves above the largest size
+(6.2, M1 and M2 run after L1 and can join two fragments, and so can L2) is
+measured again by the next write that changes a cell of it, or that is
+planned once more, and not already by the next write that holds it.
 
 ### 6.2 A page above its capacity
 
@@ -965,6 +1058,7 @@ None of these is part of the on-disk format (F5).
 | small fragment | 1/16 of the page size | below it a fragment belongs with its parent (L2, V1, M1) |
 | seed limit | 75% of the capacity | a page takes a fragment in only up to this (V4, M2) |
 | merge threshold | 35% of the capacity | a delete below it gives the fragment away (M2) |
+| upkeep | the fragments in which a write changed a cell | which fragments a write measures against the largest size (L4); the other value is every fragment the write holds |
 
 Constraints between them, which `Model::new` checks:
 
@@ -972,7 +1066,11 @@ Constraints between them, which `Model::new` checks:
   L1 has split is not small and M1 does not carry it straight back
 - the merge threshold is at most the seed limit
 
-`Config::proposed()` is this table.
+`Config::proposed()` is this table. In the engine it is
+`LayoutParams::PROPOSED` of `lignin-tree`, where one line says which upkeep
+is proposed (`Upkeep::PROPOSED`). The upkeep is the one parameter that a
+session can set: `Options::upkeep` of `lignindb`, which is the proposed
+value unless the session says the other.
 
 ## 13. How the simulation observes Merk
 
@@ -1104,6 +1202,10 @@ All numbers come from one deterministic run and are the same on every
 machine. They were taken with GroveDB as it is on `feat/LigninDB` at
 `922d0d3a`, after SEAM-01, on the latest GroveVersion. Section 18 gives the
 commands.
+
+Sections 14.1 to 14.5 and section 15 were measured before L4, with L1 asked
+of every fragment a write holds. Section 14.6 has the reference load and the
+other workloads under both values of the upkeep, side by side.
 
 ### 14.1 The three targets
 
@@ -1281,6 +1383,140 @@ of which 0.007 by R2.
 On `large-values` (section 15), where the values are 8 KB on average, 0.23
 cells are carried per transition and 1,899 value bytes are appended again,
 46% on top of the 4,152 that the workload writes.
+
+### 14.6 The upkeep: which fragments L1 is asked of
+
+The two values of the upkeep (L4), laid out in one pass over one run:
+**every fragment** a write holds, as in the sections above, and the
+**changed fragments**, which is proposed. These runs were taken with GroveDB
+as it is on `feat/LigninDB` at `1f37b824`, so the first row is not the row
+of 14.1.
+
+The whole reference load:
+
+| L1 is asked of | Pages | Nodes per page | Fill, end (lowest sample) | Pages dirtied per transition | In the last tenth | Counted once per block | Cells carried per transition | Fragments above the largest size at the end |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| every fragment a write holds | 16,023 | 126.1 | 74.8% (71.9%) | 7.29 | 7.21 | 4.51 | 1.634 | 29 of 35,637 |
+| **proposed**: the fragments in which a write changed a cell | 16,039 | 125.9 | 74.7% (71.6%) | 7.28 | 7.17 | 4.51 | 1.633 | 27 of 35,629 |
+| not proposed: the same for V1, M1, M2 and the choice of 6.2 as well | 16,078 | 125.6 | 74.6% (71.6%) | 8.08 | 8.18 | 4.64 | 1.622 | not counted |
+
+The proposed value leaves the layout of the first row within a tenth of a
+point of fill at the end, and a hundredth of a page dirtied for each
+transition. The lowest sample of its fill is 0.3 of a point lower.
+
+The last column counts, of the fragments that L1 limits, those that are
+above the largest size when the run ends. The count is taken at each of the
+ten samples of the run as well. It says how many there are at that moment,
+and not how each came to be so, and a fragment can go above the size and be
+cut between two samples. At the ten samples and the end it is 1 to 29 where
+L1 is asked of every fragment and 1 to 27 where it is asked of the changed
+fragments. At six of the eleven the proposed value has more of them, by 4
+at the most (13 and 9 of some 30,280 at 800,000 transitions), at three it
+has fewer, and at two as many.
+
+The third row is the rule that was tried first, and is not in the code: a
+cell that is rewritten in place is not held by the write at all. It dirties
+0.8 pages more for each transition and is above the target of 14.1. That
+row and the table below were measured before the rule had its last form,
+with a switch for each rule that the code does not have. Which rule the
+first form misses shows when the rules are given back one at a time, here
+on 500,000 transitions with 5,000 owners:
+
+| A cell that is rewritten in place is still brought to | Pages | Fill | Pages dirtied per transition | Over the first 250,000 |
+| --- | --- | --- | --- | --- |
+| every rule | 8,005 | 74.9% | 6.98 | 7.15 |
+| no rule | 8,050 | 74.5% | 7.06 | 7.42 |
+| L1 alone | 8,064 | 74.3% | 7.09 | 7.45 |
+| the choice of 6.2 alone | 8,050 | 74.5% | 7.06 | 7.42 |
+| M1 alone | 8,015 | 74.8% | 6.99 | 7.17 |
+| L1 and M1 | 8,005 | 74.9% | 6.98 | 7.15 |
+
+It is M1. A split sends a fragment to another page and leaves small
+fragments behind, apart from their parents (section 7). The write that brings
+one back is a later write through it, and nearly every write through a
+fragment only rewrites hashes there. L1 gives nothing back on its own, which
+is why it is the rule that L4 asks of fewer fragments. (The row "M1 alone"
+is the experiment that led to L4. L4 as proposed also keeps M2 and the
+choice of 6.2 for every fragment, and is the second row of the table above.)
+
+The other workloads, every fragment against the changed fragments:
+
+| Workload | Pages | Fill at the end | Pages dirtied per transition | Cells carried per transition |
+| --- | --- | --- | --- | --- |
+| a tree of constant size (`sweep_churn`, 14.4) | 360 and 359 | 68.7% and 68.9% | 2.97 and 2.97 | 0.111 and 0.111 |
+| 50,000 keys, half of them deleted, then 100,000 values replaced by values as long (`sweep_updates`) | 250 and 250 | 49.5% and 49.5% | 2.95 and 2.95 | 0.262 and 0.262 |
+| `deep-nesting` | 7 and 6 | 50.2% and 58.5% | 3.16 and 3.01 | 0.838 and 0.604 |
+| `tiny-subtrees` | 333 and 333 | 57.7% and 57.7% | 5.03 and 5.03 | 1.114 and 1.117 |
+| `delete-heavy` | 1 and 1 | all but 9 nodes deleted | 2.49 and 2.44 | 0.685 and 0.690 |
+| `long-keys` | 297 and 296 | 50.5% and 50.7% | 3.61 and 3.57 | 0.711 and 0.714 |
+| `large-values` | 55 and 55 | 44.6% and 44.6% | 1.77 and 1.78 | 0.246 and 0.246 |
+| `moves` | 1 and 1 | 41.6% and 41.6% | 3.84 and 3.84 | 0 and 0 |
+| `index-rekey` | 462 and 462 | 69.4% and 69.4% | 5.54 and 5.55 | 1.571 and 1.571 |
+
+From the sample at 75,000 transitions on, `sweep_updates` carries no cell
+under either value: each interval prints its count, and each is 0. That
+sample is one write before the end of the thinning, so those intervals hold
+the last delete and all 100,000 replacements. Pages that deletes left half
+full stay half full while values are replaced in them, which is section
+15's finding and not L4's.
+
+**A workload written against L4** (`sweep_stripes`). It asks whether whoever
+chooses the writes can make the fragments that stay above the largest size
+many, and what follows from them. 50,000 keys are inserted. Then the keys of
+every second stripe of the key space are taken together and most of them
+are deleted, which leaves small fragments beside pages that no delete
+touched, and M1 sends them into those pages, on top of the fragments
+there. Then every key that is left is
+rewritten twice in place, which changes no cell, and 12,500 keys are
+inserted. Six shapes of it: stripes of a 64th to a 1,024th of the key space,
+with 75% to 99% of the keys of those stripes deleted.
+
+With L1 asked of the changed fragments, 0 to 2 of some 500 to 700 fragments
+stay above the largest size through the rewriting, by 9% of it at the most,
+where L1 asked of every fragment leaves none. Nothing follows from them.
+Each shape ends on as many pages under the proposed value as under the
+other, or on one or two fewer, at the same fill within half a point. The
+pages dirtied for each transition are the same to a hundredth in five shapes
+and 0.3 fewer under the proposed value in the sixth, with the same 99th
+percentile and the same largest transition in all six, and the cells carried
+are the same within a thousandth for each transition.
+
+The reason is in the rules. Under either value a write can leave a fragment
+above the largest size. A rule can join two fragments after one was
+measured: 6.2, M1 and M2 run after L1, and L1 itself brings a root, or a
+small hosted Merk with it (L2), into a page whose fragment has one turn
+more. And a fragment that L1 did not limit can come to be limited: that of a
+root with no parent, when a rotation gives the grove another root. L4
+changes which later write cuts such a fragment, and adds one kind to them:
+what is left below a root that went up, where the nodes of the write between
+are rewritten in place (L4). A page above its capacity is settled under
+either value, so such a fragment is never larger than its page. And a layout
+in which no fragment is ever cut for its size is one the rules already
+allow, with the largest fragment at 100% (14.3): it fills its pages less and
+dirties no more of them.
+
+**In the engine.** The simulator counts pages and cells. What L4 saves is
+work of the thread that writes, and that is counted in the engine. The
+benchmark harness (`benchmarks.md`) loads 200,000 documents, replaces
+20,000 of them by documents as long and deletes 20,000, and the
+instructions that the writing thread executes are counted for each
+transition. Three runs of each build, with the order turned between them
+and the store in memory; the build of before this change was made twice,
+and the second stays within 0.14% of the first.
+
+| L1 is asked of | Insert | Replace by a document as long | Delete |
+| --- | --- | --- | --- |
+| before this change, instructions for each transition | 3,692,453 | 1,780,764 | 3,896,938 |
+| every fragment a write holds (`upkeep=written`) | +0.07% to +0.27% | -0.01% to +0.36% | +0.08% to +0.32% |
+| **proposed**: the changed fragments | -4.25% to -4.38% | -8.78% to -8.95% | -4.40% to -4.52% |
+
+Every run ends each phase on the same root hash. The saving is largest
+where a write changes no length, which is what a replacement by a value as
+long is: every cell of its path is rewritten in place and L1 measures
+nothing. With L1 asked of every fragment the engine does slightly more
+than before the change: it keeps the lengths of the parts of the cells a
+write names and compares them, and that value does not use the answer.
+These are counts of instructions and not times.
 
 ## 15. Results on the adversarial workloads
 
@@ -1520,6 +1756,17 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     `NodeStore`** (section 13). The diff sees no write that changes no byte,
     reports the narrowest kind where Merk reports a wider one, and takes an
     operation as a whole. None of the three changes a page that is counted.
+25. **L1 is asked of the fragments a write changed, and that is a setting**
+    (L4, section 14.6). The plan leaves open how much of a write's path the
+    rules look at. As first written here, L1 looked at every fragment on it.
+    On the reference workload the proposed value leaves the layout where it
+    was, within a hundredth of a page dirtied for each transition, and takes
+    the count of those fragments off the writing thread. It is no part of
+    the format, and a session can say the other value at the open
+    (`Options::upkeep`). Taking the cells that are rewritten in place out of
+    what a write holds, for every rule, was measured and is not proposed: it
+    costs 0.8 pages for each transition on the reference workload, and a
+    smaller run shows M1 to be the rule that needs them.
 
 ## 18. Code, tests and reproduction
 
@@ -1533,6 +1780,7 @@ The simulator is `lignin-testkit::layout_sim`.
 | Placement (section 5) | `Model::apply` | A node goes with its parent; a hosted root goes with its host, and not when co-location is off; a new node in the place of a deleted one goes to its page. |
 | Largest size, overflow (section 6) | `Model::cap_fragments`, `settle_overflow`, `split`, `move_out`, `beside`, `choose` | The first split of a page sends about half of it away and keeps the top; a fragment root goes up to its parent's page; a fragment above the largest size is split where it is; a fragment that leaves goes to a page beside it when the seed limit allows, which raises fill; the choice of parts, its tie-breaks, and more than twelve parts; a cell of half a page is refused (C7). |
 | Merge (section 7) | `Model::absorb_small`, `merge_underfull` | A small fragment rejoins its parent's page; a page below the threshold gives its fragment to a page beside it, and does not without the threshold. |
+| Upkeep (L4) | `Config::upkeep_of_what_changed`, `Model::rewritten_in_place`, `Model::is_in_place`, `Model::fragments_above_the_largest_size` | A path written again as it is has its fragment counted for the largest size only where every fragment is measured, and a node added below it has it counted under either value; a small fragment that is rewritten in place rejoins its parent's page under either; the proposed value is the planner's. |
 | Rotation, delete (section 8) | `Model::apply` | A rotation moves nothing; with `carry_on_rotation` the node that rose is carried; a replacement takes the deleted node's page, and does not without `carry_on_delete`. |
 | Values (section 9) | `Model::carry`, `Model::count_moves`, `Stats::moves`, `Config::value_log_bytes` | A cell that ends a transition in another page is counted once, with its out-of-line value and the record header; not when it is back where it was, not when the transition created it, and without the value when the transition wrote the value anyway. A value longer than one record pays a header for each part. |
 | Drop (section 11) | `Model::apply`, `Model::reclaim`, `Grove::drop_merk` | The nodes of a dropped Merk leave the layout without dirtying their pages; the host's page and one directory entry are written, whatever is nested in the Merk; the cells keep their room until the block ends; the reclaimer frees a page that held nothing else and writes one that did. |
@@ -1554,9 +1802,12 @@ documents into a RocksDB in a temporary directory (about 1 GB; set
 cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture the_reference_workload_meets_the_layout_targets
 ```
 
-The tables of sections 14 and 15 come from the three sweeps in the same file.
-A layout is given as
-`page:largest fragment %:seed limit %:merge below %:inline:small divisor:colocate:rotation:delete`,
+The tables of sections 14.1 to 14.5 and 15 come from three sweeps in the same
+file, run at the checkout that section 14 names: with the assumed cell sizes
+(C6) and with L1 asked of every fragment a write holds. On a later checkout
+the same commands size the cells as FMT-02 has them, and a layout takes the
+proposed upkeep unless its last field says `false`. A layout is given as
+`page:largest fragment %:seed limit %:merge below %:inline:small divisor:colocate:rotation:delete:upkeep of what changed`,
 later fields optional, several separated by commas; all of them are laid out
 in one pass over one run of GroveDB.
 
@@ -1578,6 +1829,29 @@ cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocaptur
 # section 15
 cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_adversarial
 cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_moves
+
+# section 14.6: each sweep under both values of the upkeep (the tenth field: false is every
+# fragment a write holds, true the fragments it changed)
+export LAYOUT_SIM_CONFIGS="32768:50:75:35:256:16:true:false:true:false,32768:50:75:35:256:16:true:false:true:true"
+LAYOUT_SIM_DOCUMENTS=1000000 cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_documents
+LAYOUT_SIM_KEYS=50000 cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_churn
+LAYOUT_SIM_KEYS=50000 LAYOUT_SIM_ROUNDS=4 cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_updates
+cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_adversarial
+# the workload written against L4, for each of 8 90, 6 90, 10 90, 8 97, 7 75 and 9 99
+LAYOUT_SIM_KEYS=50000 LAYOUT_SIM_ROUNDS=2 LAYOUT_SIM_STRIPE_BITS=8 LAYOUT_SIM_STRIPE_PERCENT=90 \
+cargo test --release -p lignin-testkit --test layout_sim -- --ignored --nocapture sweep_stripes
+```
+
+The rule itself is `lignin_tree::fragment::Upkeep`, in the planner of TREE-03
+(`fragment/plan.rs`: `Cell::in_place`, `Planner::place`, `Planner::cap`). Its
+tests are in `fragment/tests/rules.rs` and `fragment/tests/property.rs`,
+where the seeded runs of the layout are held under both values. The tests of
+the engine's write path run under the value that is not proposed with
+`LIGNIN_TEST_UPKEEP=written`:
+
+```text
+cargo test -p lignin-tree --lib
+LIGNIN_TEST_UPKEEP=written cargo test -p lignindb --lib
 ```
 
 The runs are deterministic: the workload streams are pinned by BASE-01, and
