@@ -24,7 +24,7 @@ use super::{
     check::check,
     commits::Watch,
     error::{BatchError, TxnError, WholeFault},
-    frames::{stored_key, Awake, Frames, Parked, Woken},
+    frames::{stored_key, Awake, Frames, Parked, Unbound, Woken},
     key::{Column, KeySet, Subtree, Unit},
     load::{cover, is_load, spill, Loaded},
     opened::{Opened, WrittenBelow},
@@ -3804,15 +3804,15 @@ impl<'s> WriteTxn<'s> {
         // counts those that cells hold (`log-format.md` LG16).
         let loaded = std::mem::take(&mut state.loaded);
         state.end();
-        let Frames {
+        let (unbound, flat) = frames.into_unbound();
+        let Unbound {
             tree,
             values,
             hashes,
-            flat,
             directory,
             dropped,
             ..
-        } = frames;
+        } = unbound;
         Ok(Sealed::Ready(Box::new(Parts {
             base: op.at,
             pin,
@@ -4016,13 +4016,13 @@ fn show_framed<R>(
     let Some(address) = at else {
         return Ok(read(None));
     };
-    let Frames {
+    let Unbound {
         tree,
         values,
         source,
         hashes,
         ..
-    } = frames;
+    } = &mut **frames;
     let stale = hashes.stale(address);
     let shown = tree.shown(address.page(), |page, committed| {
         let node = page.node(address.slot())?;

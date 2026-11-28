@@ -748,13 +748,13 @@ impl<'s> WriteTxn<'s> {
         let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
         let before = *frames.hashes.counters();
         let hash = {
-            let Frames {
+            let Unbound {
                 tree,
                 values,
                 source,
                 hashes,
                 ..
-            } = &mut *frames;
+            } = &mut **frames;
             let mut values = values.reader(source);
             let mut pages = Evaluating {
                 pages: tree,

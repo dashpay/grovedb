@@ -16,7 +16,10 @@ lignin-store = { version = "7.0.0", path = "../lignin-store" }
 # A check, and no API: an answer of `Directory::rooted_beside` is held to a
 # reference walk of the same entries, which is made within the call at its
 # own cost. Where that ends with an answer too and the two differ, the call
-# panics (the function's documentation says what is compared). It is on in
+# panics (the function's documentation says what is compared). In the same
+# way, each walk of a write's plan that counts the bytes of a fragment in one
+# step on its page is held to the walk cell by cell, over the cells it left
+# read (`fragment::plan::held`). It is on in
 # this crate's own tests, `lignindb/held_reads` turns it on with its own
 # checks, and `lignindb` has it on for its own tests by a dev-dependency.
 held_reads = []
