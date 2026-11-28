@@ -541,10 +541,14 @@ fn a_close_that_cannot_make_the_cleaners_segment_durable_fails_for_room() {
 }
 
 /// What [`Db::space`] says of a store: after a first session every value
-/// of the value log is live, and after a second that wrote every value
-/// anew the first session's values are dead. The segments hold blocks, of
-/// which no more are live than there are. The cleaner of both sessions
-/// moves nothing, so the dead bytes stay where the writes left them.
+/// of the value log is live, and after a commit of a second session that
+/// writes every value anew the first session's values are dead. The
+/// segments hold blocks, of which no more are live than there are. The
+/// second session is at rest, so no thread but this one makes a turn of
+/// write-back or a pass of the cleaner: the dead values are read where the
+/// commit left them. Then a pass of the cleaner, which moves nothing at
+/// these settings, gives the first session's file back whole, and only
+/// the new values are left, all of them live.
 #[test]
 fn the_space_of_a_store_says_what_its_writes_left_dead() {
     const VALUES: u64 = 12;
@@ -561,7 +565,7 @@ fn the_space_of_a_store_says_what_its_writes_left_dead() {
     let db = Db::open(dir.path(), &still).expect("a new database");
     plant(&db, subtree(1), Merk::sized(b'k', VALUES as u32, 1500));
     db.close().expect("the first session ends");
-    let db = Db::open(dir.path(), &still).expect("the database is opened again");
+    let db = open_at_rest(dir.path(), &still).expect("the database is opened again");
     let (segments, values) = db.space().expect("the space");
     assert!(segments.block_bytes() > 0, "{segments:?}");
     assert!(segments.live_bytes() > 0, "{segments:?}");
@@ -579,11 +583,24 @@ fn the_space_of_a_store_says_what_its_writes_left_dead() {
         ..Writes::default()
     }
     .commit(&db);
-    db.close().expect("the second session ends");
-    let db = Db::open(dir.path(), &still).expect("the database is opened a third time");
+    written_back(&db);
     let (_, values) = db.space().expect("the space");
     assert!(values.live_bytes >= VALUES * 1600, "{values:?}");
     assert!(values.dead_bytes() >= VALUES * 1500, "{values:?}");
+    let files = values.files;
+    for turn in 0.. {
+        db.clean().expect("a turn of the cleaner");
+        if db.stats().cleaner.value_files_dropped > 0 {
+            break;
+        }
+        assert!(turn < 20, "{}", db.stats());
+    }
+    let (_, values) = db.space().expect("the space");
+    assert_eq!(values.files, files - 1, "{values:?}");
+    assert!(values.live_bytes >= VALUES * 1600, "{values:?}");
+    assert_eq!(values.dead_bytes(), 0, "{values:?}");
     assert_eq!(db.stats().cleaner.values_moved, 0);
+    drop(db);
+    let db = Db::open(dir.path(), &still).expect("the database is opened a third time");
     db.close().expect("the third session ends");
 }
